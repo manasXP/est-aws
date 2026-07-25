@@ -174,6 +174,25 @@ interface TransitionMemberStatusOptions {
 }
 
 /**
+ * STR-032 Refactor: the payload emitted after every successful
+ * member_status write. Lets E05 (role vacation) and E07 (accrual
+ * eligibility) hook in without coupling to endpoint code -- neither exists
+ * yet, so there is nothing wired to this beyond the array below.
+ */
+export interface MemberStatusTransitionEvent {
+  memberId: string;
+  from: MemberStatus;
+  to: MemberStatus;
+  actor?: string;
+}
+
+/** Listeners called synchronously by transitionMemberStatus after its DB
+ * write succeeds. A future consumer registers with
+ * `memberStatusTransitionListeners.push(fn)` -- no persistence, retries, or
+ * async dispatch here; that's this seam's whole job. */
+export const memberStatusTransitionListeners: Array<(event: MemberStatusTransitionEvent) => void> = [];
+
+/**
  * STR-032: the only writer of `member_status` -- every lifecycle action
  * (admitMember, suspendMember, reinstateMember, and STR-033's future
  * cessation) delegates here rather than writing the column directly (AC3).
@@ -204,6 +223,10 @@ async function transitionMemberStatus(
     );
   } else {
     await db.execute(sql`UPDATE members SET member_status = ${to}, status_actor = ${statusActor} WHERE id = ${memberId}`);
+  }
+
+  for (const listener of memberStatusTransitionListeners) {
+    listener({ memberId, from, to, actor: opts.actor });
   }
 
   return getMember(db, memberId);

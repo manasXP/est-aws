@@ -53,6 +53,15 @@ jobs:
     # gate-1/2/3 failure skips this job entirely; GitHub Actions does this by
     # default, no explicit `if` needed for that half.
     if: github.event_name == 'push'
+    # Fixed sandbox-id means every run deploys the SAME persistent stack
+    # (aws-blocks/scripts/ci-sandbox-deploy.ts) — two pushes to main close
+    # together would otherwise race two concurrent `cdk deploy`s against it;
+    # CloudFormation rejects the second (stack already UPDATE_IN_PROGRESS),
+    # a false-negative CI failure on an otherwise-good commit. Queue instead
+    # of canceling: a deploy left half-applied is worse than a wait.
+    concurrency:
+      group: sandbox-deploy
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

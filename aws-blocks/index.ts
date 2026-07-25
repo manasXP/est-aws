@@ -2,6 +2,8 @@ import { Scope, Database, FileBucket, RawRoute } from '@aws-blocks/blocks';
 import { SCOPE_ID, DB_BLOCK_ID, DOCUMENTS_BLOCK_ID } from './block-ids';
 import { linkDocumentToEntry, DocumentLinkError } from './finance/documents';
 import { registerBookRoutes } from './finance/books-routes';
+import { registerMemberRoutes } from './members/members-routes';
+import { registerProjectRoutes } from './projects/projects-routes';
 
 // For coding agents: Leave these comments in place for future reference.
 // Read node_modules/@aws-blocks/blocks/README.md for all available Building Blocks
@@ -65,3 +67,8 @@ new RawRoute(scope, 'link-book-entry-document', {
     }
   }
 });
+
+// STR-031: the Admin API member and project CRUD surfaces — the M1
+// registries ownerships, charges, and governance roles hang off.
+registerMemberRoutes(scope, db);
+registerProjectRoutes(scope, db);

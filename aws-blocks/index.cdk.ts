@@ -1,10 +1,13 @@
 import * as cdk from 'aws-cdk-lib';
 import { RemovalPolicies, Mixins } from 'aws-cdk-lib';
+import * as lambda from 'aws-cdk-lib/aws-lambda';
 
 import { BlocksStack, SandboxDisableDeletionProtection } from '@aws-blocks/blocks/cdk';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { getStackName } from '@aws-blocks/blocks/scripts';
+import { overrideDeprecatedAuroraEngineVersion } from './known-issues/aurora-engine-version-workaround';
+import { MIGRATIONS_DIR } from './migrations-runner';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -18,6 +21,23 @@ export const blocksStack = await BlocksStack.create(app, stackName, {
   backendHandlerPath: join(__dirname, 'index.handler.ts'),
   backendCDKPath: join(__dirname, 'index.ts')
 });
+
+// @aws-blocks/bb-data@0.2.2 hardcodes a since-removed Aurora engine version —
+// every real deploy needs this patch, not just sandbox (STR-004's finding,
+// applied for the first time to a real deploy here).
+overrideDeprecatedAuroraEngineVersion(blocksStack);
+
+// The Handler NodejsFunction's esbuild bundle only includes the JS
+// dependency graph — migrations/*.sql never makes it into a real deploy
+// without this. Mounted as a layer at /opt (management-actions.ts's
+// resolveMigrationsDir() reads from there when actually running in Lambda).
+const migrationsLayer = new lambda.LayerVersion(blocksStack, 'MigrationsLayer', {
+  code: lambda.Code.fromAsset(join(__dirname, '..', MIGRATIONS_DIR))
+});
+blocksStack.handler.addLayers(migrationsLayer);
+
+new cdk.CfnOutput(blocksStack, 'HandlerFunctionName', { value: blocksStack.handler.functionName });
+new cdk.CfnOutput(blocksStack, 'GatewayUrl', { value: blocksStack.gateway.url });
 
 if (sandboxMode) {
   // Make all resources deletable so sandbox:destroy can clean up the entire stack.

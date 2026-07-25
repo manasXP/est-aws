@@ -1,3 +1,6 @@
 {
-  "stackId": "est-aws-d013ab"
+  "stackId": "est-aws-d013ab",
+  "telemetry": {
+    "projectId": "476cb795-e411-445b-ac9a-f59722c521ec"
+  }
 }

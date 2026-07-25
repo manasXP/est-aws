@@ -15,10 +15,12 @@
     "spec": "blocks-generate-spec",
     "dev": "tsx watch aws-blocks/scripts/server.ts",
     "sandbox": "tsx aws-blocks/scripts/sandbox.ts",
+    "sandbox:ci-deploy": "tsx aws-blocks/scripts/ci-sandbox-deploy.ts",
     "sandbox:destroy": "tsx -C cdk aws-blocks/scripts/sandbox-destroy.ts",
     "sandbox:console": "tsx aws-blocks/scripts/console.ts",
     "cleanup": "tsx aws-blocks/scripts/cleanup.ts",
     "migrate": "tsx aws-blocks/scripts/migrate.ts",
+    "migrate:deploy": "tsx aws-blocks/scripts/invoke-deploy-migration.ts",
     "lint:migrations": "tsx aws-blocks/scripts/lint-migrations.ts",
     "infra-diff": "tsx -C cdk aws-blocks/scripts/infra-diff-gate.ts",
     "infra-diff:update-baseline": "tsx -C cdk aws-blocks/scripts/infra-diff-gate.ts --update-baseline",
@@ -26,14 +28,17 @@
     "destroy": "tsx aws-blocks/scripts/destroy.ts",
     "vendorize": "blocks-vendorize",
     "build": "npm run typecheck",
-    "test": "npm run typecheck && vitest run"
+    "test": "npm run typecheck && vitest run",
+    "smoke": "vitest run --config vitest.smoke.config.ts"
   },
   "dependencies": {
     "@aws-blocks/blocks": "*",
+    "@aws-blocks/core": "*",
     "@aws-blocks/data-common": "^0.1.2"
   },
   "devDependencies": {
     "@apidevtools/swagger-parser": "^12.1.0",
+    "@aws-sdk/client-lambda": "^3.1095.0",
     "@types/node": "^20.0.0",
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",

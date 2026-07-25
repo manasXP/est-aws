@@ -5,7 +5,14 @@ import type { BlocksContext } from '@aws-blocks/blocks';
 // RawRoute, with no CDK escape hatch (API Gateway + Lambda) needed. This
 // dispatches directly against the in-process route registry rather than a
 // real TCP server, matching how STR-001 tests Blocks' other local
-// implementations (no AWS, no separate process).
+// implementations (no AWS, no separate process). Kept (not deleted like the
+// Q2 spike) as groundwork for STR-005's walking-skeleton endpoint, which
+// will be the first real RawRoute handler in aws-blocks/index.ts.
+//
+// Limitation: dispatchRequest() always sends an empty body (no request.body/
+// json()/text() wiring) — fine for the GET routes proven here, but a future
+// POST/webhook test built on this helper needs a body parameter added first,
+// not a silent {} substitute.
 
 const spikeScope = new Scope('str-003-spike');
 

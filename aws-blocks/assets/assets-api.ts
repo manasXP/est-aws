@@ -7,14 +7,9 @@ import { randomUUID } from 'node:crypto';
 import { sql } from '@aws-blocks/blocks';
 import type { Database } from '@aws-blocks/blocks';
 import { ValidationError } from '../http/problem-response';
+import { type AssetType, type AssetStatus, ASSET_TYPES, WRITABLE_STATUSES } from './asset-types';
 
-export type AssetType = 'flat' | 'plot' | 'villa' | 'dividend';
-export type AssetStatus = 'allotted' | 'available' | 'society_retained';
-
-const ASSET_TYPES: AssetType[] = ['flat', 'plot', 'villa', 'dividend'];
-// `allotted` is only ever set by ownership assignment (STR-053) -- never
-// accepted directly through create or edit.
-const WRITABLE_STATUSES: AssetStatus[] = ['available', 'society_retained'];
+export type { AssetType, AssetStatus };
 
 /** The Admin OpenAPI's Asset shape (components/schemas/Asset), restricted
  * to what this story owns -- current_ownership_id/current_owner are always

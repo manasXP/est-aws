@@ -10,8 +10,13 @@ import { runLocalMigrations } from '../../aws-blocks/migrations-runner';
 // case covers this repo-tooling behavior, so all four are genuine-gap IDs
 // per the story).
 
+const cleanupDirs: string[] = [];
+const cleanupDbs: Database[] = [];
+
 function freshDb(): Database {
-  return new Database(new Scope(`str-011-test-${randomUUID()}`), 'db');
+  const db = new Database(new Scope(`str-011-test-${randomUUID()}`), 'db');
+  cleanupDbs.push(db);
+  return db;
 }
 
 function fixtureDir(files: Record<string, string>): string {
@@ -19,15 +24,17 @@ function fixtureDir(files: Record<string, string>): string {
   for (const [name, content] of Object.entries(files)) {
     writeFileSync(join(dir, name), content);
   }
+  cleanupDirs.push(dir);
   return dir;
 }
 
-const cleanupDirs: string[] = [];
-const cleanupDbIds: string[] = [];
-
-afterEach(() => {
+afterEach(async () => {
+  while (cleanupDbs.length) {
+    const db = cleanupDbs.pop()!;
+    await (await db.getEngine()).destroy();
+    rmSync(`.bb-data/${db.fullId}`, { recursive: true, force: true });
+  }
   while (cleanupDirs.length) rmSync(cleanupDirs.pop()!, { recursive: true, force: true });
-  while (cleanupDbIds.length) rmSync(`.bb-data/${cleanupDbIds.pop()}`, { recursive: true, force: true });
 });
 
 describe('STR-011 versioned SQL migration runner (local)', () => {
@@ -37,9 +44,7 @@ describe('STR-011 versioned SQL migration runner (local)', () => {
       '001_create_widgets.sql': 'CREATE TABLE widgets (id TEXT PRIMARY KEY);',
       '002_create_gadgets.sql': 'CREATE TABLE gadgets (id TEXT PRIMARY KEY);',
     });
-    cleanupDirs.push(dir);
     const db = freshDb();
-    cleanupDbIds.push(db.fullId);
 
     const result = await runLocalMigrations(db, dir);
     expect(result.applied).toEqual(['001_create_widgets.sql', '002_create_gadgets.sql']);
@@ -56,9 +61,7 @@ describe('STR-011 versioned SQL migration runner (local)', () => {
     const dir = fixtureDir({
       '001_create_widgets.sql': 'CREATE TABLE widgets (id TEXT PRIMARY KEY);',
     });
-    cleanupDirs.push(dir);
     const db = freshDb();
-    cleanupDbIds.push(db.fullId);
 
     const first = await runLocalMigrations(db, dir);
     expect(first.applied).toEqual(['001_create_widgets.sql']);
@@ -76,9 +79,7 @@ describe('STR-011 versioned SQL migration runner (local)', () => {
       '001_create_widgets.sql': 'CREATE TABLE widgets (id TEXT PRIMARY KEY);',
       '002_broken.sql': 'THIS IS NOT VALID SQL;',
     });
-    cleanupDirs.push(dir);
     const db = freshDb();
-    cleanupDbIds.push(db.fullId);
 
     await expect(runLocalMigrations(db, dir)).rejects.toThrow();
 
@@ -92,14 +93,30 @@ describe('STR-011 versioned SQL migration runner (local)', () => {
       '001_a.sql': 'CREATE TABLE a_table (id TEXT PRIMARY KEY);',
       '001_b.sql': 'CREATE TABLE b_table (id TEXT PRIMARY KEY);',
     });
-    cleanupDirs.push(dir);
     const db = freshDb();
-    cleanupDbIds.push(db.fullId);
 
     await expect(runLocalMigrations(db, dir)).rejects.toThrow(/version/i);
 
     // The collision check runs before any database write — the tracking
     // table is never even created.
+    const exists = await db.query<{ regclass: string | null }>(
+      sql`SELECT to_regclass('public._migrations') AS regclass`,
+    );
+    expect(exists[0]?.regclass).toBeNull();
+  });
+
+  // Regression (code review): the collision guard must scan every file
+  // loadMigrationsFromDir would actually load and run — not a narrower set —
+  // or a malformed filename slips past it and still gets executed.
+  it('refuses a .sql file that does not follow the NNN_description.sql convention', async () => {
+    const dir = fixtureDir({
+      '001_create_widgets.sql': 'CREATE TABLE widgets (id TEXT PRIMARY KEY);',
+      '001-create-widgets.sql': 'CREATE TABLE widgets (id TEXT PRIMARY KEY);',
+    });
+    const db = freshDb();
+
+    await expect(runLocalMigrations(db, dir)).rejects.toThrow(/does not follow/i);
+
     const exists = await db.query<{ regclass: string | null }>(
       sql`SELECT to_regclass('public._migrations') AS regclass`,
     );

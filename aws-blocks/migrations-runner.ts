@@ -11,19 +11,32 @@ export interface RunLocalMigrationsResult {
   applied: string[];
 }
 
-const VERSION_PREFIX = /^(\d+)_.+\.sql$/;
+// Every file loadMigrationsFromDir will actually load and run (data-common's
+// own filter: any `.sql` file). The stricter VERSION_PREFIX check below must
+// scan this exact same set, or a malformed filename could slip past the
+// collision guard and still get executed.
+const SQL_FILE = /\.sql$/;
+const VERSION_PREFIX = /^(\d{3})_.+\.sql$/;
 
 /**
- * Refuse a migrations directory where two files claim the same leading
- * version number (e.g. `001_a.sql` and `001_b.sql`) — Blocks' own migration
- * tracking keys off the full filename, so a version collision like this
- * would apply both in an unpredictable order rather than error.
+ * Refuse a migrations directory where a file doesn't follow the mandated
+ * `NNN_description.sql` convention (zero-padded 3-digit version prefix —
+ * see migrations/000_baseline.sql), or where two files claim the same
+ * version number (e.g. `001_a.sql` and `001_b.sql`). Blocks' own migration
+ * tracking keys off the full filename and applies files in plain
+ * lexicographic order, so either mistake would apply migrations in an
+ * unpredictable order rather than error.
  */
 export function assertNoVersionCollisions(migrationsDir: string): void {
   const byVersion = new Map<string, string[]>();
   for (const file of readdirSync(migrationsDir)) {
+    if (!SQL_FILE.test(file)) continue;
     const match = file.match(VERSION_PREFIX);
-    if (!match) continue;
+    if (!match) {
+      throw new Error(
+        `Migration filename "${file}" does not follow the required NNN_description.sql convention (zero-padded 3-digit version prefix).`,
+      );
+    }
     const files = byVersion.get(match[1]) ?? [];
     files.push(file);
     byVersion.set(match[1], files);
@@ -41,6 +54,12 @@ export function assertNoVersionCollisions(migrationsDir: string): void {
  * Apply pending versioned SQL migrations from `migrationsDir` to `db`'s local
  * Blocks database. Thin wrapper over Blocks' own migration engine
  * (`@aws-blocks/data-common`) plus the version-collision guard above.
+ *
+ * `db.getEngine()` is the only way to reach a `DatabaseEngine` for this —
+ * neither `@aws-blocks/blocks` nor `@aws-blocks/bb-data` re-export
+ * `loadMigrationsFromDir`/`runMigrations` any other way. It is JSDoc-marked
+ * `@internal` upstream (not a TypeScript-private member); treat it as a
+ * deliberate, narrow exception rather than blessed public API.
  */
 export async function runLocalMigrations(db: Database, migrationsDir: string): Promise<RunLocalMigrationsResult> {
   assertNoVersionCollisions(migrationsDir);

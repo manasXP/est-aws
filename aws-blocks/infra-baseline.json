@@ -1,0 +1,1841 @@
+{
+  "Metadata": {
+    "AWS::Blocks::Platform": {
+      "version": "0.1.13"
+    }
+  },
+  "Resources": {
+    "HandlerServiceRoleFCDC14AE": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sts:AssumeRole",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "lambda.amazonaws.com"
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "ManagedPolicyArns": [
+          {
+            "Fn::Join": [
+              "",
+              [
+                "arn:",
+                {
+                  "Ref": "AWS::Partition"
+                },
+                ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+              ]
+            ]
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "blocks:deployment-type",
+            "Value": "production"
+          }
+        ]
+      }
+    },
+    "HandlerServiceRoleDefaultPolicyCBD0CC91": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "rds-data:ExecuteStatement",
+                "rds-data:BatchExecuteStatement",
+                "rds-data:BeginTransaction",
+                "rds-data:CommitTransaction",
+                "rds-data:RollbackTransaction"
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    "arn:",
+                    {
+                      "Ref": "AWS::Partition"
+                    },
+                    ":rds:",
+                    {
+                      "Ref": "AWS::Region"
+                    },
+                    ":",
+                    {
+                      "Ref": "AWS::AccountId"
+                    },
+                    ":cluster:",
+                    {
+                      "Ref": "estatlydbestawsd013abprodestatlydbClusterABFF3A45"
+                    }
+                  ]
+                ]
+              }
+            },
+            {
+              "Action": [
+                "secretsmanager:GetSecretValue",
+                "secretsmanager:DescribeSecret"
+              ],
+              "Effect": "Allow",
+              "Resource": {
+                "Ref": "estatlydbestawsd013abprodestatlydbClusterSecretAttachment782DC40E"
+              }
+            },
+            {
+              "Action": [
+                "s3:GetObject*",
+                "s3:GetBucket*",
+                "s3:List*",
+                "s3:DeleteObject*",
+                "s3:PutObject",
+                "s3:PutObjectLegalHold",
+                "s3:PutObjectRetention",
+                "s3:PutObjectTagging",
+                "s3:PutObjectVersionTagging",
+                "s3:Abort*"
+              ],
+              "Effect": "Allow",
+              "Resource": [
+                {
+                  "Fn::GetAtt": [
+                    "estatlydocumentsbucket57D762E1",
+                    "Arn"
+                  ]
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      {
+                        "Fn::GetAtt": [
+                          "estatlydocumentsbucket57D762E1",
+                          "Arn"
+                        ]
+                      },
+                      "/*"
+                    ]
+                  ]
+                }
+              ]
+            },
+            {
+              "Action": "s3:GetObject",
+              "Effect": "Allow",
+              "Resource": {
+                "Fn::Join": [
+                  "",
+                  [
+                    {
+                      "Fn::GetAtt": [
+                        "BlocksConfigBucket439874BD",
+                        "Arn"
+                      ]
+                    },
+                    "/blocks-config.json"
+                  ]
+                ]
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "PolicyName": "HandlerServiceRoleDefaultPolicyCBD0CC91",
+        "Roles": [
+          {
+            "Ref": "HandlerServiceRoleFCDC14AE"
+          }
+        ]
+      }
+    },
+    "Handler886CB40B": {
+      "Type": "AWS::Lambda::Function",
+      "Properties": {
+        "Code": {
+          "S3Bucket": {
+            "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}"
+          },
+          "S3Key": "2f9f6e562fe374689903ce88fdb09d0c15acaa0744abdaafffa8104435482bf0.zip"
+        },
+        "Environment": {
+          "Variables": {
+            "NODE_ENV": "production",
+            "BLOCKS_STACK_NAME": "est-aws-d013ab-prod",
+            "BLOCKS_CONFIG_BUCKET": {
+              "Ref": "BlocksConfigBucket439874BD"
+            },
+            "BLOCKS_CONFIG_KEY": "blocks-config.json"
+          }
+        },
+        "Handler": "index.handler",
+        "MemorySize": 2048,
+        "Role": {
+          "Fn::GetAtt": [
+            "HandlerServiceRoleFCDC14AE",
+            "Arn"
+          ]
+        },
+        "Runtime": "nodejs24.x",
+        "Tags": [
+          {
+            "Key": "blocks:deployment-type",
+            "Value": "production"
+          }
+        ],
+        "Timeout": 900
+      },
+      "DependsOn": [
+        "HandlerServiceRoleDefaultPolicyCBD0CC91",
+        "HandlerServiceRoleFCDC14AE"
+      ]
+    },
+    "API62EA1CFF": {
+      "Type": "AWS::ApiGateway::RestApi",
+      "Properties": {
+        "Name": "Blocks API",
+        "Tags": [
+          {
+            "Key": "blocks:deployment-type",
+            "Value": "production"
+          }
+        ]
+      }
+    },
+    "APICloudWatchRole927CEB3B": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sts:AssumeRole",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "apigateway.amazonaws.com"
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "ManagedPolicyArns": [
+          {
+            "Fn::Join": [
+              "",
+              [
+                "arn:",
+                {
+                  "Ref": "AWS::Partition"
+                },
+                ":iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs"
+              ]
+            ]
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "blocks:deployment-type",
+            "Value": "production"
+          }
+        ]
+      },
+      "UpdateReplacePolicy": "Retain",
+      "DeletionPolicy": "Retain"
+    },
+    "APIAccountD065B313": {
+      "Type": "AWS::ApiGateway::Account",
+      "Properties": {
+        "CloudWatchRoleArn": {
+          "Fn::GetAtt": [
+            "APICloudWatchRole927CEB3B",
+            "Arn"
+          ]
+        }
+      },
+      "DependsOn": [
+        "API62EA1CFF"
+      ],
+      "UpdateReplacePolicy": "Retain",
+      "DeletionPolicy": "Retain"
+    },
+    "APIDeployment0E06874Ef69dfd9f78700017acf937fd29aa3e5f": {
+      "Type": "AWS::ApiGateway::Deployment",
+      "Properties": {
+        "Description": "Automatically created by the RestApi construct",
+        "RestApiId": {
+          "Ref": "API62EA1CFF"
+        }
+      },
+      "DependsOn": [
+        "APIproxyANY181E6698",
+        "APIproxy35016696",
+        "APIANY77077448",
+        "APIawsblocksproxyANYE1843950",
+        "APIawsblocksproxy696BED3B",
+        "APIawsblocksapiOPTIONSD69A3908",
+        "APIawsblocksapiPOSTDF595C5D",
+        "APIawsblocksapi22FC8A88",
+        "APIawsblocks377D56BF"
+      ],
+      "Metadata": {
+        "aws:cdk:do-not-refactor": true
+      }
+    },
+    "APIDeploymentStageprod278E75BA": {
+      "Type": "AWS::ApiGateway::Stage",
+      "Properties": {
+        "DeploymentId": {
+          "Ref": "APIDeployment0E06874Ef69dfd9f78700017acf937fd29aa3e5f"
+        },
+        "MethodSettings": [
+          {
+            "CachingEnabled": false,
+            "DataTraceEnabled": false,
+            "HttpMethod": "*",
+            "ResourcePath": "/*"
+          }
+        ],
+        "RestApiId": {
+          "Ref": "API62EA1CFF"
+        },
+        "StageName": "prod",
+        "Tags": [
+          {
+            "Key": "blocks:deployment-type",
+            "Value": "production"
+          }
+        ]
+      },
+      "DependsOn": [
+        "APIAccountD065B313"
+      ]
+    },
+    "APIawsblocks377D56BF": {
+      "Type": "AWS::ApiGateway::Resource",
+      "Properties": {
+        "ParentId": {
+          "Fn::GetAtt": [
+            "API62EA1CFF",
+            "RootResourceId"
+          ]
+        },
+        "PathPart": "aws-blocks",
+        "RestApiId": {
+          "Ref": "API62EA1CFF"
+        }
+      }
+    },
+    "APIawsblocksproxy696BED3B": {
+      "Type": "AWS::ApiGateway::Resource",
+      "Properties": {
+        "ParentId": {
+          "Ref": "APIawsblocks377D56BF"
+        },
+        "PathPart": "{proxy+}",
+        "RestApiId": {
+          "Ref": "API62EA1CFF"
+        }
+      }
+    },
+    "APIawsblocksproxyANYApiPermissionestawsd013abprodAPIA3769D9FANYawsblocksproxyB460A428": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Fn::GetAtt": [
+            "Handler886CB40B",
+            "Arn"
+          ]
+        },
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Join": [
+            "",
+            [
+              "arn:",
+              {
+                "Ref": "AWS::Partition"
+              },
+              ":execute-api:",
+              {
+                "Ref": "AWS::Region"
+              },
+              ":",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":",
+              {
+                "Ref": "API62EA1CFF"
+              },
+              "/",
+              {
+                "Ref": "APIDeploymentStageprod278E75BA"
+              },
+              "/*/aws-blocks/*"
+            ]
+          ]
+        }
+      }
+    },
+    "APIawsblocksproxyANYApiPermissionTestestawsd013abprodAPIA3769D9FANYawsblocksproxy0B88B27B": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Fn::GetAtt": [
+            "Handler886CB40B",
+            "Arn"
+          ]
+        },
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Join": [
+            "",
+            [
+              "arn:",
+              {
+                "Ref": "AWS::Partition"
+              },
+              ":execute-api:",
+              {
+                "Ref": "AWS::Region"
+              },
+              ":",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":",
+              {
+                "Ref": "API62EA1CFF"
+              },
+              "/test-invoke-stage/*/aws-blocks/*"
+            ]
+          ]
+        }
+      }
+    },
+    "APIawsblocksproxyANYE1843950": {
+      "Type": "AWS::ApiGateway::Method",
+      "Properties": {
+        "AuthorizationType": "NONE",
+        "HttpMethod": "ANY",
+        "Integration": {
+          "IntegrationHttpMethod": "POST",
+          "Type": "AWS_PROXY",
+          "Uri": {
+            "Fn::Join": [
+              "",
+              [
+                "arn:",
+                {
+                  "Ref": "AWS::Partition"
+                },
+                ":apigateway:",
+                {
+                  "Ref": "AWS::Region"
+                },
+                ":lambda:path/2015-03-31/functions/",
+                {
+                  "Fn::GetAtt": [
+                    "Handler886CB40B",
+                    "Arn"
+                  ]
+                },
+                "/invocations"
+              ]
+            ]
+          }
+        },
+        "ResourceId": {
+          "Ref": "APIawsblocksproxy696BED3B"
+        },
+        "RestApiId": {
+          "Ref": "API62EA1CFF"
+        }
+      }
+    },
+    "APIawsblocksapi22FC8A88": {
+      "Type": "AWS::ApiGateway::Resource",
+      "Properties": {
+        "ParentId": {
+          "Ref": "APIawsblocks377D56BF"
+        },
+        "PathPart": "api",
+        "RestApiId": {
+          "Ref": "API62EA1CFF"
+        }
+      }
+    },
+    "APIawsblocksapiPOSTApiPermissionestawsd013abprodAPIA3769D9FPOSTawsblocksapi3D90409B": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Fn::GetAtt": [
+            "Handler886CB40B",
+            "Arn"
+          ]
+        },
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Join": [
+            "",
+            [
+              "arn:",
+              {
+                "Ref": "AWS::Partition"
+              },
+              ":execute-api:",
+              {
+                "Ref": "AWS::Region"
+              },
+              ":",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":",
+              {
+                "Ref": "API62EA1CFF"
+              },
+              "/",
+              {
+                "Ref": "APIDeploymentStageprod278E75BA"
+              },
+              "/POST/aws-blocks/api"
+            ]
+          ]
+        }
+      }
+    },
+    "APIawsblocksapiPOSTApiPermissionTestestawsd013abprodAPIA3769D9FPOSTawsblocksapiCC0B0A16": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Fn::GetAtt": [
+            "Handler886CB40B",
+            "Arn"
+          ]
+        },
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Join": [
+            "",
+            [
+              "arn:",
+              {
+                "Ref": "AWS::Partition"
+              },
+              ":execute-api:",
+              {
+                "Ref": "AWS::Region"
+              },
+              ":",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":",
+              {
+                "Ref": "API62EA1CFF"
+              },
+              "/test-invoke-stage/POST/aws-blocks/api"
+            ]
+          ]
+        }
+      }
+    },
+    "APIawsblocksapiPOSTDF595C5D": {
+      "Type": "AWS::ApiGateway::Method",
+      "Properties": {
+        "AuthorizationType": "NONE",
+        "HttpMethod": "POST",
+        "Integration": {
+          "IntegrationHttpMethod": "POST",
+          "Type": "AWS_PROXY",
+          "Uri": {
+            "Fn::Join": [
+              "",
+              [
+                "arn:",
+                {
+                  "Ref": "AWS::Partition"
+                },
+                ":apigateway:",
+                {
+                  "Ref": "AWS::Region"
+                },
+                ":lambda:path/2015-03-31/functions/",
+                {
+                  "Fn::GetAtt": [
+                    "Handler886CB40B",
+                    "Arn"
+                  ]
+                },
+                "/invocations"
+              ]
+            ]
+          }
+        },
+        "ResourceId": {
+          "Ref": "APIawsblocksapi22FC8A88"
+        },
+        "RestApiId": {
+          "Ref": "API62EA1CFF"
+        }
+      }
+    },
+    "APIawsblocksapiOPTIONSApiPermissionestawsd013abprodAPIA3769D9FOPTIONSawsblocksapi5D190CA1": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Fn::GetAtt": [
+            "Handler886CB40B",
+            "Arn"
+          ]
+        },
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Join": [
+            "",
+            [
+              "arn:",
+              {
+                "Ref": "AWS::Partition"
+              },
+              ":execute-api:",
+              {
+                "Ref": "AWS::Region"
+              },
+              ":",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":",
+              {
+                "Ref": "API62EA1CFF"
+              },
+              "/",
+              {
+                "Ref": "APIDeploymentStageprod278E75BA"
+              },
+              "/OPTIONS/aws-blocks/api"
+            ]
+          ]
+        }
+      }
+    },
+    "APIawsblocksapiOPTIONSApiPermissionTestestawsd013abprodAPIA3769D9FOPTIONSawsblocksapiC797E543": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Fn::GetAtt": [
+            "Handler886CB40B",
+            "Arn"
+          ]
+        },
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Join": [
+            "",
+            [
+              "arn:",
+              {
+                "Ref": "AWS::Partition"
+              },
+              ":execute-api:",
+              {
+                "Ref": "AWS::Region"
+              },
+              ":",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":",
+              {
+                "Ref": "API62EA1CFF"
+              },
+              "/test-invoke-stage/OPTIONS/aws-blocks/api"
+            ]
+          ]
+        }
+      }
+    },
+    "APIawsblocksapiOPTIONSD69A3908": {
+      "Type": "AWS::ApiGateway::Method",
+      "Properties": {
+        "AuthorizationType": "NONE",
+        "HttpMethod": "OPTIONS",
+        "Integration": {
+          "IntegrationHttpMethod": "POST",
+          "Type": "AWS_PROXY",
+          "Uri": {
+            "Fn::Join": [
+              "",
+              [
+                "arn:",
+                {
+                  "Ref": "AWS::Partition"
+                },
+                ":apigateway:",
+                {
+                  "Ref": "AWS::Region"
+                },
+                ":lambda:path/2015-03-31/functions/",
+                {
+                  "Fn::GetAtt": [
+                    "Handler886CB40B",
+                    "Arn"
+                  ]
+                },
+                "/invocations"
+              ]
+            ]
+          }
+        },
+        "ResourceId": {
+          "Ref": "APIawsblocksapi22FC8A88"
+        },
+        "RestApiId": {
+          "Ref": "API62EA1CFF"
+        }
+      }
+    },
+    "APIproxy35016696": {
+      "Type": "AWS::ApiGateway::Resource",
+      "Properties": {
+        "ParentId": {
+          "Fn::GetAtt": [
+            "API62EA1CFF",
+            "RootResourceId"
+          ]
+        },
+        "PathPart": "{proxy+}",
+        "RestApiId": {
+          "Ref": "API62EA1CFF"
+        }
+      }
+    },
+    "APIproxyANYApiPermissionestawsd013abprodAPIA3769D9FANYproxy7944F4D9": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Fn::GetAtt": [
+            "Handler886CB40B",
+            "Arn"
+          ]
+        },
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Join": [
+            "",
+            [
+              "arn:",
+              {
+                "Ref": "AWS::Partition"
+              },
+              ":execute-api:",
+              {
+                "Ref": "AWS::Region"
+              },
+              ":",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":",
+              {
+                "Ref": "API62EA1CFF"
+              },
+              "/",
+              {
+                "Ref": "APIDeploymentStageprod278E75BA"
+              },
+              "/*/*"
+            ]
+          ]
+        }
+      }
+    },
+    "APIproxyANYApiPermissionTestestawsd013abprodAPIA3769D9FANYproxyA7C95C5E": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "Action": "lambda:InvokeFunction",
+        "FunctionName": {
+          "Fn::GetAtt": [
+            "Handler886CB40B",
+            "Arn"
+          ]
+        },
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
+          "Fn::Join": [
+            "",
+            [
+              "arn:",
+              {
+                "Ref": "AWS::Partition"
+              },
+              ":execute-api:",
+              {
+                "Ref": "AWS::Region"
+              },
+              ":",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":",
+              {
+                "Ref": "API62EA1CFF"
+              },
+              "/test-invoke-stage/*/*"
+            ]
+          ]
+        }
+      }
+    },
+    "APIproxyANY181E6698": {
+      "Type": "AWS::ApiGateway::Method",
+      "Properties": {
+        "AuthorizationType": "NONE",
+        "HttpMethod": "ANY",
+        "Integration": {
+          "IntegrationHttpMethod": "POST",
+          "Type": "AWS_PROXY",
+          "Uri": {
+            "Fn::Join": [
+              "",
+              [
+                "arn:",
+                {
+                  "Ref": "AWS::Partition"
+                },
+                ":apigateway:",
+                {
+                  "Ref": "AWS::Region"
+                },
+                ":lambda:path/2015-03-31/functions/",
+                {
+                  "Fn::GetAtt": [
+                    "Handler886CB40B",
+                    "Arn"
+                  ]
+                },
+                "/invocations"
+              ]
+            ]
+          }
+        },
+        "ResourceId": {
+          "Ref": "APIproxy35016696"
+        },
+        "RestApiId": {
+          "Ref": "API62EA1CFF"
+        }
+      }
+    },
+    "APIANY77077448": {
+      "Type": "AWS::ApiGateway::Method",
+      "Properties": {
+        "AuthorizationType": "NONE",
+        "HttpMethod": "ANY",
+        "Integration": {
+          "Type": "MOCK"
+        },
+        "ResourceId": {
+          "Fn::GetAtt": [
+            "API62EA1CFF",
+            "RootResourceId"
+          ]
+        },
+        "RestApiId": {
+          "Ref": "API62EA1CFF"
+        }
+      }
+    },
+    "StackResources": {
+      "Type": "AWS::ResourceGroups::Group",
+      "Properties": {
+        "Name": "est-aws-d013ab-prod-resources",
+        "ResourceQuery": {
+          "Query": {
+            "ResourceTypeFilters": [
+              "AWS::CloudWatch::Dashboard",
+              "AWS::Cognito::UserPool",
+              "AWS::DynamoDB::Table",
+              "AWS::Logs::LogGroup",
+              "AWS::RDS::DBCluster",
+              "AWS::RDS::DBInstance",
+              "AWS::S3::Bucket",
+              "AWS::SQS::Queue"
+            ],
+            "StackIdentifier": {
+              "Ref": "AWS::StackId"
+            }
+          },
+          "Type": "CLOUDFORMATION_STACK_1_0"
+        },
+        "Tags": [
+          {
+            "Key": "blocks:deployment-type",
+            "Value": "production"
+          }
+        ]
+      }
+    },
+    "StackSettings": {
+      "Type": "AWS::ResourceGroups::Group",
+      "Properties": {
+        "Name": "est-aws-d013ab-prod-settings",
+        "ResourceQuery": {
+          "Query": {
+            "ResourceTypeFilters": [
+              "AWS::SSM::Parameter"
+            ],
+            "TagFilters": [
+              {
+                "Key": "aws-blocks-stack",
+                "Values": [
+                  "est-aws-d013ab-prod"
+                ]
+              }
+            ]
+          },
+          "Type": "TAG_FILTERS_1_0"
+        },
+        "Tags": [
+          {
+            "Key": "blocks:deployment-type",
+            "Value": "production"
+          }
+        ]
+      }
+    },
+    "estatlydbestawsd013abprodestatlydbVpc124691FC": {
+      "Type": "AWS::EC2::VPC",
+      "Properties": {
+        "CidrBlock": "10.0.0.0/16",
+        "EnableDnsHostnames": true,
+        "EnableDnsSupport": true,
+        "InstanceTenancy": "default",
+        "Tags": [
+          {
+            "Key": "blocks:deployment-type",
+            "Value": "production"
+          },
+          {
+            "Key": "Name",
+            "Value": "est-aws-d013ab-prod/estatly/db/est-aws-d013ab-prod-estatly-dbVpc"
+          }
+        ]
+      }
+    },
+    "estatlydbestawsd013abprodestatlydbVpcisolatedSubnet1Subnet15A3DEC3": {
+      "Type": "AWS::EC2::Subnet",
+      "Properties": {
+        "AvailabilityZone": {
+          "Fn::Select": [
+            0,
+            {
+              "Fn::GetAZs": ""
+            }
+          ]
+        },
+        "CidrBlock": "10.0.0.0/17",
+        "MapPublicIpOnLaunch": false,
+        "Tags": [
+          {
+            "Key": "aws-cdk:subnet-name",
+            "Value": "isolated"
+          },
+          {
+            "Key": "aws-cdk:subnet-type",
+            "Value": "Isolated"
+          },
+          {
+            "Key": "blocks:deployment-type",
+            "Value": "production"
+          },
+          {
+            "Key": "Name",
+            "Value": "est-aws-d013ab-prod/estatly/db/est-aws-d013ab-prod-estatly-dbVpc/isolatedSubnet1"
+          }
+        ],
+        "VpcId": {
+          "Ref": "estatlydbestawsd013abprodestatlydbVpc124691FC"
+        }
+      }
+    },
+    "estatlydbestawsd013abprodestatlydbVpcisolatedSubnet1RouteTableDEFBE8CF": {
+      "Type": "AWS::EC2::RouteTable",
+      "Properties": {
+        "Tags": [
+          {
+            "Key": "blocks:deployment-type",
+            "Value": "production"
+          },
+          {
+            "Key": "Name",
+            "Value": "est-aws-d013ab-prod/estatly/db/est-aws-d013ab-prod-estatly-dbVpc/isolatedSubnet1"
+          }
+        ],
+        "VpcId": {
+          "Ref": "estatlydbestawsd013abprodestatlydbVpc124691FC"
+        }
+      }
+    },
+    "estatlydbestawsd013abprodestatlydbVpcisolatedSubnet1RouteTableAssociation8D90A139": {
+      "Type": "AWS::EC2::SubnetRouteTableAssociation",
+      "Properties": {
+        "RouteTableId": {
+          "Ref": "estatlydbestawsd013abprodestatlydbVpcisolatedSubnet1RouteTableDEFBE8CF"
+        },
+        "SubnetId": {
+          "Ref": "estatlydbestawsd013abprodestatlydbVpcisolatedSubnet1Subnet15A3DEC3"
+        }
+      }
+    },
+    "estatlydbestawsd013abprodestatlydbVpcisolatedSubnet2SubnetAB521A2B": {
+      "Type": "AWS::EC2::Subnet",
+      "Properties": {
+        "AvailabilityZone": {
+          "Fn::Select": [
+            1,
+            {
+              "Fn::GetAZs": ""
+            }
+          ]
+        },
+        "CidrBlock": "10.0.128.0/17",
+        "MapPublicIpOnLaunch": false,
+        "Tags": [
+          {
+            "Key": "aws-cdk:subnet-name",
+            "Value": "isolated"
+          },
+          {
+            "Key": "aws-cdk:subnet-type",
+            "Value": "Isolated"
+          },
+          {
+            "Key": "blocks:deployment-type",
+            "Value": "production"
+          },
+          {
+            "Key": "Name",
+            "Value": "est-aws-d013ab-prod/estatly/db/est-aws-d013ab-prod-estatly-dbVpc/isolatedSubnet2"
+          }
+        ],
+        "VpcId": {
+          "Ref": "estatlydbestawsd013abprodestatlydbVpc124691FC"
+        }
+      }
+    },
+    "estatlydbestawsd013abprodestatlydbVpcisolatedSubnet2RouteTable96F7971B": {
+      "Type": "AWS::EC2::RouteTable",
+      "Properties": {
+        "Tags": [
+          {
+            "Key": "blocks:deployment-type",
+            "Value": "production"
+          },
+          {
+            "Key": "Name",
+            "Value": "est-aws-d013ab-prod/estatly/db/est-aws-d013ab-prod-estatly-dbVpc/isolatedSubnet2"
+          }
+        ],
+        "VpcId": {
+          "Ref": "estatlydbestawsd013abprodestatlydbVpc124691FC"
+        }
+      }
+    },
+    "estatlydbestawsd013abprodestatlydbVpcisolatedSubnet2RouteTableAssociation37E326E5": {
+      "Type": "AWS::EC2::SubnetRouteTableAssociation",
+      "Properties": {
+        "RouteTableId": {
+          "Ref": "estatlydbestawsd013abprodestatlydbVpcisolatedSubnet2RouteTable96F7971B"
+        },
+        "SubnetId": {
+          "Ref": "estatlydbestawsd013abprodestatlydbVpcisolatedSubnet2SubnetAB521A2B"
+        }
+      }
+    },
+    "estatlydbestawsd013abprodestatlydbSgE64F4111": {
+      "Type": "AWS::EC2::SecurityGroup",
+      "Properties": {
+        "GroupDescription": "Security group for est-aws-d013ab-prod-estatly-db Aurora cluster",
+        "SecurityGroupEgress": [
+          {
+            "CidrIp": "255.255.255.255/32",
+            "Description": "Disallow all traffic",
+            "FromPort": 252,
+            "IpProtocol": "icmp",
+            "ToPort": 86
+          }
+        ],
+        "SecurityGroupIngress": [
+          {
+            "CidrIp": {
+              "Fn::GetAtt": [
+                "estatlydbestawsd013abprodestatlydbVpc124691FC",
+                "CidrBlock"
+              ]
+            },
+            "Description": "Allow PostgreSQL from VPC",
+            "FromPort": 5432,
+            "IpProtocol": "tcp",
+            "ToPort": 5432
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "blocks:deployment-type",
+            "Value": "production"
+          }
+        ],
+        "VpcId": {
+          "Ref": "estatlydbestawsd013abprodestatlydbVpc124691FC"
+        }
+      }
+    },
+    "estatlydbestawsd013abprodestatlydbClusterSubnets3875F252": {
+      "Type": "AWS::RDS::DBSubnetGroup",
+      "Properties": {
+        "DBSubnetGroupDescription": "Subnets for est-aws-d013ab-prod-estatly-dbCluster database",
+        "SubnetIds": [
+          {
+            "Ref": "estatlydbestawsd013abprodestatlydbVpcisolatedSubnet1Subnet15A3DEC3"
+          },
+          {
+            "Ref": "estatlydbestawsd013abprodestatlydbVpcisolatedSubnet2SubnetAB521A2B"
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "blocks:deployment-type",
+            "Value": "production"
+          }
+        ]
+      },
+      "UpdateReplacePolicy": "Retain",
+      "DeletionPolicy": "Retain"
+    },
+    "estatlydbestawsd013abprodestatlydbClusterSecretB5D9056E": {
+      "Type": "AWS::SecretsManager::Secret",
+      "Properties": {
+        "Description": {
+          "Fn::Join": [
+            "",
+            [
+              "Generated by the CDK for stack: ",
+              {
+                "Ref": "AWS::StackName"
+              }
+            ]
+          ]
+        },
+        "GenerateSecretString": {
+          "ExcludeCharacters": " %+~`#$&*()|[]{}:;<>?!'/@\"\\",
+          "GenerateStringKey": "password",
+          "PasswordLength": 30,
+          "SecretStringTemplate": "{\"username\":\"postgres\"}"
+        },
+        "Tags": [
+          {
+            "Key": "blocks:deployment-type",
+            "Value": "production"
+          }
+        ]
+      },
+      "UpdateReplacePolicy": "Delete",
+      "DeletionPolicy": "Delete"
+    },
+    "estatlydbestawsd013abprodestatlydbClusterSecretAttachment782DC40E": {
+      "Type": "AWS::SecretsManager::SecretTargetAttachment",
+      "Properties": {
+        "SecretId": {
+          "Ref": "estatlydbestawsd013abprodestatlydbClusterSecretB5D9056E"
+        },
+        "TargetId": {
+          "Ref": "estatlydbestawsd013abprodestatlydbClusterABFF3A45"
+        },
+        "TargetType": "AWS::RDS::DBCluster"
+      }
+    },
+    "estatlydbestawsd013abprodestatlydbClusterABFF3A45": {
+      "Type": "AWS::RDS::DBCluster",
+      "Properties": {
+        "CopyTagsToSnapshot": true,
+        "DBClusterParameterGroupName": "default.aurora-postgresql16",
+        "DBSubnetGroupName": {
+          "Ref": "estatlydbestawsd013abprodestatlydbClusterSubnets3875F252"
+        },
+        "DatabaseName": "est_aws_d013ab_prod_estatly_db",
+        "DeletionProtection": true,
+        "EnableHttpEndpoint": true,
+        "Engine": "aurora-postgresql",
+        "EngineVersion": "16.4",
+        "MasterUserPassword": {
+          "Fn::Join": [
+            "",
+            [
+              "{{resolve:secretsmanager:",
+              {
+                "Ref": "estatlydbestawsd013abprodestatlydbClusterSecretB5D9056E"
+              },
+              ":SecretString:password::}}"
+            ]
+          ]
+        },
+        "MasterUsername": {
+          "Fn::Join": [
+            "",
+            [
+              "{{resolve:secretsmanager:",
+              {
+                "Ref": "estatlydbestawsd013abprodestatlydbClusterSecretB5D9056E"
+              },
+              ":SecretString:username::}}"
+            ]
+          ]
+        },
+        "Port": 5432,
+        "ServerlessV2ScalingConfiguration": {
+          "MaxCapacity": 2,
+          "MinCapacity": 0.5
+        },
+        "Tags": [
+          {
+            "Key": "blocks:deployment-type",
+            "Value": "production"
+          }
+        ],
+        "VpcSecurityGroupIds": [
+          {
+            "Fn::GetAtt": [
+              "estatlydbestawsd013abprodestatlydbSgE64F4111",
+              "GroupId"
+            ]
+          }
+        ]
+      },
+      "UpdateReplacePolicy": "Retain",
+      "DeletionPolicy": "Retain"
+    },
+    "estatlydbestawsd013abprodestatlydbClusterestawsd013abprodestatlydbWriter495673A8": {
+      "Type": "AWS::RDS::DBInstance",
+      "Properties": {
+        "DBClusterIdentifier": {
+          "Ref": "estatlydbestawsd013abprodestatlydbClusterABFF3A45"
+        },
+        "DBInstanceClass": "db.serverless",
+        "Engine": "aurora-postgresql",
+        "PromotionTier": 0,
+        "PubliclyAccessible": false,
+        "Tags": [
+          {
+            "Key": "blocks:deployment-type",
+            "Value": "production"
+          }
+        ]
+      },
+      "DependsOn": [
+        "estatlydbestawsd013abprodestatlydbVpcisolatedSubnet1RouteTableAssociation8D90A139",
+        "estatlydbestawsd013abprodestatlydbVpcisolatedSubnet2RouteTableAssociation37E326E5"
+      ],
+      "UpdateReplacePolicy": "Retain",
+      "DeletionPolicy": "Retain"
+    },
+    "estatlydocumentsbucket57D762E1": {
+      "Type": "AWS::S3::Bucket",
+      "Properties": {
+        "BucketEncryption": {
+          "ServerSideEncryptionConfiguration": [
+            {
+              "ServerSideEncryptionByDefault": {
+                "SSEAlgorithm": "AES256"
+              }
+            }
+          ]
+        },
+        "BucketName": "est-aws-d013ab-prod-estatly-documents",
+        "PublicAccessBlockConfiguration": {
+          "BlockPublicAcls": true,
+          "BlockPublicPolicy": true,
+          "IgnorePublicAcls": true,
+          "RestrictPublicBuckets": true
+        },
+        "Tags": [
+          {
+            "Key": "blocks:deployment-type",
+            "Value": "production"
+          }
+        ]
+      },
+      "UpdateReplacePolicy": "Retain",
+      "DeletionPolicy": "Retain"
+    },
+    "BlocksConfigBucket439874BD": {
+      "Type": "AWS::S3::Bucket",
+      "Properties": {
+        "BucketEncryption": {
+          "ServerSideEncryptionConfiguration": [
+            {
+              "ServerSideEncryptionByDefault": {
+                "SSEAlgorithm": "AES256"
+              }
+            }
+          ]
+        },
+        "LifecycleConfiguration": {
+          "Rules": [
+            {
+              "NoncurrentVersionExpiration": {
+                "NoncurrentDays": 1
+              },
+              "Status": "Enabled"
+            }
+          ]
+        },
+        "PublicAccessBlockConfiguration": {
+          "BlockPublicAcls": true,
+          "BlockPublicPolicy": true,
+          "IgnorePublicAcls": true,
+          "RestrictPublicBuckets": true
+        },
+        "Tags": [
+          {
+            "Key": "aws-cdk:auto-delete-objects",
+            "Value": "true"
+          },
+          {
+            "Key": "aws-cdk:cr-owned:56dc4940",
+            "Value": "true"
+          },
+          {
+            "Key": "blocks:deployment-type",
+            "Value": "production"
+          }
+        ]
+      },
+      "UpdateReplacePolicy": "Delete",
+      "DeletionPolicy": "Delete"
+    },
+    "BlocksConfigBucketPolicy3A1A2C90": {
+      "Type": "AWS::S3::BucketPolicy",
+      "Properties": {
+        "Bucket": {
+          "Ref": "BlocksConfigBucket439874BD"
+        },
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "s3:PutBucketPolicy",
+                "s3:GetBucket*",
+                "s3:List*",
+                "s3:DeleteObject*"
+              ],
+              "Effect": "Allow",
+              "Principal": {
+                "AWS": {
+                  "Fn::GetAtt": [
+                    "CustomS3AutoDeleteObjectsCustomResourceProviderRole3B1BD092",
+                    "Arn"
+                  ]
+                }
+              },
+              "Resource": [
+                {
+                  "Fn::GetAtt": [
+                    "BlocksConfigBucket439874BD",
+                    "Arn"
+                  ]
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      {
+                        "Fn::GetAtt": [
+                          "BlocksConfigBucket439874BD",
+                          "Arn"
+                        ]
+                      },
+                      "/*"
+                    ]
+                  ]
+                }
+              ]
+            }
+          ],
+          "Version": "2012-10-17"
+        }
+      }
+    },
+    "BlocksConfigBucketAutoDeleteObjectsCustomResourceFEBF572C": {
+      "Type": "Custom::S3AutoDeleteObjects",
+      "Properties": {
+        "ServiceToken": {
+          "Fn::GetAtt": [
+            "CustomS3AutoDeleteObjectsCustomResourceProviderHandler9D90184F",
+            "Arn"
+          ]
+        },
+        "BucketName": {
+          "Ref": "BlocksConfigBucket439874BD"
+        }
+      },
+      "DependsOn": [
+        "BlocksConfigBucketPolicy3A1A2C90"
+      ],
+      "UpdateReplacePolicy": "Delete",
+      "DeletionPolicy": "Delete"
+    },
+    "CustomS3AutoDeleteObjectsCustomResourceProviderRole3B1BD092": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Action": "sts:AssumeRole",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "lambda.amazonaws.com"
+              }
+            }
+          ]
+        },
+        "ManagedPolicyArns": [
+          {
+            "Fn::Sub": "arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+          }
+        ]
+      }
+    },
+    "CustomS3AutoDeleteObjectsCustomResourceProviderHandler9D90184F": {
+      "Type": "AWS::Lambda::Function",
+      "Properties": {
+        "Code": {
+          "S3Bucket": {
+            "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}"
+          },
+          "S3Key": "faa95a81ae7d7373f3e1f242268f904eb748d8d0fdd306e8a6fe515a1905a7d6.zip"
+        },
+        "Timeout": 900,
+        "MemorySize": 128,
+        "Handler": "index.handler",
+        "Role": {
+          "Fn::GetAtt": [
+            "CustomS3AutoDeleteObjectsCustomResourceProviderRole3B1BD092",
+            "Arn"
+          ]
+        },
+        "Runtime": "nodejs22.x",
+        "Description": {
+          "Fn::Join": [
+            "",
+            [
+              "Lambda function for auto-deleting objects in ",
+              {
+                "Ref": "BlocksConfigBucket439874BD"
+              },
+              " S3 bucket."
+            ]
+          ]
+        }
+      },
+      "DependsOn": [
+        "CustomS3AutoDeleteObjectsCustomResourceProviderRole3B1BD092"
+      ]
+    },
+    "BlocksConfigDeploymentAwsCliLayerD22C54E8": {
+      "Type": "AWS::Lambda::LayerVersion",
+      "Properties": {
+        "Content": {
+          "S3Bucket": {
+            "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}"
+          },
+          "S3Key": "e2659170a0721541efa761a8d5d04d5e36cbbf691c4b15a9053002b7c825055d.zip"
+        },
+        "Description": "/opt/awscli/aws"
+      }
+    },
+    "BlocksConfigDeploymentCustomResource325F5A00": {
+      "Type": "Custom::CDKBucketDeployment",
+      "Properties": {
+        "ServiceToken": {
+          "Fn::GetAtt": [
+            "CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756C81C01536",
+            "Arn"
+          ]
+        },
+        "SourceBucketNames": [
+          {
+            "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}"
+          }
+        ],
+        "SourceObjectKeys": [
+          "c5498ec272bdfba687e78e65e2de3180797214ee036001ec56f0d52535020ae9.zip"
+        ],
+        "SourceMarkers": [
+          {
+            "<<marker:0xbaba:0>>": {
+              "Fn::Join": [
+                "",
+                [
+                  "{\"BB_RESOURCES_GROUP_URL\":\"https://",
+                  {
+                    "Ref": "AWS::Region"
+                  },
+                  ".console.aws.amazon.com/resource-groups/group/est-aws-d013ab-prod-resources?region=",
+                  {
+                    "Ref": "AWS::Region"
+                  },
+                  "\",\"BB_SETTINGS_GROUP_URL\":\"https://",
+                  {
+                    "Ref": "AWS::Region"
+                  },
+                  ".console.aws.amazon.com/resource-groups/group/est-aws-d013ab-prod-settings?region=",
+                  {
+                    "Ref": "AWS::Region"
+                  },
+                  "\",\"BLOCKS_est_aws_d013ab_prod_estatly_db_CLUSTER_ARN\":\"arn:",
+                  {
+                    "Ref": "AWS::Partition"
+                  },
+                  ":rds:",
+                  {
+                    "Ref": "AWS::Region"
+                  },
+                  ":",
+                  {
+                    "Ref": "AWS::AccountId"
+                  },
+                  ":cluster:",
+                  {
+                    "Ref": "estatlydbestawsd013abprodestatlydbClusterABFF3A45"
+                  },
+                  "\",\"BLOCKS_est_aws_d013ab_prod_estatly_db_SECRET_ARN\":\"",
+                  {
+                    "Ref": "estatlydbestawsd013abprodestatlydbClusterSecretAttachment782DC40E"
+                  },
+                  "\",\"BLOCKS_est_aws_d013ab_prod_estatly_db_DATABASE\":\"est_aws_d013ab_prod_estatly_db\"}"
+                ]
+              ]
+            }
+          }
+        ],
+        "SourceMarkersConfig": [
+          {}
+        ],
+        "DestinationBucketName": {
+          "Ref": "BlocksConfigBucket439874BD"
+        },
+        "WaitForDistributionInvalidation": true,
+        "Prune": false,
+        "OutputObjectKeys": true
+      },
+      "UpdateReplacePolicy": "Delete",
+      "DeletionPolicy": "Delete"
+    },
+    "CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756CServiceRole89A01265": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Statement": [
+            {
+              "Action": "sts:AssumeRole",
+              "Effect": "Allow",
+              "Principal": {
+                "Service": "lambda.amazonaws.com"
+              }
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "ManagedPolicyArns": [
+          {
+            "Fn::Join": [
+              "",
+              [
+                "arn:",
+                {
+                  "Ref": "AWS::Partition"
+                },
+                ":iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+              ]
+            ]
+          }
+        ],
+        "Tags": [
+          {
+            "Key": "blocks:deployment-type",
+            "Value": "production"
+          }
+        ]
+      }
+    },
+    "CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756CServiceRoleDefaultPolicy88902FDF": {
+      "Type": "AWS::IAM::Policy",
+      "Properties": {
+        "PolicyDocument": {
+          "Statement": [
+            {
+              "Action": [
+                "s3:GetObject*",
+                "s3:GetBucket*",
+                "s3:List*"
+              ],
+              "Effect": "Allow",
+              "Resource": [
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition"
+                      },
+                      ":s3:::",
+                      {
+                        "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}"
+                      }
+                    ]
+                  ]
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      "arn:",
+                      {
+                        "Ref": "AWS::Partition"
+                      },
+                      ":s3:::",
+                      {
+                        "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}"
+                      },
+                      "/*"
+                    ]
+                  ]
+                }
+              ]
+            },
+            {
+              "Action": [
+                "s3:GetObject*",
+                "s3:GetBucket*",
+                "s3:List*",
+                "s3:DeleteObject*",
+                "s3:PutObject",
+                "s3:PutObjectLegalHold",
+                "s3:PutObjectRetention",
+                "s3:PutObjectTagging",
+                "s3:PutObjectVersionTagging",
+                "s3:Abort*"
+              ],
+              "Effect": "Allow",
+              "Resource": [
+                {
+                  "Fn::GetAtt": [
+                    "BlocksConfigBucket439874BD",
+                    "Arn"
+                  ]
+                },
+                {
+                  "Fn::Join": [
+                    "",
+                    [
+                      {
+                        "Fn::GetAtt": [
+                          "BlocksConfigBucket439874BD",
+                          "Arn"
+                        ]
+                      },
+                      "/*"
+                    ]
+                  ]
+                }
+              ]
+            }
+          ],
+          "Version": "2012-10-17"
+        },
+        "PolicyName": "CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756CServiceRoleDefaultPolicy88902FDF",
+        "Roles": [
+          {
+            "Ref": "CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756CServiceRole89A01265"
+          }
+        ]
+      }
+    },
+    "CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756C81C01536": {
+      "Type": "AWS::Lambda::Function",
+      "Properties": {
+        "Code": {
+          "S3Bucket": {
+            "Fn::Sub": "cdk-hnb659fds-assets-${AWS::AccountId}-${AWS::Region}"
+          },
+          "S3Key": "3423a042b818e31c1e34a19d6689ab2e5f9b70fcbe9e71df66f241b20a200bd9.zip"
+        },
+        "Environment": {
+          "Variables": {
+            "AWS_CA_BUNDLE": "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem"
+          }
+        },
+        "Handler": "index.handler",
+        "Layers": [
+          {
+            "Ref": "BlocksConfigDeploymentAwsCliLayerD22C54E8"
+          }
+        ],
+        "Role": {
+          "Fn::GetAtt": [
+            "CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756CServiceRole89A01265",
+            "Arn"
+          ]
+        },
+        "Runtime": "python3.13",
+        "Tags": [
+          {
+            "Key": "blocks:deployment-type",
+            "Value": "production"
+          }
+        ],
+        "Timeout": 900
+      },
+      "DependsOn": [
+        "CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756CServiceRoleDefaultPolicy88902FDF",
+        "CustomCDKBucketDeployment8693BB64968944B69AAFB0CC9EB8756CServiceRole89A01265"
+      ]
+    }
+  },
+  "Outputs": {
+    "APIEndpoint1793E782": {
+      "Value": {
+        "Fn::Join": [
+          "",
+          [
+            "https://",
+            {
+              "Ref": "API62EA1CFF"
+            },
+            ".execute-api.",
+            {
+              "Ref": "AWS::Region"
+            },
+            ".",
+            {
+              "Ref": "AWS::URLSuffix"
+            },
+            "/",
+            {
+              "Ref": "APIDeploymentStageprod278E75BA"
+            },
+            "/"
+          ]
+        ]
+      }
+    },
+    "estatlydbestawsd013abprodestatlydbClusterArn9511E857": {
+      "Value": {
+        "Fn::Join": [
+          "",
+          [
+            "arn:",
+            {
+              "Ref": "AWS::Partition"
+            },
+            ":rds:",
+            {
+              "Ref": "AWS::Region"
+            },
+            ":",
+            {
+              "Ref": "AWS::AccountId"
+            },
+            ":cluster:",
+            {
+              "Ref": "estatlydbestawsd013abprodestatlydbClusterABFF3A45"
+            }
+          ]
+        ]
+      }
+    },
+    "estatlydbestawsd013abprodestatlydbSecretArn87988BA5": {
+      "Value": {
+        "Ref": "estatlydbestawsd013abprodestatlydbClusterSecretAttachment782DC40E"
+      }
+    },
+    "ApiUrl": {
+      "Value": {
+        "Fn::Join": [
+          "",
+          [
+            "https://",
+            {
+              "Ref": "API62EA1CFF"
+            },
+            ".execute-api.",
+            {
+              "Ref": "AWS::Region"
+            },
+            ".",
+            {
+              "Ref": "AWS::URLSuffix"
+            },
+            "/",
+            {
+              "Ref": "APIDeploymentStageprod278E75BA"
+            },
+            "/aws-blocks/api"
+          ]
+        ]
+      }
+    }
+  },
+  "Parameters": {
+    "BootstrapVersion": {
+      "Type": "AWS::SSM::Parameter::Value<String>",
+      "Default": "/cdk-bootstrap/hnb659fds/version",
+      "Description": "Version of the CDK Bootstrap resources in this environment, automatically retrieved from SSM Parameter Store. [cdk:skip]"
+    }
+  },
+  "Rules": {
+    "CheckBootstrapVersion": {
+      "Assertions": [
+        {
+          "Assert": {
+            "Fn::Not": [
+              {
+                "Fn::Contains": [
+                  [
+                    "1",
+                    "2",
+                    "3",
+                    "4",
+                    "5"
+                  ],
+                  {
+                    "Ref": "BootstrapVersion"
+                  }
+                ]
+              }
+            ]
+          },
+          "AssertDescription": "CDK bootstrap stack version 6 required. Please run 'cdk bootstrap' with a recent version of the CDK CLI."
+        }
+      ]
+    }
+  }
+}

@@ -20,6 +20,8 @@
     "cleanup": "tsx aws-blocks/scripts/cleanup.ts",
     "migrate": "tsx aws-blocks/scripts/migrate.ts",
     "lint:migrations": "tsx aws-blocks/scripts/lint-migrations.ts",
+    "infra-diff": "tsx -C cdk aws-blocks/scripts/infra-diff-gate.ts",
+    "infra-diff:update-baseline": "tsx -C cdk aws-blocks/scripts/infra-diff-gate.ts --update-baseline",
     "deploy": "tsx aws-blocks/scripts/deploy.ts",
     "destroy": "tsx aws-blocks/scripts/destroy.ts",
     "vendorize": "blocks-vendorize",

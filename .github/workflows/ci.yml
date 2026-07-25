@@ -26,3 +26,8 @@ jobs:
       - run: npm ci
 
       - run: npm test
+
+      # Release & Rollback pipeline gate 3 (migration review) — the
+      # mechanically checkable core: destructive DDL needs an explicit
+      # contract-migration annotation or the pipeline blocks here.
+      - run: npm run lint:migrations

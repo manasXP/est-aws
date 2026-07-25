@@ -5,6 +5,7 @@ import { Scope, Database, sql, DatabaseErrors, isBlocksError } from '@aws-blocks
 import { runLocalMigrations, MIGRATIONS_DIR } from '../../aws-blocks/migrations-runner';
 import { postJournalEntry, JournalError } from '../../aws-blocks/finance/journal';
 import { reverseJournalEntry } from '../../aws-blocks/finance/reversal';
+import { getPaymentLedgerEntries, getExpenseLedgerEntries } from '../../aws-blocks/finance/books';
 import { moneyEquals, parseMoney, formatMoney } from '../../aws-blocks/money';
 
 // STR-022 — append-only journal immutability + reversing-entry corrections.
@@ -143,6 +144,52 @@ describe('STR-022 reverseJournalEntry — reversing-entry corrections', () => {
     for (const [, net] of byAccount) {
       expect(moneyEquals(formatMoney(net < 0n ? -net : net), '0.00')).toBe(true);
     }
+  });
+
+  // Regression (code review, STR-023): reversing a counterparty-tagged
+  // posting must carry the same counterparty_type/counterparty_id onto the
+  // mirror line, or the reversal silently vanishes from the Payment/Expense
+  // Ledger even though the underlying journal is balanced.
+  it('reversing a member-tagged posting keeps both lines in the Payment Ledger, netting to zero', async () => {
+    const db = await freshMigratedDb();
+    const memberId = 'member-1';
+    const { entryId } = await postJournalEntry(db, 'member maintenance payment', [
+      { accountId: 'bank', direction: 'debit', amount: '5000.00', counterpartyType: 'member', counterpartyId: memberId },
+      { accountId: 'cash', direction: 'credit', amount: '5000.00' },
+    ]);
+
+    const { entryId: reversalId } = await reverseJournalEntry(db, entryId, 'reversal of member payment');
+
+    const paymentLedger = await getPaymentLedgerEntries(db, memberId);
+    expect(paymentLedger.some(e => e.entry_id === entryId)).toBe(true);
+    expect(paymentLedger.some(e => e.entry_id === reversalId)).toBe(true);
+
+    const net = paymentLedger.reduce(
+      (total, line) => total + (line.direction === 'debit' ? parseMoney(line.amount) : -parseMoney(line.amount)),
+      0n,
+    );
+    expect(moneyEquals(formatMoney(net < 0n ? -net : net), '0.00')).toBe(true);
+  });
+
+  it('reversing a vendor-tagged posting keeps both lines in the Expense Ledger, netting to zero', async () => {
+    const db = await freshMigratedDb();
+    const vendorId = 'vendor-1';
+    const { entryId } = await postJournalEntry(db, 'vendor invoice payment', [
+      { accountId: 'bank', direction: 'credit', amount: '1500.00', counterpartyType: 'vendor', counterpartyId: vendorId },
+      { accountId: 'cash', direction: 'debit', amount: '1500.00' },
+    ]);
+
+    const { entryId: reversalId } = await reverseJournalEntry(db, entryId, 'reversal of vendor payment');
+
+    const expenseLedger = await getExpenseLedgerEntries(db, vendorId);
+    expect(expenseLedger.some(e => e.entry_id === entryId)).toBe(true);
+    expect(expenseLedger.some(e => e.entry_id === reversalId)).toBe(true);
+
+    const net = expenseLedger.reduce(
+      (total, line) => total + (line.direction === 'debit' ? parseMoney(line.amount) : -parseMoney(line.amount)),
+      0n,
+    );
+    expect(moneyEquals(formatMoney(net < 0n ? -net : net), '0.00')).toBe(true);
   });
 
   it('rejects reversing an entry that does not exist', async () => {

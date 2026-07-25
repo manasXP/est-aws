@@ -29,9 +29,9 @@ export interface Member {
  * updateMember below. */
 export interface MemberInput {
   name?: string;
-  email?: string;
-  phone?: string;
-  address?: string;
+  email?: string | null;
+  phone?: string | null;
+  address?: string | null;
 }
 
 /** Domain rejection for a PATCH that tries to write a lifecycle-only field.
@@ -126,9 +126,9 @@ export async function updateMember(db: Database, memberId: string, input: Member
   await db.execute(
     sql`UPDATE members SET
           name = ${input.name ?? existing.name},
-          email = ${input.email ?? existing.email ?? null},
-          phone = ${input.phone ?? existing.phone ?? null},
-          address = ${input.address ?? existing.address ?? null}
+          email = ${'email' in input ? input.email ?? null : existing.email ?? null},
+          phone = ${'phone' in input ? input.phone ?? null : existing.phone ?? null},
+          address = ${'address' in input ? input.address ?? null : existing.address ?? null}
         WHERE id = ${memberId}`,
   );
   return getMember(db, memberId);

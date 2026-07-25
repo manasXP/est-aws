@@ -3,7 +3,7 @@ import { rmSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { Scope, Database, sql } from '@aws-blocks/blocks';
 import { runLocalMigrations, MIGRATIONS_DIR } from '../../aws-blocks/migrations-runner';
-import { createProject, listProjects, ProjectValidationError } from '../../aws-blocks/projects/projects-api';
+import { createProject, listProjects, updateProject, ProjectValidationError } from '../../aws-blocks/projects/projects-api';
 import { createMember } from '../../aws-blocks/members/members-api';
 
 // STR-031 — Project registry business logic, unit cases. Follows the
@@ -61,5 +61,17 @@ describe('STR-031 code review — createProject rejects a missing name', () => {
     const db = await freshMigratedDb();
 
     await expect(createProject(db, { description: 'No name here' })).rejects.toThrow(ProjectValidationError);
+  });
+});
+
+describe('STR-031 code review — updateProject distinguishes omitted from explicit null', () => {
+  it('clears description when the PATCH explicitly sets it to null', async () => {
+    const db = await freshMigratedDb();
+
+    const project = await createProject(db, { name: 'Green Meadows', description: 'Phase 1' });
+
+    const updated = await updateProject(db, project.project_id, { description: null });
+
+    expect(updated!.description).toBeUndefined();
   });
 });

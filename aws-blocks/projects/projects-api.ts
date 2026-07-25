@@ -19,7 +19,7 @@ export interface Project {
 /** The Admin OpenAPI's ProjectInput shape. */
 export interface ProjectInput {
   name?: string;
-  description?: string;
+  description?: string | null;
 }
 
 /** Domain rejection for a create/update carrying an invalid attribute.
@@ -78,7 +78,7 @@ export async function updateProject(db: Database, projectId: string, input: Proj
   await db.execute(
     sql`UPDATE projects SET
           name = ${input.name ?? existing.name},
-          description = ${input.description ?? existing.description ?? null}
+          description = ${'description' in input ? input.description ?? null : existing.description ?? null}
         WHERE id = ${projectId}`,
   );
   return getProject(db, projectId);

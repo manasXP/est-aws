@@ -3,7 +3,7 @@ import { rmSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { Scope, Database } from '@aws-blocks/blocks';
 import { runLocalMigrations, MIGRATIONS_DIR } from '../../aws-blocks/migrations-runner';
-import { createMember, getMember, MemberValidationError } from '../../aws-blocks/members/members-api';
+import { createMember, getMember, MemberValidationError, updateMember } from '../../aws-blocks/members/members-api';
 
 // STR-031 — Member registry business logic, unit cases. Follows the
 // STR-024 test pattern (test/finance/books-api.test.ts): fresh Database +
@@ -55,5 +55,17 @@ describe('STR-031 code review — createMember rejects a missing name', () => {
     const db = await freshMigratedDb();
 
     await expect(createMember(db, { email: 'noname@example.com' })).rejects.toThrow(MemberValidationError);
+  });
+});
+
+describe('STR-031 code review — updateMember distinguishes omitted from explicit null', () => {
+  it('clears email when the PATCH explicitly sets it to null', async () => {
+    const db = await freshMigratedDb();
+
+    const member = await createMember(db, { name: 'Asha Rao', email: 'asha@example.com' });
+
+    const updated = await updateMember(db, member.member_id, { email: null });
+
+    expect(updated!.email).toBeUndefined();
   });
 });

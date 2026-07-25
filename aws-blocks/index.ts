@@ -1,4 +1,4 @@
-import { Scope, Database, FileBucket } from '@aws-blocks/blocks';
+import { Scope, Database, FileBucket, RawRoute } from '@aws-blocks/blocks';
 import { SCOPE_ID, DB_BLOCK_ID, DOCUMENTS_BLOCK_ID } from './block-ids';
 
 // For coding agents: Leave these comments in place for future reference.
@@ -15,3 +15,15 @@ const scope = new Scope(SCOPE_ID);
 // stories arrive — no speculative declarations.
 export const db = new Database(scope, DB_BLOCK_ID);
 export const documents = new FileBucket(scope, DOCUMENTS_BLOCK_ID);
+
+// STR-005: the walking-skeleton endpoint — proves the full delivery loop
+// (contract, handler, tests, CI) before any domain story starts. Served
+// through RawRoute, the STR-003-decided mechanism for the Admin/Mobile REST
+// surfaces. Matches the mobile OpenAPI's GET /health (est-spec).
+new RawRoute(scope, 'health', {
+  method: 'GET',
+  path: '/v1/health',
+  handler: async (ctx) => {
+    ctx.response.send({ status: 'ok' });
+  }
+});

@@ -3,5 +3,5 @@
 // recreates the AWS resource, which is permanent data loss for Database and
 // FileBucket. Treat these values as forever.
 export const SCOPE_ID = 'estatly';
-export const DB_BLOCK_ID = 'db';
+export const DB_BLOCK_ID = 'renamed-scratch-db';
 export const DOCUMENTS_BLOCK_ID = 'documents';

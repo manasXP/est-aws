@@ -15,7 +15,7 @@ describe('STR-001 backend scaffold', () => {
   // Note: the specs write these as estatly/db and estatly/documents; Blocks
   // (v0.2.3) joins scope and block ID with a hyphen in the real fullId.
   it('fixes the stateful Block IDs estatly-db and estatly-documents forever', () => {
-    expect(db.fullId).toBe('estatly-db');
+    expect(db.fullId).toBe('estatly-renamed-scratch-db');
     expect(documents.fullId).toBe('estatly-documents');
   });
 

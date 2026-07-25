@@ -30,9 +30,17 @@ export function registerMemberRoutes(scope: Scope, db: Database): void {
     path: '/v1/members',
     handler: async ctx => {
       const input = await ctx.request.json();
-      const member = await createMember(db, input);
-      ctx.response.status = 201;
-      ctx.response.send(member);
+      try {
+        const member = await createMember(db, input);
+        ctx.response.status = 201;
+        ctx.response.send(member);
+      } catch (e) {
+        if (e instanceof MemberValidationError) {
+          sendValidationError(ctx, e);
+          return;
+        }
+        throw e;
+      }
     },
   });
 

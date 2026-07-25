@@ -5,8 +5,8 @@
 // projects-api.ts for everything else.
 import { RawRoute } from '@aws-blocks/blocks';
 import type { Database, Scope } from '@aws-blocks/blocks';
-import { createProject, getProject, listProjects, updateProject } from './projects-api';
-import { sendNotFound } from '../http/problem-response';
+import { createProject, getProject, listProjects, updateProject, ProjectValidationError } from './projects-api';
+import { sendNotFound, sendValidationError } from '../http/problem-response';
 
 export function registerProjectRoutes(scope: Scope, db: Database): void {
   new RawRoute(scope, 'list-projects', {
@@ -23,9 +23,17 @@ export function registerProjectRoutes(scope: Scope, db: Database): void {
     path: '/v1/projects',
     handler: async ctx => {
       const input = await ctx.request.json();
-      const project = await createProject(db, input);
-      ctx.response.status = 201;
-      ctx.response.send(project);
+      try {
+        const project = await createProject(db, input);
+        ctx.response.status = 201;
+        ctx.response.send(project);
+      } catch (e) {
+        if (e instanceof ProjectValidationError) {
+          sendValidationError(ctx, e);
+          return;
+        }
+        throw e;
+      }
     },
   });
 

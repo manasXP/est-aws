@@ -3,7 +3,7 @@ import { rmSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { Scope, Database } from '@aws-blocks/blocks';
 import { runLocalMigrations, MIGRATIONS_DIR } from '../../aws-blocks/migrations-runner';
-import { createMember, getMember } from '../../aws-blocks/members/members-api';
+import { createMember, getMember, MemberValidationError } from '../../aws-blocks/members/members-api';
 
 // STR-031 — Member registry business logic, unit cases. Follows the
 // STR-024 test pattern (test/finance/books-api.test.ts): fresh Database +
@@ -47,5 +47,13 @@ describe('STR-031 T-U1 — creating a member', () => {
 
     const fetched = await getMember(db, member.member_id);
     expect(fetched).toEqual(member);
+  });
+});
+
+describe('STR-031 code review — createMember rejects a missing name', () => {
+  it('throws MemberValidationError and writes nothing when name is omitted', async () => {
+    const db = await freshMigratedDb();
+
+    await expect(createMember(db, { email: 'noname@example.com' })).rejects.toThrow(MemberValidationError);
   });
 });

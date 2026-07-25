@@ -50,3 +50,13 @@ describe('STR-031 T-C2 — admin project CRUD API contract', () => {
     expect((patchResponse.body as { description: string }).description).toBe('Updated description');
   });
 });
+
+describe('STR-031 code review — POST /v1/projects rejects a missing name', () => {
+  it('returns 422 conforming to the Admin OpenAPI Invalid response', async () => {
+    const response = await dispatchRequest('POST', '/v1/projects', { description: 'No name here' });
+    expect(response.status).toBe(422);
+
+    const op = await contractTest('admin', '/projects', 'post');
+    expect(() => op.expectValidResponse(422, response.body)).not.toThrow();
+  });
+});

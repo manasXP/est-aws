@@ -7,6 +7,7 @@
 import { randomUUID } from 'node:crypto';
 import { sql } from '@aws-blocks/blocks';
 import type { Database } from '@aws-blocks/blocks';
+import { ValidationError } from '../http/problem-response';
 
 /** The Admin OpenAPI's Project shape (components/schemas/Project). */
 export interface Project {
@@ -19,6 +20,15 @@ export interface Project {
 export interface ProjectInput {
   name?: string;
   description?: string;
+}
+
+/** Domain rejection for a create/update carrying an invalid attribute.
+ * Nothing is written when this is thrown. */
+export class ProjectValidationError extends ValidationError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ProjectValidationError';
+  }
 }
 
 interface ProjectRow {
@@ -35,6 +45,10 @@ function toProject(row: ProjectRow): Project {
 
 /** `POST /projects` -- a project is created under the (single) society. */
 export async function createProject(db: Database, input: ProjectInput): Promise<Project> {
+  if (typeof input.name !== 'string' || input.name.trim() === '') {
+    throw new ProjectValidationError('name is required.');
+  }
+
   const id = randomUUID();
   await db.execute(
     sql`INSERT INTO projects (id, name, description) VALUES (${id}, ${input.name ?? null}, ${input.description ?? null})`,

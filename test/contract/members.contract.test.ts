@@ -80,6 +80,16 @@ describe('STR-031 T-C1 — admin member CRUD API contract', () => {
   });
 });
 
+describe('STR-031 code review — POST /v1/members rejects a missing name', () => {
+  it('returns 422 conforming to the Admin OpenAPI Invalid response', async () => {
+    const response = await dispatchRequest('POST', '/v1/members', { email: 'noname@example.com' });
+    expect(response.status).toBe(422);
+
+    const op = await contractTest('admin', '/members', 'post');
+    expect(() => op.expectValidResponse(422, response.body)).not.toThrow();
+  });
+});
+
 describe('STR-031 T-C3 — member_status is lifecycle-only; PATCH rejects it', () => {
   it('rejects a PATCH containing member_status regardless of the value carried', async () => {
     const id = randomUUID();

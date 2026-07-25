@@ -77,6 +77,10 @@ function toMember(row: MemberRow): Member {
  * transition function (STR-032) writes those.
  */
 export async function createMember(db: Database, input: MemberInput): Promise<Member> {
+  if (typeof input.name !== 'string' || input.name.trim() === '') {
+    throw new MemberValidationError('name is required.');
+  }
+
   const id = randomUUID();
   await db.execute(
     sql`INSERT INTO members (id, name, email, phone, address)

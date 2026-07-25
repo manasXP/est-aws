@@ -3,7 +3,7 @@ import { rmSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { Scope, Database, sql } from '@aws-blocks/blocks';
 import { runLocalMigrations, MIGRATIONS_DIR } from '../../aws-blocks/migrations-runner';
-import { createProject, listProjects } from '../../aws-blocks/projects/projects-api';
+import { createProject, listProjects, ProjectValidationError } from '../../aws-blocks/projects/projects-api';
 import { createMember } from '../../aws-blocks/members/members-api';
 
 // STR-031 — Project registry business logic, unit cases. Follows the
@@ -53,5 +53,13 @@ describe('STR-031 T-U2 — creating a project under the society', () => {
     expect(projectRow).not.toBeNull();
     expect(Object.keys(memberRow!)).not.toContain('society_id');
     expect(Object.keys(projectRow!)).not.toContain('society_id');
+  });
+});
+
+describe('STR-031 code review — createProject rejects a missing name', () => {
+  it('throws ProjectValidationError and writes nothing when name is omitted', async () => {
+    const db = await freshMigratedDb();
+
+    await expect(createProject(db, { description: 'No name here' })).rejects.toThrow(ProjectValidationError);
   });
 });

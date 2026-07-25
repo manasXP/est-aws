@@ -10,10 +10,22 @@ import { moneyEquals, parseMoney, sumMoney } from '../money';
 
 export type PostingDirection = 'debit' | 'credit';
 
+/** STR-023: which book projection (Payment/Expense Ledger) a line belongs to. */
+export type CounterpartyType = 'member' | 'vendor' | 'payee';
+
 export interface PostingLine {
   accountId: string;
   direction: PostingDirection;
   amount: string;
+  /**
+   * STR-023: optional classification tag for the Payment/Expense Ledger
+   * book projections (aws-blocks/finance/books.ts) — 'member' for Payment
+   * Ledger, 'vendor'/'payee' for Expense Ledger. Not a foreign key: no
+   * member/vendor/employee registry exists yet, so this is opaque metadata.
+   * Backward compatible — omitted entirely by callers with no counterparty.
+   */
+  counterpartyType?: CounterpartyType;
+  counterpartyId?: string;
 }
 
 export interface PostJournalEntryResult {
@@ -78,8 +90,8 @@ export async function postJournalEntry(
     );
     for (const line of lines) {
       await tx.execute(
-        sql`INSERT INTO journal_lines (id, entry_id, account_id, direction, amount)
-            VALUES (${randomUUID()}, ${entryId}, ${line.accountId}, ${line.direction}, ${line.amount})`,
+        sql`INSERT INTO journal_lines (id, entry_id, account_id, direction, amount, counterparty_type, counterparty_id)
+            VALUES (${randomUUID()}, ${entryId}, ${line.accountId}, ${line.direction}, ${line.amount}, ${line.counterpartyType ?? null}, ${line.counterpartyId ?? null})`,
       );
     }
   });

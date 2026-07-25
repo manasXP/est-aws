@@ -5,38 +5,14 @@ import { Scope, Database, sql } from '@aws-blocks/blocks';
 import { runLocalMigrations, MIGRATIONS_DIR } from '../../aws-blocks/migrations-runner';
 import { postJournalEntry, JournalError, type PostingLine } from '../../aws-blocks/finance/journal';
 import { formatMoney, moneyEquals, parseMoney } from '../../aws-blocks/money';
+import { mulberry32, splitPaise } from './prng';
 
 // STR-021 — T-P1 (BE-P, covers TC-FIN-001): for any generated set of
 // postings, each written posting has debits = credits and the journal as a
 // whole always balances. No property-testing library is installed (no
 // fast-check in package.json); this hand-rolls a small deterministic seeded
-// generator (mulberry32) so failures are reproducible.
-
-// Deterministic seeded PRNG — mulberry32. Never used to generate money
-// values via `number` arithmetic; only to pick integer paise amounts and
-// structural choices (line counts, which side to perturb).
-function mulberry32(seed: number): () => number {
-  let a = seed;
-  return function random() {
-    a |= 0;
-    a = (a + 0x6d2b79f5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
-/** Split `total` paise into `parts` positive bigint pieces summing exactly to `total`. */
-function splitPaise(total: bigint, parts: number, rand: () => number): bigint[] {
-  const amounts: bigint[] = new Array(parts).fill(1n);
-  let remaining = total - BigInt(parts);
-  while (remaining > 0n) {
-    const idx = Math.floor(rand() * parts);
-    amounts[idx] += 1n;
-    remaining -= 1n;
-  }
-  return amounts;
-}
+// generator (mulberry32, shared with books.property.test.ts via ./prng) so
+// failures are reproducible.
 
 interface GeneratedPosting {
   balanced: boolean;

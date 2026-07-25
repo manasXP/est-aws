@@ -9,7 +9,7 @@
 // only ever INSERTs, never UPDATEs.
 import { DatabaseErrors, isBlocksError, sql } from '@aws-blocks/blocks';
 import type { Database } from '@aws-blocks/blocks';
-import { JournalError, postJournalEntry, type PostingDirection, type PostingLine } from './journal';
+import { JournalError, postJournalEntry, type CounterpartyType, type PostingDirection, type PostingLine } from './journal';
 
 export interface ReverseJournalEntryResult {
   entryId: string;
@@ -32,8 +32,14 @@ export async function reverseJournalEntry(
   entryId: string,
   description: string,
 ): Promise<ReverseJournalEntryResult> {
-  const originalLines = await db.query<{ account_id: string; direction: PostingDirection; amount: string }>(
-    sql`SELECT account_id, direction, amount FROM journal_lines WHERE entry_id = ${entryId}`,
+  const originalLines = await db.query<{
+    account_id: string;
+    direction: PostingDirection;
+    amount: string;
+    counterparty_type: CounterpartyType | null;
+    counterparty_id: string | null;
+  }>(
+    sql`SELECT account_id, direction, amount, counterparty_type, counterparty_id FROM journal_lines WHERE entry_id = ${entryId}`,
   );
   if (originalLines.length === 0) {
     const original = await db.queryOne(sql`SELECT id FROM journal_entries WHERE id = ${entryId}`);
@@ -53,6 +59,8 @@ export async function reverseJournalEntry(
     accountId: line.account_id,
     direction: OPPOSITE_DIRECTION[line.direction],
     amount: line.amount,
+    counterpartyType: line.counterparty_type ?? undefined,
+    counterpartyId: line.counterparty_id ?? undefined,
   }));
 
   try {

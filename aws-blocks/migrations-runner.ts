@@ -14,8 +14,10 @@ export interface RunLocalMigrationsResult {
 // Every file loadMigrationsFromDir will actually load and run (data-common's
 // own filter: any `.sql` file). The stricter VERSION_PREFIX check below must
 // scan this exact same set, or a malformed filename could slip past the
-// collision guard and still get executed.
-const SQL_FILE = /\.sql$/;
+// collision guard and still get executed. Exported so migrations-lint.ts
+// (STR-012) scans the identical file set rather than a second, driftable
+// definition of "what counts as a migration file".
+export const SQL_FILE = /\.sql$/;
 const VERSION_PREFIX = /^(\d{3})_.+\.sql$/;
 
 /**

@@ -7,15 +7,36 @@
 // assets-api.ts for everything else.
 import { RawRoute } from '@aws-blocks/blocks';
 import type { Database, Scope } from '@aws-blocks/blocks';
-import { createAsset, listAssets, updateAsset, AssetValidationError } from './assets-api';
+import { createAsset, listAssets, updateAsset, AssetValidationError, type AssetType, type AssetStatus } from './assets-api';
+import { ASSET_TYPES, WRITABLE_STATUSES } from './asset-types';
 import { sendNotFound, sendValidationError } from '../http/problem-response';
+
+function isAssetType(value: string): value is AssetType {
+  return (ASSET_TYPES as readonly string[]).includes(value);
+}
+
+// The registry also holds `allotted` assets (set only by STR-053's ownership
+// assignment, not by this story) -- `status` is filterable to any of the
+// three, not just the two this story's writes can produce.
+const LISTABLE_STATUSES: readonly AssetStatus[] = [...WRITABLE_STATUSES, 'allotted'];
+
+function isAssetStatus(value: string): value is AssetStatus {
+  return (LISTABLE_STATUSES as readonly string[]).includes(value);
+}
 
 export function registerAssetRoutes(scope: Scope, db: Database): void {
   new RawRoute(scope, 'list-assets', {
     method: 'GET',
     path: '/v1/assets',
     handler: async ctx => {
-      const items = await listAssets(db);
+      const projectId = ctx.request.url.searchParams.get('project_id') ?? undefined;
+      const type = ctx.request.url.searchParams.get('type') ?? undefined;
+      const status = ctx.request.url.searchParams.get('status') ?? 'all';
+      const items = await listAssets(db, {
+        projectId,
+        type: type !== undefined && isAssetType(type) ? type : undefined,
+        status: status !== 'all' && isAssetStatus(status) ? status : undefined,
+      });
       ctx.response.send({ items, next_cursor: null });
     },
   });

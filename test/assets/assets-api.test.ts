@@ -78,6 +78,43 @@ describe('STR-051 T-U3 — dividend vs. physical asset attributes', () => {
     expect(asset.label).toBe('A-204');
     expect(asset.attributes).toEqual({ area_sqft: 950, floor: 2 });
   });
+
+  // code-reviewer finding: an explicit empty-string label bypassed the
+  // truthy check on both create and update.
+  it('treats an explicit empty-string label as no label, on both create and update', async () => {
+    const db = await freshMigratedDb();
+    const project = await createProject(db, { name: 'Green Meadows' });
+
+    const created = await createAsset(db, { project_id: project.project_id, type: 'dividend', label: '' });
+    expect(created.label).toBeUndefined();
+
+    const updated = await updateAsset(db, created.asset_id, { label: '' });
+    expect(updated!.label).toBeUndefined();
+  });
+});
+
+describe('STR-051 code review — GET /v1/assets filters by project_id, type, and status', () => {
+  it('narrows the list to matching assets only', async () => {
+    const db = await freshMigratedDb();
+    const projectA = await createProject(db, { name: 'Project A' });
+    const projectB = await createProject(db, { name: 'Project B' });
+
+    const flatInA = await createAsset(db, { project_id: projectA.project_id, type: 'flat', label: 'A-1' });
+    const villaInA = await createAsset(db, { project_id: projectA.project_id, type: 'villa', label: 'A-2' });
+    await createAsset(db, { project_id: projectB.project_id, type: 'flat', label: 'B-1' });
+
+    const byProject = await listAssets(db, { projectId: projectA.project_id });
+    expect(byProject.map(a => a.asset_id).sort()).toEqual([flatInA.asset_id, villaInA.asset_id].sort());
+
+    const byType = await listAssets(db, { type: 'flat' });
+    expect(byType).toHaveLength(2);
+
+    const byStatus = await listAssets(db, { status: 'society_retained' });
+    expect(byStatus).toHaveLength(0);
+
+    const byProjectAndType = await listAssets(db, { projectId: projectA.project_id, type: 'flat' });
+    expect(byProjectAndType).toEqual([flatInA]);
+  });
 });
 
 // Genuine Red gap: the story's Green step names "edit" (PATCH) as part of

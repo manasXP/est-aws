@@ -60,6 +60,13 @@ function toIso(value: string | Date): string {
   return value instanceof Date ? value.toISOString() : value;
 }
 
+/** A caller-supplied label counts as "carrying a label" only if it's a
+ * non-blank string -- an explicit `''` is treated the same as omitting it,
+ * so a dividend asset can never end up with a stored label either way. */
+function hasLabel(label: string | null | undefined): boolean {
+  return typeof label === 'string' && label.trim() !== '';
+}
+
 function toAsset(row: AssetRow): Asset {
   const asset: Asset = {
     asset_id: row.id,
@@ -88,7 +95,7 @@ export async function createAsset(db: Database, input: AssetInput): Promise<Asse
   if (typeof input.type !== 'string' || !ASSET_TYPES.includes(input.type as AssetType)) {
     throw new AssetValidationError(`type must be one of ${ASSET_TYPES.join(', ')}.`);
   }
-  if (input.type === 'dividend' && input.label) {
+  if (input.type === 'dividend' && hasLabel(input.label)) {
     throw new AssetValidationError('dividend assets cannot carry a label.');
   }
   const status = input.status ?? 'available';
@@ -100,10 +107,11 @@ export async function createAsset(db: Database, input: AssetInput): Promise<Asse
     throw new AssetValidationError(`No project ${input.project_id}.`);
   }
 
+  const storedLabel = input.type === 'dividend' ? null : input.label ?? null;
   const id = randomUUID();
   await db.execute(
     sql`INSERT INTO assets (id, project_id, type, label, attributes, status)
-        VALUES (${id}, ${input.project_id}, ${input.type}, ${input.label ?? null}, ${input.attributes ? JSON.stringify(input.attributes) : null}, ${status})`,
+        VALUES (${id}, ${input.project_id}, ${input.type}, ${storedLabel}, ${input.attributes ? JSON.stringify(input.attributes) : null}, ${status})`,
   );
   const asset = await getAsset(db, id);
   return asset!;
@@ -120,10 +128,24 @@ export async function getAsset(db: Database, assetId: string): Promise<Asset | n
   return row ? toAsset(row) : null;
 }
 
-/** `GET /assets` -- every asset. */
-export async function listAssets(db: Database): Promise<Asset[]> {
+export interface ListAssetsOptions {
+  projectId?: string;
+  type?: AssetType;
+  status?: AssetStatus;
+}
+
+/** `GET /assets` -- every asset, optionally filtered by `project_id`,
+ * `type`, and/or `status` (Admin OpenAPI query params). Filters in
+ * application code rather than a dynamically-composed WHERE clause -- the
+ * `sql` tag only parameterizes values inside one literal template, it
+ * doesn't support building up a query from conditional fragments. */
+export async function listAssets(db: Database, options: ListAssetsOptions = {}): Promise<Asset[]> {
   const rows = await db.query<AssetRow>(sql`SELECT * FROM assets ORDER BY id`);
-  return rows.map(toAsset);
+  return rows
+    .map(toAsset)
+    .filter(a => options.projectId === undefined || a.project_id === options.projectId)
+    .filter(a => options.type === undefined || a.type === options.type)
+    .filter(a => options.status === undefined || a.status === options.status);
 }
 
 /**
@@ -147,11 +169,11 @@ export async function updateAsset(db: Database, assetId: string, input: AssetInp
   if (input.status !== undefined && !WRITABLE_STATUSES.includes(input.status as AssetStatus)) {
     throw new AssetValidationError(`status must be one of ${WRITABLE_STATUSES.join(', ')}.`);
   }
-  if (existing.type === 'dividend' && 'label' in input && input.label) {
+  if (existing.type === 'dividend' && 'label' in input && hasLabel(input.label)) {
     throw new AssetValidationError('dividend assets cannot carry a label.');
   }
 
-  const nextLabel = 'label' in input ? input.label ?? null : existing.label ?? null;
+  const nextLabel = existing.type === 'dividend' ? null : 'label' in input ? input.label ?? null : existing.label ?? null;
   const nextAttributes = 'attributes' in input ? input.attributes ?? null : existing.attributes ?? null;
   const nextStatus = input.status ?? existing.status;
 

@@ -20,7 +20,7 @@ import {
 // consuming story arrives (STR-001).
 const scope = new Scope('str004spike');
 
-export const db = new Database(scope, 'db');
+export const db = new Database(scope, 'db', { removalPolicy: 'destroy' });
 export const docs = new FileBucket(scope, 'docs');
 export const auth = new AuthCognito(scope, 'auth');
 export const heartbeat = new CronJob(scope, 'heartbeat', {

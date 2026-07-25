@@ -1,0 +1,116 @@
+import { describe, it, expect, afterEach } from 'vitest';
+import { rmSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { Scope, Database, sql } from '@aws-blocks/blocks';
+import { runLocalMigrations, MIGRATIONS_DIR } from '../../aws-blocks/migrations-runner';
+import { postJournalEntry, JournalError } from '../../aws-blocks/finance/journal';
+
+// STR-021 — append-only double-entry journal, unit cases. Follows the
+// STR-011 migration-runner test pattern: fresh Database + Scope per test,
+// baseline + finance migrations applied via MIGRATIONS_DIR (the real
+// migrations directory, not a fixture dir).
+
+const cleanupDbs: Database[] = [];
+
+async function freshMigratedDb(): Promise<Database> {
+  const db = new Database(new Scope(`str-021-test-${randomUUID()}`), 'db');
+  cleanupDbs.push(db);
+  await runLocalMigrations(db, MIGRATIONS_DIR);
+  return db;
+}
+
+afterEach(async () => {
+  while (cleanupDbs.length) {
+    const db = cleanupDbs.pop()!;
+    await (await db.getEngine()).destroy();
+    rmSync(`.bb-data/${db.fullId}`, { recursive: true, force: true });
+  }
+});
+
+describe('STR-021 posting writer — append-only double-entry journal', () => {
+  // T-U1 (covers TC-FIN-002): Given an unbalanced posting (debits != credits);
+  // When submitted; Then it is rejected and nothing is written.
+  it('rejects an unbalanced posting and writes nothing', async () => {
+    const db = await freshMigratedDb();
+
+    await expect(
+      postJournalEntry(db, 'unbalanced test posting', [
+        { accountId: 'cash', direction: 'debit', amount: '100.00' },
+        { accountId: 'bank', direction: 'credit', amount: '99.99' },
+      ]),
+    ).rejects.toThrow(JournalError);
+
+    const entries = await db.query(sql`SELECT * FROM journal_entries`);
+    const lines = await db.query(sql`SELECT * FROM journal_lines`);
+    expect(entries).toHaveLength(0);
+    expect(lines).toHaveLength(0);
+  });
+
+  // T-U2 (covers TC-FIN-009): amounts posted as decimal strings read back
+  // exactly, as strings — including amounts that would visibly round-trip
+  // wrong under float arithmetic ("0.10" + "0.20").
+  it('round-trips decimal-string amounts exactly, never as JS numbers', async () => {
+    const db = await freshMigratedDb();
+
+    const { entryId } = await postJournalEntry(db, 'exactness test posting', [
+      { accountId: 'cash', direction: 'debit', amount: '0.10' },
+      { accountId: 'cash', direction: 'debit', amount: '0.20' },
+      { accountId: 'bank', direction: 'credit', amount: '0.30' },
+    ]);
+
+    const rows = await db.query<{ amount: string; direction: string }>(
+      sql`SELECT amount, direction FROM journal_lines WHERE entry_id = ${entryId} ORDER BY amount`,
+    );
+    const amounts = rows.map(r => r.amount);
+    for (const amount of amounts) expect(typeof amount).toBe('string');
+    expect(amounts).toEqual(['0.10', '0.20', '0.30']);
+
+    const { entryId: entryId2 } = await postJournalEntry(db, 'round trip 1250.00', [
+      { accountId: 'cash', direction: 'debit', amount: '1250.00' },
+      { accountId: 'bank', direction: 'credit', amount: '1250.00' },
+    ]);
+    const row2 = await db.queryOne<{ amount: string }>(
+      sql`SELECT amount FROM journal_lines WHERE entry_id = ${entryId2} AND direction = 'debit'`,
+    );
+    expect(typeof row2!.amount).toBe('string');
+    expect(row2!.amount).toBe('1250.00');
+  });
+
+  // T-U3: a posting referencing a non-existent ledger account is rejected;
+  // bank and cash accounts exist as ledger accounts after migration.
+  it('rejects a posting referencing an unknown ledger account, and seeds cash/bank accounts', async () => {
+    const db = await freshMigratedDb();
+
+    const accounts = await db.query<{ id: string; kind: string }>(
+      sql`SELECT id, kind FROM ledger_accounts ORDER BY id`,
+    );
+    expect(accounts).toEqual([
+      { id: 'bank', kind: 'bank' },
+      { id: 'cash', kind: 'cash' },
+    ]);
+
+    await expect(
+      postJournalEntry(db, 'unknown account posting', [
+        { accountId: 'cash', direction: 'debit', amount: '10.00' },
+        { accountId: 'does-not-exist', direction: 'credit', amount: '10.00' },
+      ]),
+    ).rejects.toThrow(JournalError);
+
+    const entries = await db.query(sql`SELECT * FROM journal_entries`);
+    expect(entries).toHaveLength(0);
+  });
+
+  // T-U4: the finance migrations (000_baseline.sql + 001_finance_journal.sql)
+  // apply idempotently on a clean database via runLocalMigrations — first run
+  // applies both, second run is a no-op (mirrors STR-011's T-U2 pattern).
+  it('applies the finance migrations idempotently', async () => {
+    const db = new Database(new Scope(`str-021-test-${randomUUID()}`), 'db');
+    cleanupDbs.push(db);
+
+    const first = await runLocalMigrations(db, MIGRATIONS_DIR);
+    expect(first.applied).toEqual(['000_baseline.sql', '001_finance_journal.sql']);
+
+    const second = await runLocalMigrations(db, MIGRATIONS_DIR);
+    expect(second.applied).toEqual([]);
+  });
+});

@@ -18,6 +18,7 @@
     "sandbox:destroy": "tsx -C cdk aws-blocks/scripts/sandbox-destroy.ts",
     "sandbox:console": "tsx aws-blocks/scripts/console.ts",
     "cleanup": "tsx aws-blocks/scripts/cleanup.ts",
+    "migrate": "tsx aws-blocks/scripts/migrate.ts",
     "deploy": "tsx aws-blocks/scripts/deploy.ts",
     "destroy": "tsx aws-blocks/scripts/destroy.ts",
     "vendorize": "blocks-vendorize",
@@ -25,7 +26,8 @@
     "test": "npm run typecheck && vitest run"
   },
   "dependencies": {
-    "@aws-blocks/blocks": "*"
+    "@aws-blocks/blocks": "*",
+    "@aws-blocks/data-common": "^0.1.2"
   },
   "devDependencies": {
     "@apidevtools/swagger-parser": "^12.1.0",

@@ -28,6 +28,8 @@ npm run sandbox:console   # open the sandbox stack's AWS console
 npm run deploy            # full production deploy
 npm run destroy           # tear down the production stack
 npm run cleanup           # aws-blocks/scripts/cleanup.ts
+npm run migrate           # apply pending SQL migrations from migrations/ to the local database — run this
+                          # after adding or pulling a new migration file; no AWS account needed
 ```
 
 Run a single test file: `npx vitest run test/scaffold.test.ts`.

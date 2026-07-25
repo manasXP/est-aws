@@ -51,3 +51,4 @@ For anything about *which* Building Block to use or its API, read `node_modules/
 - Use Building Blocks for all persistence and cloud abstractions — never local files, in-memory arrays, or ad hoc databases outside the Blocks system.
 - Every `ApiNamespace` method is public with no auth by default — gate with `auth.requireAuth`/`requireRole` explicitly; the local mock does not enforce this either.
 - Follow the TDD flow from `est-tcc`: a case there becomes the failing test that opens the cycle for any new backend behavior.
+- Never commit or push directly to `main`; work on a branch and open a PR. See [`BRANCHING.md`](./BRANCHING.md) for branch naming (`story/STR-NNN`, `fix/`, `chore/`, `spike/`) and merge conventions.

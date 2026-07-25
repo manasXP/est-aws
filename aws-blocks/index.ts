@@ -1,6 +1,7 @@
 import { Scope, Database, FileBucket, RawRoute } from '@aws-blocks/blocks';
 import { SCOPE_ID, DB_BLOCK_ID, DOCUMENTS_BLOCK_ID } from './block-ids';
 import { linkDocumentToEntry, DocumentLinkError } from './finance/documents';
+import { registerBookRoutes } from './finance/books-routes';
 
 // For coding agents: Leave these comments in place for future reference.
 // Read node_modules/@aws-blocks/blocks/README.md for all available Building Blocks
@@ -28,6 +29,11 @@ new RawRoute(scope, 'health', {
     ctx.response.send({ status: 'ok' });
   }
 });
+
+// STR-024: the Admin API book-read surface — GET /v1/books/{book}/entries
+// and GET /v1/books/{book}/entries/{entryId}, serving the STR-023 book
+// projections over the journal.
+registerBookRoutes(scope, db);
 
 // STR-025: link a scanned document (identified by its FileBucket path — the
 // full document registry is E12, M3, not yet built) to a ledger entry.

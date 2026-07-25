@@ -19,7 +19,10 @@ export interface DispatchResult {
 }
 
 export async function dispatchRequest(method: string, path: string, body: unknown = {}): Promise<DispatchResult> {
-  const matched = matchRoute(method, path);
+  // matchRoute's compiled patterns are anchored to the path only (no query
+  // string handling) — strip it before matching, but keep it in the URL
+  // passed to the handler below so req.url.searchParams works.
+  const matched = matchRoute(method, path.split('?')[0]);
   if (!matched) {
     return { status: 404, body: undefined };
   }

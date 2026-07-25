@@ -35,6 +35,12 @@ export interface PostJournalEntryResult {
 export interface PostJournalEntryOptions {
   /** STR-022: links this posting back to the entry it reverses, if any. */
   reversesEntryId?: string;
+  /**
+   * STR-024: overrides the column default of `now()`. Only needed by tests
+   * asserting FY-period filtering at specific dates (aws-blocks/finance/
+   * books-api.ts) — production callers omit it and get the posting instant.
+   */
+  postedAt?: string;
 }
 
 /** Domain rejection for an invalid posting — nothing is written when this is thrown. */
@@ -85,8 +91,11 @@ export async function postJournalEntry(
   const entryId = randomUUID();
   await db.transaction(async tx => {
     await tx.execute(
-      sql`INSERT INTO journal_entries (id, description, reverses_entry_id)
-          VALUES (${entryId}, ${description}, ${options.reversesEntryId ?? null})`,
+      options.postedAt
+        ? sql`INSERT INTO journal_entries (id, description, reverses_entry_id, posted_at)
+              VALUES (${entryId}, ${description}, ${options.reversesEntryId ?? null}, ${options.postedAt})`
+        : sql`INSERT INTO journal_entries (id, description, reverses_entry_id)
+              VALUES (${entryId}, ${description}, ${options.reversesEntryId ?? null})`,
     );
     for (const line of lines) {
       await tx.execute(

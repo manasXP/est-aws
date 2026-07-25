@@ -1,0 +1,9 @@
+-- STR-011 baseline. Establishes migration version 000 as taken; no domain
+-- tables (those arrive with their M1 stories). The tracking table itself
+-- (`_migrations`) is created automatically by Blocks' migration engine on
+-- first run -- this file does not need to, and must not, create it.
+--
+-- Naming convention for every file in this directory: `NNN_description.sql`,
+-- zero-padded 3-digit version prefix, applied in ascending order. Two files
+-- must never share a version number -- the runner (aws-blocks/migrations-runner.ts)
+-- refuses to run if they do.

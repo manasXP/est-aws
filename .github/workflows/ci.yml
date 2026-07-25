@@ -39,3 +39,58 @@ jobs:
       # mechanically checkable core: destructive DDL needs an explicit
       # contract-migration annotation or the pipeline blocks here.
       - run: npm run lint:migrations
+
+  # Refactor (STR-014): end-to-end duration baseline recorded from a real run
+  # against this exact pipeline (test job + this job, cold stack) — full
+  # CFN create ~4 min, an idempotent redeploy (no infra changes) is single-
+  # digit seconds, migrate + smoke together well under a minute. The release
+  # cadence should expect low-single-digit minutes total for M0's shape;
+  # revisit once M1/M2's own smokes (see vitest.smoke.config.ts) add weight.
+  deploy:
+    needs: test
+    # Only on a real push to main — never on a PR branch. `needs: test`
+    # (a job-level dependency, not just step order within one job) means any
+    # gate-1/2/3 failure skips this job entirely; GitHub Actions does this by
+    # default, no explicit `if` needed for that half.
+    if: github.event_name == 'push'
+    # Fixed sandbox-id means every run deploys the SAME persistent stack
+    # (aws-blocks/scripts/ci-sandbox-deploy.ts) — two pushes to main close
+    # together would otherwise race two concurrent `cdk deploy`s against it;
+    # CloudFormation rejects the second (stack already UPDATE_IN_PROGRESS),
+    # a false-negative CI failure on an otherwise-good commit. Queue instead
+    # of canceling: a deploy left half-applied is worse than a wait.
+    concurrency:
+      group: sandbox-deploy
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - run: git submodule update --init est-spec
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - run: npm ci
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      # Gate 4a: deploy — same IFC code/mechanism (startSandbox) any
+      # developer's `npm run sandbox` uses; only the sandbox-id is fixed so
+      # every run redeploys the one persistent estatly-sandbox-equivalent
+      # stack instead of a fresh one each time.
+      - run: npm run sandbox:ci-deploy
+
+      # Gate 4b: deploy-time migration invocation (runbook §2 item 4) — IAM
+      # Invoke on the deployed Handler Lambda, never through API Gateway.
+      - run: npm run migrate:deploy
+
+      # Gate 4c: smoke — T-E1 (walking-skeleton endpoint) and T-I1 (deployed
+      # migration state matches the repo exactly) against the real stack
+      # just deployed.
+      - run: npm run smoke

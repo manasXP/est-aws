@@ -88,6 +88,10 @@ interface MemberRow {
   // public Member shape (the OpenAPI schema doesn't expose it), recorded
   // for audit only.
   status_actor: string | null;
+  // When the last actor-scoped transition (suspend/reinstate) happened
+  // (STR-032 code review) -- same audit-only scoping as status_actor, not
+  // part of the public Member shape.
+  status_changed_at: string | Date | null;
 }
 
 function toMember(row: MemberRow): Member {
@@ -209,20 +213,37 @@ async function transitionMemberStatus(
   const existing = await db.queryOne<MemberRow>(sql`SELECT * FROM members WHERE id = ${memberId}`);
   if (!existing) return null;
 
-  if (existing.member_status !== from || !canTransitionMemberStatus(from, to)) {
-    throw new MemberLifecycleConflictError(
+  const conflictError = () =>
+    new MemberLifecycleConflictError(
       `Member ${memberId} is ${existing.member_status}; cannot transition to ${to} (expected ${from}).`,
     );
+
+  if (existing.member_status !== from || !canTransitionMemberStatus(from, to)) {
+    throw conflictError();
   }
 
   const statusActor = opts.actor ?? existing.status_actor ?? null;
+  // Timestamp of the last actor-scoped transition (STR-032 code review) --
+  // same scoping as statusActor: only suspend/reinstate (opts.actor set)
+  // touch it, admission leaves it as-is.
+  const statusChangedAt = opts.actor ? new Date() : existing.status_changed_at;
 
-  if (opts.setJoiningDate) {
-    await db.execute(
-      sql`UPDATE members SET member_status = ${to}, status_actor = ${statusActor}, joining_date = (now() AT TIME ZONE 'Asia/Kolkata')::date WHERE id = ${memberId}`,
-    );
-  } else {
-    await db.execute(sql`UPDATE members SET member_status = ${to}, status_actor = ${statusActor} WHERE id = ${memberId}`);
+  // The AND member_status = ${from} guard (and the rowCount check below) is
+  // a DB-level backstop for the SELECT-then-UPDATE race above: two
+  // concurrent calls can both pass the app-level check before either
+  // commits its UPDATE, so the WHERE clause itself must re-verify `from`.
+  // Only the first to commit affects a row; the second's UPDATE matches
+  // nothing and rowCount is 0.
+  const { rowCount } = opts.setJoiningDate
+    ? await db.execute(
+        sql`UPDATE members SET member_status = ${to}, status_actor = ${statusActor}, status_changed_at = ${statusChangedAt}, joining_date = (now() AT TIME ZONE 'Asia/Kolkata')::date WHERE id = ${memberId} AND member_status = ${from}`,
+      )
+    : await db.execute(
+        sql`UPDATE members SET member_status = ${to}, status_actor = ${statusActor}, status_changed_at = ${statusChangedAt} WHERE id = ${memberId} AND member_status = ${from}`,
+      );
+
+  if (rowCount === 0) {
+    throw conflictError();
   }
 
   for (const listener of memberStatusTransitionListeners) {

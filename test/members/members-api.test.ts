@@ -112,8 +112,52 @@ describe('STR-032 T-U2 — suspend then reinstate an active member (covers TC-ME
     const suspended = await suspendMember(db, member.member_id, 'ec-member-1');
     expect(suspended!.member_status).toBe('suspended');
 
+    const afterSuspend = await db.queryOne<{ status_actor: string; status_changed_at: unknown }>(
+      sql`SELECT status_actor, status_changed_at FROM members WHERE id = ${member.member_id}`,
+    );
+    expect(afterSuspend!.status_actor).toBe('ec-member-1');
+    expect(afterSuspend!.status_changed_at).not.toBeNull();
+
     const reinstated = await reinstateMember(db, member.member_id, 'ec-member-2');
     expect(reinstated!.member_status).toBe('active');
+
+    const afterReinstate = await db.queryOne<{ status_actor: string; status_changed_at: unknown }>(
+      sql`SELECT status_actor, status_changed_at FROM members WHERE id = ${member.member_id}`,
+    );
+    expect(afterReinstate!.status_actor).toBe('ec-member-2');
+    expect(afterReinstate!.status_changed_at).not.toBeNull();
+  });
+});
+
+// STR-032 code review — TOCTOU race in transitionMemberStatus's
+// SELECT-then-UPDATE: two concurrent suspend calls on the same active
+// member could both pass the app-level pre-check before either committed
+// its UPDATE. The UPDATE's WHERE clause now re-checks member_status = from
+// and the caller checks rowCount, so exactly one of two concurrent calls
+// should win.
+describe('STR-032 code review — concurrent suspend calls on the same active member', () => {
+  it('resolves exactly one of two concurrent suspendMember calls, rejecting the other with MemberLifecycleConflictError', async () => {
+    const db = await freshMigratedDb();
+    const member = await createMember(db, { name: 'Concurrent Suspend Member' });
+    await admitMember(db, member.member_id);
+
+    const [first, second] = await Promise.allSettled([
+      suspendMember(db, member.member_id, 'ec-member-1'),
+      suspendMember(db, member.member_id, 'ec-member-2'),
+    ]);
+
+    const outcomes = [first, second];
+    const fulfilled = outcomes.filter(o => o.status === 'fulfilled');
+    const rejected = outcomes.filter(o => o.status === 'rejected');
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect((rejected[0] as PromiseRejectedResult).reason).toBeInstanceOf(MemberLifecycleConflictError);
+
+    const after = await db.queryOne<{ status_actor: string }>(
+      sql`SELECT status_actor FROM members WHERE id = ${member.member_id}`,
+    );
+    const winningCallWasFirst = first.status === 'fulfilled';
+    expect(after!.status_actor).toBe(winningCallWasFirst ? 'ec-member-1' : 'ec-member-2');
   });
 });
 

@@ -11,36 +11,15 @@ import {
   getPaymentLedgerEntries,
   getExpenseLedgerEntries,
 } from '../../aws-blocks/finance/books';
+import { mulberry32, splitPaise } from './prng';
 
 // STR-023 — T-P1 (BE-P, covers TC-FIN-008): for any generated sequence of
 // balanced postings mixing bank/cash accounts and member/vendor/payee/no
 // counterparty tags, the union over all four book views reconciles with the
 // journal — no line invisible to every book, none double-projected within
 // the same book. Follows STR-021's hand-rolled seeded-PRNG pattern
-// (mulberry32) — no property-testing library is installed in this repo.
-
-function mulberry32(seed: number): () => number {
-  let a = seed;
-  return function random() {
-    a |= 0;
-    a = (a + 0x6d2b79f5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
-/** Split `total` paise into `parts` positive bigint pieces summing exactly to `total`. */
-function splitPaise(total: bigint, parts: number, rand: () => number): bigint[] {
-  const amounts: bigint[] = new Array(parts).fill(1n);
-  let remaining = total - BigInt(parts);
-  while (remaining > 0n) {
-    const idx = Math.floor(rand() * parts);
-    amounts[idx] += 1n;
-    remaining -= 1n;
-  }
-  return amounts;
-}
+// (mulberry32, shared with journal.property.test.ts via ./prng) — no
+// property-testing library is installed in this repo.
 
 const ACCOUNTS = ['cash', 'bank'];
 const COUNTERPARTY_TYPES: readonly (CounterpartyType | null)[] = ['member', 'vendor', 'payee', null];

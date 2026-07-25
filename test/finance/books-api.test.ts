@@ -6,7 +6,7 @@ import { runLocalMigrations, MIGRATIONS_DIR } from '../../aws-blocks/migrations-
 import { postJournalEntry } from '../../aws-blocks/finance/journal';
 import { reverseJournalEntry } from '../../aws-blocks/finance/reversal';
 import { financialYearOf } from '../../aws-blocks/finance/financial-year';
-import { listBookEntries } from '../../aws-blocks/finance/books-api';
+import { listBookEntries, getBookEntry } from '../../aws-blocks/finance/books-api';
 
 // STR-024 — Admin API book-read business logic, unit cases. Follows the
 // STR-023 test pattern (test/finance/books.test.ts): fresh Database + Scope
@@ -67,6 +67,32 @@ describe('STR-024 T-U1 — Indian financial year period filtering', () => {
     const itemsFy2627 = await listBookEntries(db, 'bank', { from: fy2627.start, to: fy2627.end });
     expect(itemsFy2627.some(e => e.entry_id === fy2627EntryId)).toBe(true);
     expect(itemsFy2627.some(e => e.entry_id === fy2526EntryId)).toBe(false);
+  });
+
+  it('classifies an entry posted just after IST midnight (still UTC evening) into the correct IST calendar day and FY', async () => {
+    const db = await freshMigratedDb();
+    // 2026-03-31T19:30:00Z is 2026-04-01T01:00:00+05:30 IST — the first hour
+    // of FY 2026-27 in IST, but still 2026-03-31 in UTC.
+    const { entryId } = await postJournalEntry(
+      db,
+      'entry posted near IST midnight',
+      [
+        { accountId: 'bank', direction: 'debit', amount: '300.00' },
+        { accountId: 'cash', direction: 'credit', amount: '300.00' },
+      ],
+      { postedAt: '2026-03-31T19:30:00Z' },
+    );
+
+    const entry = await getBookEntry(db, 'bank', entryId);
+    expect(entry?.entry_date).toBe('2026-04-01');
+
+    const fy2627 = financialYearOf('2026-04-01');
+    const itemsFy2627 = await listBookEntries(db, 'bank', { from: fy2627.start, to: fy2627.end });
+    expect(itemsFy2627.some(e => e.entry_id === entryId)).toBe(true);
+
+    const fy2526 = financialYearOf('2026-03-31');
+    const itemsFy2526 = await listBookEntries(db, 'bank', { from: fy2526.start, to: fy2526.end });
+    expect(itemsFy2526.some(e => e.entry_id === entryId)).toBe(false);
   });
 });
 

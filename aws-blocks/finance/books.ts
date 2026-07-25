@@ -21,6 +21,12 @@ export interface BookEntry {
   direction: PostingDirection;
   amount: string;
   description: string;
+  /**
+   * STR-024: rendered via `AT TIME ZONE 'Asia/Kolkata'` — an IST-local
+   * `YYYY-MM-DD HH:MI:SS` text, not the UTC storage of the TIMESTAMPTZ
+   * column, so books-api.ts's `entry_date`/FY-window date math (an
+   * IST-calendar concept) is correct.
+   */
   posted_at: string;
   counterparty_type: CounterpartyType | null;
   counterparty_id: string | null;
@@ -35,7 +41,7 @@ export type BookName = 'bank' | 'cash' | 'payment' | 'expense';
 export async function getBankBookEntries(db: Database): Promise<BookEntry[]> {
   return db.query<BookEntry>(
     sql`SELECT jl.id AS line_id, jl.entry_id, jl.account_id, jl.direction, jl.amount,
-               je.description, je.posted_at::text AS posted_at, je.reverses_entry_id,
+               je.description, (je.posted_at AT TIME ZONE 'Asia/Kolkata')::text AS posted_at, je.reverses_entry_id,
                jl.counterparty_type, jl.counterparty_id
         FROM journal_lines jl
         JOIN journal_entries je ON je.id = jl.entry_id
@@ -48,7 +54,7 @@ export async function getBankBookEntries(db: Database): Promise<BookEntry[]> {
 export async function getCashBookEntries(db: Database): Promise<BookEntry[]> {
   return db.query<BookEntry>(
     sql`SELECT jl.id AS line_id, jl.entry_id, jl.account_id, jl.direction, jl.amount,
-               je.description, je.posted_at::text AS posted_at, je.reverses_entry_id,
+               je.description, (je.posted_at AT TIME ZONE 'Asia/Kolkata')::text AS posted_at, je.reverses_entry_id,
                jl.counterparty_type, jl.counterparty_id
         FROM journal_lines jl
         JOIN journal_entries je ON je.id = jl.entry_id
@@ -65,7 +71,7 @@ export async function getPaymentLedgerEntries(db: Database, memberId?: string): 
   if (memberId !== undefined) {
     return db.query<BookEntry>(
       sql`SELECT jl.id AS line_id, jl.entry_id, jl.account_id, jl.direction, jl.amount,
-                 je.description, je.posted_at::text AS posted_at, je.reverses_entry_id,
+                 je.description, (je.posted_at AT TIME ZONE 'Asia/Kolkata')::text AS posted_at, je.reverses_entry_id,
                  jl.counterparty_type, jl.counterparty_id
           FROM journal_lines jl
           JOIN journal_entries je ON je.id = jl.entry_id
@@ -74,7 +80,7 @@ export async function getPaymentLedgerEntries(db: Database, memberId?: string): 
   }
   return db.query<BookEntry>(
     sql`SELECT jl.id AS line_id, jl.entry_id, jl.account_id, jl.direction, jl.amount,
-               je.description, je.posted_at::text AS posted_at, je.reverses_entry_id,
+               je.description, (je.posted_at AT TIME ZONE 'Asia/Kolkata')::text AS posted_at, je.reverses_entry_id,
                jl.counterparty_type, jl.counterparty_id
         FROM journal_lines jl
         JOIN journal_entries je ON je.id = jl.entry_id
@@ -91,7 +97,7 @@ export async function getExpenseLedgerEntries(db: Database, counterpartyId?: str
   if (counterpartyId !== undefined) {
     return db.query<BookEntry>(
       sql`SELECT jl.id AS line_id, jl.entry_id, jl.account_id, jl.direction, jl.amount,
-                 je.description, je.posted_at::text AS posted_at, je.reverses_entry_id,
+                 je.description, (je.posted_at AT TIME ZONE 'Asia/Kolkata')::text AS posted_at, je.reverses_entry_id,
                  jl.counterparty_type, jl.counterparty_id
           FROM journal_lines jl
           JOIN journal_entries je ON je.id = jl.entry_id
@@ -100,7 +106,7 @@ export async function getExpenseLedgerEntries(db: Database, counterpartyId?: str
   }
   return db.query<BookEntry>(
     sql`SELECT jl.id AS line_id, jl.entry_id, jl.account_id, jl.direction, jl.amount,
-               je.description, je.posted_at::text AS posted_at, je.reverses_entry_id,
+               je.description, (je.posted_at AT TIME ZONE 'Asia/Kolkata')::text AS posted_at, je.reverses_entry_id,
                jl.counterparty_type, jl.counterparty_id
         FROM journal_lines jl
         JOIN journal_entries je ON je.id = jl.entry_id

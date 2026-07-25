@@ -8,16 +8,17 @@ import type { BlocksContext } from '@aws-blocks/blocks';
 // unit and contract tests; STR-005's health endpoint is the first consumer
 // and the template for M1 endpoint stories.
 //
-// Limitation carried over from the STR-003 spike: always sends an empty
-// body — fine for GET routes, but a POST/webhook test needs a body
-// parameter added here first, not a silent {} substitute.
+// STR-025: the STR-003-noted body limitation is fixed here — an optional
+// `body` parameter is sent through `request.json()` for POST/PUT/PATCH
+// tests; GET-only callers are unaffected (defaults to `{}`, the prior
+// always-empty behavior).
 
 export interface DispatchResult {
   status: number;
   body: unknown;
 }
 
-export async function dispatchRequest(method: string, path: string): Promise<DispatchResult> {
+export async function dispatchRequest(method: string, path: string, body: unknown = {}): Promise<DispatchResult> {
   const matched = matchRoute(method, path);
   if (!matched) {
     return { status: 404, body: undefined };
@@ -28,7 +29,7 @@ export async function dispatchRequest(method: string, path: string): Promise<Dis
     request: {
       headers: new Headers(),
       body: null,
-      json: async () => ({}),
+      json: async () => body,
       text: async () => '',
       url: new URL(`http://localhost${path}`),
       params: matched.params

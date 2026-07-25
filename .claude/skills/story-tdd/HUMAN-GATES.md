@@ -13,7 +13,7 @@
 | G2 | Verifier anomaly | Verifier exits 1 on any story | Loop owner |
 | G3 | **Merge** | Every PR, unconditionally. The loop pushes a branch and opens a PR; it never merges | Loop owner (reviewer) |
 | G5 | Spend / bill | Before any story whose work provisions AWS resources (`npm run sandbox`, `npm run deploy` — e.g. STR-004, STR-014). Local-first Blocks runtime needs no account; real deploys do | Budget owner |
-| G6 | Delete / overwrite | Before deleting a worktree with uncommitted work, force-pushing, or rewriting story frontmatter that a human edited since the loop last read it | Loop owner |
+| G6 | Delete / overwrite | Before deleting a worktree with uncommitted work, force-pushing, or overwriting a GitHub issue's status (label/state) or story frontmatter that a human changed since the loop last read it | Loop owner |
 | G7 | **Spec edit** | Before modifying anything in `EST-Spec/` (a separate clone and the source of truth for scope). The loop records spec findings in the story's Revision History and the PR body; a human makes the spec change | Loop owner |
 | G8 | **Migration discipline** | Before any story adding a destructive SQL migration. Expand-contract is mandatory (STR-012); a contract step that drops a column or table stops here | Loop owner |
 
@@ -43,10 +43,10 @@ and waits.
 | Dimension | Limit | Action on breach |
 |-----------|-------|-----------------|
 | Stories per run | **1** | Stop after the PR is opened |
-| Consecutive verifier failures (same story) | **3** | Mark story `blocked`, halt, open G2 |
+| Consecutive verifier failures (same story) | **3** | `set-status.sh STR-NNN blocked`, halt, open G2 |
 | Agent iterations per story | **25** | Halt + write budget-exceeded |
 | Wall-clock per story | **90 minutes** | Halt + write budget-exceeded |
-| Consecutive dependency skips (same story) | **3** | Mark story `blocked`, halt |
+| Consecutive dependency skips (same story) | **3** | `set-status.sh STR-NNN blocked`, halt |
 
 ### Why a hard stop is required
 
@@ -64,6 +64,10 @@ one story per run, one worktree at a time, a single `STATE.md`. The stories are
 dependency-ordered against one repo (`est-aws`), so parallelism would fight the
 ordering rather than help.
 
-If that ever changes, markdown is the wrong backend: it has no concurrency
-safety. Move state to GitHub Issues (one per story, closed = done) or add a
-claim/lease field to the story frontmatter first.
+Status (todo/in-progress/blocked/deferred/done) now lives on GitHub Issues —
+see `story-tdd-knowledge`'s "Status lives on GitHub" section — but that is
+about status *visibility and authority*, not concurrency. `STATE.md` is still
+the sole execution ledger (cursor, iteration counts, budget), and it has no
+concurrency safety. If this loop is ever parallelized, `STATE.md` is still the
+wrong backend for claiming work — add a claim/lease field (to the frontmatter
+or as a GitHub issue assignee/label) before running more than one worker.

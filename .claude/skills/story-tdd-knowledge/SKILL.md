@@ -115,6 +115,22 @@ originally assumed. Findings like this are the loop's most valuable output:
 record them in the story's `## Revision History` and the PR body so they feed
 back into the specs.
 
+## Status lives on GitHub
+
+Every epic and story is mirrored as a GitHub Issue in `manasXP/est-aws`
+(title starts with its ID: `"STR-021 - ..."`, `"E01 - ..."`). **The issue is
+the source of truth for status**, not the `EST-PM` frontmatter — the
+frontmatter is a synced mirror, updated alongside the issue but not
+authoritative. Open issue + no `status:*` label = `todo`; a `status:in-progress`
+/ `status:blocked` / `status:deferred` label = that state; closed = `done`.
+
+Change status with `.claude/skills/story-tdd/scripts/set-status.sh <ID>
+<status>` — never edit a `status:` frontmatter field or the issue's
+state/labels by hand. Some later-milestone epics/stories exist as GitHub
+issues before their `EST-PM` markdown file is cut (drafted just-in-time); the
+script updates GitHub regardless and skips the frontmatter write when no local
+file matches yet.
+
 ## Story anatomy
 
 Frontmatter: `id, type, epic, milestone, repo, status, points, spec_refs`.

@@ -9,7 +9,8 @@
 # Exit: 0 = a story was printed / count is non-zero · 1 = queue drained · 2 = misuse
 set -euo pipefail
 
-STORIES="${EST_STORIES:-$HOME/Library/Mobile Documents/iCloud~md~obsidian/Documents/ClaudeNotes/__Workspaces/SaaS/Estatly.in/EST-PM/Stories}"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
+STORIES="${EST_STORIES:-$REPO_ROOT/est-pm/Stories}"
 [ -d "$STORIES" ] || { echo "story queue not found: $STORIES" >&2; exit 2; }
 
 # Sort by milestone dir then filename; STR decade-blocking makes numeric order

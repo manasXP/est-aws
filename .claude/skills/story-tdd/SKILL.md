@@ -36,10 +36,20 @@ This file is **read-only at runtime.** It carries logic, not state.
   changing data belongs in `loops/story-tdd/STATE.md`.
 - This file reloads from disk on every cold start; anything written here
   between runs silently disappears.
-- Two state locations exist and can diverge if a run dies mid-story:
-  `STATE.md` (cursor + audit log) and each story's `status:` frontmatter.
-  **The frontmatter is the authority.** A torn `STATE.md` is rebuilt by
-  re-scanning the stories — never the other way round.
+- Three state locations exist: `STATE.md` (cursor + audit log, this loop's
+  execution ledger only), each artifact's `status:` frontmatter in `EST-PM`
+  (a synced local mirror), and its **GitHub Issue** in `manasXP/est-aws`
+  (open/closed + `status:in-progress`/`status:blocked`/`status:deferred`
+  labels). **GitHub is the authority for status** — on any disagreement,
+  GitHub wins and the frontmatter is corrected to match, never the reverse. A
+  torn `STATE.md` is rebuilt by re-scanning the stories.
+- Every status change for a story or epic goes through
+  `scripts/set-status.sh <ID> <todo|in-progress|blocked|deferred|done>` — it
+  updates the GitHub issue first, then the local `EST-PM` frontmatter file if
+  one exists (some later-milestone artifacts only exist as GitHub issues
+  today; that's fine, the script skips the frontmatter write). Never hand-edit
+  a `status:` field or flip an issue's state/labels directly — always go
+  through the script so the two stay in sync.
 - Both writes use write-then-rename (`write tmp && mv tmp target`) so a crash
   cannot leave a half-written ledger.
 
@@ -78,11 +88,15 @@ Deterministic ordering, model-read veto:
   ("E01 and E02 upstream"), not machines. If it names an upstream epic whose
   stories are not all `done`, skip this story, log the skip with the reason in
   `STATE.md`, and take the next candidate.
-- If a story is skipped three runs in a row, mark it `blocked` and halt.
+- If a story is skipped three runs in a row, run
+  `scripts/set-status.sh STR-NNN blocked` and halt.
 
 ### 3. Act — in an isolated worktree
 
+Mark the story taken before touching code:
+
 ```bash
+scripts/set-status.sh STR-NNN in-progress
 git -C ~/code/est-aws worktree add ../est-aws-STR-NNN -b story/STR-NNN
 ```
 
@@ -108,7 +122,9 @@ is what the verifier checks:
 ```
 
 Exit 0 → passed. Exit 1 → **halt immediately**; do not retry silently. Write
-the failure reason to `STATE.md` and open gate G2.
+the failure reason to `STATE.md` and open gate G2. On the third consecutive
+failure for the same story, also run `scripts/set-status.sh STR-NNN blocked`
+(budget table in `HUMAN-GATES.md`).
 
 The verifier is a separate program and its **exit code is the only signal**.
 Never substitute your own reading of the test output for its verdict, and never
@@ -135,10 +151,13 @@ Both, every iteration. Then stop: one story per run.
 The merge is the signal to finish the story's bookkeeping. On the next run,
 before picking a new story, for any `awaiting-merge` row whose PR is merged:
 
-- Set the story's frontmatter to `status: done` (write-then-rename).
+- Run `scripts/set-status.sh STR-NNN done` — closes the GitHub issue and sets
+  the frontmatter to `status: done`.
 - Append a `## Revision History` row: date, `Claude`, what was done, the commit
   SHA, and **any finding that should feed back into the specs**.
 - Commit and push the `EST-PM` clone.
+- If this story was the epic's last one, run `scripts/set-status.sh E01 done`
+  (its actual epic ID) for the parent epic too.
 
 That last point matters: STR-001's history records that the Blocks SDK joins
 scope and block ID with a hyphen, not the slash the specs assumed. Discoveries

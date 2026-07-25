@@ -24,13 +24,18 @@ export interface BookEntry {
   posted_at: string;
   counterparty_type: CounterpartyType | null;
   counterparty_id: string | null;
+  /** STR-024: set on reversing entries — read straight off journal_entries. */
+  reverses_entry_id: string | null;
 }
+
+/** STR-024: the four `book` path-param values the Admin API read surface accepts. */
+export type BookName = 'bank' | 'cash' | 'payment' | 'expense';
 
 /** Bank Book: postings touching a `ledger_accounts.kind = 'bank'` account. */
 export async function getBankBookEntries(db: Database): Promise<BookEntry[]> {
   return db.query<BookEntry>(
     sql`SELECT jl.id AS line_id, jl.entry_id, jl.account_id, jl.direction, jl.amount,
-               je.description, je.posted_at::text AS posted_at,
+               je.description, je.posted_at::text AS posted_at, je.reverses_entry_id,
                jl.counterparty_type, jl.counterparty_id
         FROM journal_lines jl
         JOIN journal_entries je ON je.id = jl.entry_id
@@ -43,7 +48,7 @@ export async function getBankBookEntries(db: Database): Promise<BookEntry[]> {
 export async function getCashBookEntries(db: Database): Promise<BookEntry[]> {
   return db.query<BookEntry>(
     sql`SELECT jl.id AS line_id, jl.entry_id, jl.account_id, jl.direction, jl.amount,
-               je.description, je.posted_at::text AS posted_at,
+               je.description, je.posted_at::text AS posted_at, je.reverses_entry_id,
                jl.counterparty_type, jl.counterparty_id
         FROM journal_lines jl
         JOIN journal_entries je ON je.id = jl.entry_id
@@ -60,7 +65,7 @@ export async function getPaymentLedgerEntries(db: Database, memberId?: string): 
   if (memberId !== undefined) {
     return db.query<BookEntry>(
       sql`SELECT jl.id AS line_id, jl.entry_id, jl.account_id, jl.direction, jl.amount,
-                 je.description, je.posted_at::text AS posted_at,
+                 je.description, je.posted_at::text AS posted_at, je.reverses_entry_id,
                  jl.counterparty_type, jl.counterparty_id
           FROM journal_lines jl
           JOIN journal_entries je ON je.id = jl.entry_id
@@ -69,7 +74,7 @@ export async function getPaymentLedgerEntries(db: Database, memberId?: string): 
   }
   return db.query<BookEntry>(
     sql`SELECT jl.id AS line_id, jl.entry_id, jl.account_id, jl.direction, jl.amount,
-               je.description, je.posted_at::text AS posted_at,
+               je.description, je.posted_at::text AS posted_at, je.reverses_entry_id,
                jl.counterparty_type, jl.counterparty_id
         FROM journal_lines jl
         JOIN journal_entries je ON je.id = jl.entry_id
@@ -86,7 +91,7 @@ export async function getExpenseLedgerEntries(db: Database, counterpartyId?: str
   if (counterpartyId !== undefined) {
     return db.query<BookEntry>(
       sql`SELECT jl.id AS line_id, jl.entry_id, jl.account_id, jl.direction, jl.amount,
-                 je.description, je.posted_at::text AS posted_at,
+                 je.description, je.posted_at::text AS posted_at, je.reverses_entry_id,
                  jl.counterparty_type, jl.counterparty_id
           FROM journal_lines jl
           JOIN journal_entries je ON je.id = jl.entry_id
@@ -95,10 +100,24 @@ export async function getExpenseLedgerEntries(db: Database, counterpartyId?: str
   }
   return db.query<BookEntry>(
     sql`SELECT jl.id AS line_id, jl.entry_id, jl.account_id, jl.direction, jl.amount,
-               je.description, je.posted_at::text AS posted_at,
+               je.description, je.posted_at::text AS posted_at, je.reverses_entry_id,
                jl.counterparty_type, jl.counterparty_id
         FROM journal_lines jl
         JOIN journal_entries je ON je.id = jl.entry_id
         WHERE jl.counterparty_type IN ('vendor', 'payee')`,
   );
+}
+
+/** STR-024: resolves the Admin API's `book` path param to the matching book-projection query, unfiltered by counterparty. */
+export async function getBookEntries(db: Database, book: BookName): Promise<BookEntry[]> {
+  switch (book) {
+    case 'bank':
+      return getBankBookEntries(db);
+    case 'cash':
+      return getCashBookEntries(db);
+    case 'payment':
+      return getPaymentLedgerEntries(db);
+    case 'expense':
+      return getExpenseLedgerEntries(db);
+  }
 }

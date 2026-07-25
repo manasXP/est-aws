@@ -47,4 +47,28 @@ describe('STR-012 migration lint — destructive DDL detection', () => {
     expect(result.annotated).toBe(true);
     expect(result.ok).toBe(true);
   });
+
+  // Regression (code review): a multi-clause ALTER TABLE must still be
+  // caught when the destructive clause isn't the first one.
+  it('catches a destructive clause anywhere in a multi-clause ALTER TABLE', () => {
+    const result = lintMigrationSql(
+      '005_add_then_drop.sql',
+      'ALTER TABLE widgets ADD COLUMN name TEXT, DROP COLUMN legacy_name;',
+    );
+    expect(result.destructive).toBe(true);
+    expect(result.ok).toBe(false);
+  });
+
+  // Regression (code review): the annotation must be at the top of the
+  // file, not tacked on after the destructive statement it's meant to
+  // excuse — otherwise it stops meaning "reviewed before this shipped".
+  it('does not accept a contract annotation placed after the destructive statement', () => {
+    const result = lintMigrationSql(
+      '006_late_annotation.sql',
+      'DROP TABLE widgets;\n\n-- contract-migration: added after the fact, should not count',
+    );
+    expect(result.destructive).toBe(true);
+    expect(result.annotated).toBe(false);
+    expect(result.ok).toBe(false);
+  });
 });

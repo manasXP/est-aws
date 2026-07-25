@@ -17,7 +17,7 @@ architecture doc disagree, the architecture doc wins.
 - **Block** — npm package = cloud resource + Lambda runtime + local impl, one API.
 - **Scope** — namespace; full Block ID joins scope and block ID with a hyphen (`scopeName-blockId`, verified v0.2.3). IDs are immutable once deployed. Estatly: the Scope carries the society (`estatly-<society>`); stateful IDs fixed early (`estatly-db`, `estatly-documents`).
 - **IFC layer** — `aws-blocks/index.ts`; infra derived from Block instantiations.
-- **ApiNamespace** — Blocks' type-safe RPC (frontend imports `api` directly). **Not Estatly's client contract** — clients consume contract-first REST against the Admin/Mobile OpenAPI specs; ingress mechanism is the M0 spike (Blocks-native HTTP vs CDK API Gateway + Lambda).
+- **ApiNamespace** — Blocks' type-safe RPC (frontend imports `api` directly). **Not Estatly's client contract** — clients consume contract-first REST against the Admin/Mobile OpenAPI specs, served via `RawRoute` (resolved STR-003 — see below), not `ApiNamespace`.
 - **BlocksContext** — per-request object passed to handlers; auth blocks consume it.
 - **Conditional exports** — same import → local impl / CDK construct / AWS SDK per context.
 - **CDK layer** — `aws-blocks/index.cdk.ts`, optional escape hatch (see end of this file).
@@ -94,6 +94,12 @@ Frontend deployment with SSR. Import from `@aws-blocks/blocks/cdk` and use in th
 
 Estatly notes: serves the **admin panel** (Next.js) and the **landing site** (static export from the same toolchain; no backend consumption).
 
+### RawRoute — native HTTP routing (IFC layer)
+
+Path-based HTTP routing with full request/response control — for endpoints that need real REST semantics, not RPC. `new RawRoute(scope, id, { method, path, handler })`; supports exact paths, named parameters (`/users/{id}`), and wildcards (`/files/*`). Runs on the same Lambda + catch-all API Gateway proxy as everything else — no extra AWS resources. Local dev and the Lambda handler both dispatch to it by method + path before falling through to RPC.
+
+Estatly notes: this is how the **Admin API** and **Mobile API** (OpenAPI contract-first REST, not `ApiNamespace`) and the **Razorpay webhook** are implemented — in the IFC layer (`aws-blocks/index.ts`), not the CDK layer. Resolved by STR-003's spike; see `test/spikes/raw-route.spike.test.ts` in `est-aws` for a proven usage example.
+
 ---
 
 ## Blocks evaluated and NOT used in Estatly v1
@@ -112,7 +118,7 @@ Keep these in mind so you don't re-invent them, but do not add them without a de
 
 `aws-blocks/index.cdk.ts` — optional. Use for resources without a Block, custom domains/VPC, or embedding Blocks into an existing CDK app. If absent, AWS Blocks generates a default CDK app from the IFC layer.
 
-Estatly uses the CDK layer for `Hosting`, and — pending the **M0 ingress spike (E01)** — possibly for the REST surface: if Blocks cannot serve plain HTTP routes natively, the Admin/Mobile REST APIs and the **Razorpay webhook endpoint** are wired here as **API Gateway + Lambda**.
+Estatly uses the CDK layer for `Hosting` only. **Resolved (STR-003):** the Admin/Mobile REST APIs and the Razorpay webhook endpoint are `RawRoute` handlers in the IFC layer, not the CDK layer — Blocks serves plain HTTP routes natively (path params, wildcards) on the existing Lambda + catch-all API Gateway proxy, no additional API Gateway resource.
 
 ```ts
 // aws-blocks/index.cdk.ts
@@ -124,8 +130,8 @@ const stack = await BlocksStack.create(app, 'estatly-<society>', {
   backendHandlerPath: './index.handler.ts',
   backendCDKPath: './index.ts',
 });
-// e.g. API Gateway REST ingress + webhook route here, if the M0 spike
-// concludes Blocks-native HTTP is unavailable.
+// Hosting (admin panel + landing) goes here. REST ingress and the Razorpay
+// webhook do NOT — they're RawRoute handlers in aws-blocks/index.ts.
 ```
 
 ---

@@ -1,0 +1,81 @@
+---
+name: {{LOOP_NAME}}
+description: >
+  Self-running loop: {{GOAL}}
+---
+
+# {{LOOP_NAME}}
+
+## Goal
+
+**Exit predicate:** {{GOAL}}
+
+The loop runs until this condition holds. Every iteration checks the predicate
+after verification passes. When it holds, the loop stops and writes a final
+summary to the state file.
+
+---
+
+## Conventions (durable only — never write progress here)
+
+This file is **read-only at runtime.** It carries logic, not state.
+
+Rules:
+- **Never write progress, counters, timestamps, or iteration results here.**
+  All changing data belongs in the external state file at `{{STATE_PATH}}`.
+- This file is loaded fresh on every cold start. Anything written here between
+  runs disappears the moment the next run reloads it from disk.
+- Durable knowledge only: the goal predicate, the action steps, the
+  verification call, and the stop criteria.
+
+The boundary is simple: if a value changes between runs, it goes in
+`{{STATE_PATH}}`. If it never changes, it may live here.
+
+---
+
+## Pattern: {{PATTERN}}
+
+The loop follows the **{{PATTERN}}** pattern. Each iteration proceeds in order:
+
+1. **Read state** — load `{{STATE_PATH}}` to determine where the loop left off.
+2. **Discover** — query the source (directory, API, queue, feed) for items to act on.
+3. **Act** — perform the iteration's core action on the discovered items.
+4. **Verify** — run the verifier (a separate program with a binary exit code).
+   - Exit 0 → iteration passed; advance state and continue.
+   - Exit 1 → iteration failed; halt and surface the anomaly for human review.
+5. **Write state** — update `{{STATE_PATH}}` with the new position, counters,
+   and timestamp before stopping or looping.
+6. **Check exit predicate** — if `{{GOAL}}` now holds, stop; otherwise repeat.
+
+If the verifier returns non-zero, the loop must halt immediately. Do not retry
+silently. Write the failure reason to `{{STATE_PATH}}` and wait for human input
+as specified in `HUMAN-GATES.md`.
+
+---
+
+## How to run
+
+Start the loop by launching this skill with the goal predicate as the session
+objective. The exact invocation depends on your host — consult `TRIGGER.md`
+for the per-host one-liner and the host-agnostic fallback.
+
+Before the first live run:
+1. Confirm `{{STATE_PATH}}` exists and is initialized (empty table, current
+   timestamp in "Last run").
+2. Review `HUMAN-GATES.md` — all gates listed there must be passed before
+   real actions begin.
+3. Confirm the verifier is executable and returns 0 on a known-good input.
+
+---
+
+## What "done" means
+
+The loop is done when **all** of the following hold:
+
+- The exit predicate `{{GOAL}}` is verifiably true.
+- The verifier returned exit 0 on the final iteration.
+- `{{STATE_PATH}}` has been updated with a "Last run" timestamp and a final
+  status row in the ledger.
+- No human gate in `HUMAN-GATES.md` is still open.
+
+At that point the loop writes `status: done` into the ledger and exits cleanly.

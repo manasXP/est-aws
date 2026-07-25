@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+# story-tdd verifier — proves TDD ordering from git history, deterministically.
+#
+# The maker/checker split: this program contains no model calls and no judgement.
+# It answers one question with an exit code — was this story done test-first, and
+# does it pass now?
+#
+#   Usage: verifier STR-NNN <worktree-path>
+#   Exit:  0 = story verified (red-then-green proven, HEAD green)
+#          1 = not verified (loop must halt, gate G2)
+#          2 = misuse / environment problem
+set -euo pipefail
+
+[ "$#" -eq 2 ] || { echo "usage: $0 STR-NNN <worktree-path>" >&2; exit 2; }
+STORY="$1"; WT="$2"
+[ -d "$WT/.git" ] || [ -f "$WT/.git" ] || { echo "not a git worktree: $WT" >&2; exit 2; }
+command -v npx >/dev/null || { echo "npx not found" >&2; exit 2; }
+
+fail() { echo "FAIL[$STORY]: $*" >&2; exit 1; }
+pass() { echo "PASS[$STORY]: $*"; }
+
+# ---------------------------------------------------------------------------
+# 1. Commit structure — exactly one Red and one Green, Red first.
+# ---------------------------------------------------------------------------
+BASE="$(git -C "$WT" merge-base HEAD origin/main)"
+RED="$(git -C "$WT" log --format='%H %s' "$BASE..HEAD" | grep -c " $STORY Red: " || true)"
+[ "$RED" -eq 1 ] || fail "expected exactly 1 '$STORY Red:' commit, found $RED"
+GRN="$(git -C "$WT" log --format='%H %s' "$BASE..HEAD" | grep -c " $STORY Green: " || true)"
+[ "$GRN" -eq 1 ] || fail "expected exactly 1 '$STORY Green:' commit, found $GRN"
+
+RED_SHA="$(git -C "$WT" log --format='%H %s' "$BASE..HEAD" | grep " $STORY Red: "   | cut -d' ' -f1)"
+GRN_SHA="$(git -C "$WT" log --format='%H %s' "$BASE..HEAD" | grep " $STORY Green: " | cut -d' ' -f1)"
+git -C "$WT" merge-base --is-ancestor "$RED_SHA" "$GRN_SHA" \
+  || fail "Red commit is not an ancestor of Green — tests were not written first"
+
+# ---------------------------------------------------------------------------
+# 2. The Red commit must touch test files ONLY.
+#    Implementation smuggled into the Red commit defeats the whole gate.
+# ---------------------------------------------------------------------------
+NON_TEST="$(git -C "$WT" diff-tree --no-commit-id --name-only -r "$RED_SHA" \
+            | grep -vE '(^test/|\.test\.ts$|\.spec\.ts$)' || true)"
+[ -z "$NON_TEST" ] || fail "Red commit touches non-test files:"$'\n'"$NON_TEST"
+
+NEW_TESTS="$(git -C "$WT" diff-tree --no-commit-id --name-only -r "$RED_SHA")"
+[ -n "$NEW_TESTS" ] || fail "Red commit is empty"
+
+# ---------------------------------------------------------------------------
+# 3. The Red commit must actually FAIL — and fail as tests, not as noise.
+#
+#    Deliberately `vitest run`, NOT `npm test`. `npm test` is
+#    `tsc --noEmit && vitest run`; at the Red commit the tests import modules
+#    that do not exist yet, so tsc dies first and vitest never runs. A tsc error
+#    is indistinguishable from a typo — it is not evidence of a meaningful test.
+#    vitest transpiles without typechecking, so the tests execute and fail for
+#    real (assertion or unresolved import).
+# ---------------------------------------------------------------------------
+TMP="$(mktemp -d)"; RWT="$TMP/red"
+cleanup() { git -C "$WT" worktree remove --force "$RWT" 2>/dev/null || true; rm -rf "$TMP"; }
+trap cleanup EXIT
+
+git -C "$WT" worktree add --detach "$RWT" "$RED_SHA" >/dev/null 2>&1 \
+  || fail "could not create verification worktree at $RED_SHA"
+
+# Reuse the main checkout's dependencies rather than a second npm ci (minutes).
+if [ -d "$WT/node_modules" ]; then ln -s "$WT/node_modules" "$RWT/node_modules"
+else (cd "$RWT" && npm ci >/dev/null 2>&1) || fail "npm ci failed in red worktree"; fi
+
+# Scope the run to ONLY the files the Red commit touched. Running the whole
+# suite would let a pre-existing broken test supply the non-zero exit while the
+# story's own new test quietly passes — the red gate would be satisfied by
+# someone else's failure. Scoping makes "it failed" mean "these tests failed",
+# without depending on how vitest's reporter formats file names.
+set +e
+RED_OUT="$( cd "$RWT" && npx vitest run $NEW_TESTS 2>&1 )"; RED_CODE=$?
+set -e
+
+[ "$RED_CODE" -ne 0 ] || fail "Red commit PASSED — the tests do not prove anything"
+
+# A non-zero exit is still not enough: vitest also exits non-zero when it
+# collects nothing at all, which would let a story with a forgotten or
+# misnamed test file sail through the red gate. Demand a real test failure.
+echo "$RED_OUT" | grep -qE "No test (files )?found" \
+  && fail "Red run collected no tests (non-zero exit was 'nothing found', not a failure)"
+echo "$RED_OUT" | grep -qE "Tests +[0-9]+ failed|Test Files +[0-9]+ failed" \
+  || fail "Red run exited $RED_CODE but reported no failing test"$'\n'"$(echo "$RED_OUT" | tail -20)"
+
+# ---------------------------------------------------------------------------
+# 4. HEAD must be fully green — here the full npm test (tsc strict + vitest).
+# ---------------------------------------------------------------------------
+set +e
+HEAD_OUT="$( cd "$WT" && npm test 2>&1 )"; HEAD_CODE=$?
+set -e
+[ "$HEAD_CODE" -eq 0 ] || fail "HEAD is not green (npm test exited $HEAD_CODE)"$'\n'"$(echo "$HEAD_OUT" | tail -30)"
+
+pass "red@${RED_SHA:0:7} failed as tests, green@$(git -C "$WT" rev-parse --short HEAD) passes tsc+vitest"
+exit 0

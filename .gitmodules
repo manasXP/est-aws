@@ -7,3 +7,6 @@
 [submodule "est-deploy"]
 	path = est-deploy
 	url = https://github.com/manasXP/est-deploy.git
+[submodule "est-pm"]
+	path = est-pm
+	url = https://github.com/manasXP/est-pm.git

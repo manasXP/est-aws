@@ -1,0 +1,45 @@
+<!-- changing state — read & written every run; never moved into SKILL.md. -->
+
+# {{LOOP_NAME}} — State Ledger
+
+> This file is the loop's memory. Every run reads it at start and writes it
+> before stopping. Do not embed it in the loop's `SKILL.md` — a skill is
+> reloaded from disk on each cold start, so any state stored there silently
+> resets. This file persists between runs precisely because it is external.
+
+---
+
+## Ledger
+
+| item | status | notes |
+|------|--------|-------|
+| (initial) | pending | scaffold — no runs yet |
+
+<!--
+Add one row per work item as the loop discovers and processes them.
+Valid status values: pending · in-progress · done · failed · skipped
+-->
+
+---
+
+## Last run
+
+<!-- Update this block at the end of every run, including failed runs. -->
+
+```
+timestamp : (not yet run)
+iteration : 0
+outcome   : —
+exit code : —
+```
+
+---
+
+## Notes
+
+- Keep rows here as the loop runs; do not delete completed rows (they form an
+  audit trail).
+- If a row reaches `failed`, the loop must halt and a human gate must be
+  cleared before the next run (see `HUMAN-GATES.md`).
+- Goal predicate: **{{GOAL}}**
+- State path for this loop: `{{STATE_PATH}}`

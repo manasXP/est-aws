@@ -1,0 +1,105 @@
+# {{LOOP_NAME}} — Trigger Definition
+
+> This file is the host-agnostic launch contract for the loop. It specifies
+> what the loop is trying to achieve, where its state lives, and exactly how
+> to start a run — with one-liners per supported host and a plain fallback
+> that works on any platform.
+
+---
+
+## Verifiable goal
+
+The loop stops when this predicate holds:
+
+> **{{GOAL}}**
+
+Every run must check this predicate after the verifier passes. If it holds,
+the loop writes a final summary to the state file and exits cleanly.
+
+---
+
+## State file
+
+```
+{{STATE_PATH}}
+```
+
+Every run reads this file at startup and writes it before stopping. If the
+file is missing or empty, treat it as a first run and initialize the ledger
+before taking any action.
+
+---
+
+## Launch prompt
+
+Pass this prompt verbatim when starting the loop manually or via a scheduler:
+
+> Read `{{STATE_PATH}}` and the loop's `SKILL.md`, then run the {{LOOP_NAME}} loop.
+
+That is the host-agnostic fallback. It works on any platform that can load a
+skill file and read a markdown state file — no host-specific tooling required.
+
+---
+
+## Per-host one-liners
+
+Choose the invocation that matches your host. If your host is not listed,
+use the **Fallback** entry at the bottom.
+
+> **Flag:** All command syntax below should be verified against current host
+> documentation before use. Scheduler flags, slash-command names, and
+> dispatch primitives change across versions. Consult `references/host-adapters.md`
+> for the latest per-host equivalents.
+
+### Claude Code
+
+```
+/goal "{{GOAL}}"
+```
+
+Optionally pair with a recurring interval to have the host re-fire the loop
+automatically:
+
+```
+/loop <interval>
+```
+
+`/goal` + `/loop` is **one option**, not the only path. If these slash commands
+are not available in your version of Claude Code, fall back to the manual
+prompt below. Verify both commands exist and accept this syntax against your
+installed version's docs before relying on them.
+
+### Generic cron / CLI (Codex · Hermes · OpenClaw · any scheduler)
+
+```
+# Example cron entry — adjust schedule and paths to match your environment
+# Verify cron syntax and binary paths for your host before enabling
+0 * * * * /usr/bin/env <host-cli> run --skill {{LOOP_NAME}} --state {{STATE_PATH}}
+```
+
+Replace `<host-cli>` with the CLI entry point for your runner (e.g., `codex`,
+`hermes`, `openclaw`). Verify available flags against current host docs.
+
+### Fallback (host-agnostic — works on any platform)
+
+```
+Read {{STATE_PATH}} and the loop's SKILL.md, then run the {{LOOP_NAME}} loop.
+```
+
+Paste this as the opening prompt in any agent session. The loop's `SKILL.md`
+contains all logic; `{{STATE_PATH}}` contains all state. No additional
+tooling is needed.
+
+---
+
+## Trigger notes
+
+- The trigger syntax above is illustrative. **Always verify against current
+  host docs** — scheduler flags, slash-command availability, and cron syntax
+  differ across hosts and versions.
+- Before enabling any automated trigger, confirm that `HUMAN-GATES.md` gates
+  G1 (pre-run sign-off) and G2 (verifier anomaly) are in place and that the
+  approver is reachable.
+- The budget / stop limits in `HUMAN-GATES.md` take precedence over any
+  scheduler interval. If the loop hits its iteration or cost cap, it halts
+  regardless of how often the trigger fires.

@@ -1,0 +1,87 @@
+# {{LOOP_NAME}} — Human Gates & Budget
+
+> A loop without human gates can act in ways no one intended.
+> A loop without a budget can run forever. Both sections below are required.
+> Do not mark the loop scaffolded if either is incomplete.
+
+---
+
+## Human gates
+
+The following actions are **irreversible or high-blast-radius** and require
+explicit human approval before the loop proceeds. The loop must halt at each
+gate and wait for a clear "go" before continuing.
+
+| # | Gate | Trigger condition | Who approves |
+|---|------|-------------------|--------------|
+| G1 | Pre-run sign-off | Before the very first live run on real data | Loop owner |
+| G2 | Verifier anomaly | Verifier returns exit 1 on any iteration | Loop owner |
+| G3 | Merge / apply | Before merging a branch or applying a patch to a protected target | Designated reviewer |
+| G4 | Send / publish | Before sending a message, email, notification, or publishing content externally | Loop owner |
+| G5 | Spend / bill | Before any action that incurs external cost (API call above threshold, cloud resource) | Budget owner |
+| G6 | Delete / overwrite | Before deleting files, records, or overwriting data that cannot be recovered | Loop owner |
+
+<!--
+Add loop-specific gates below G6 as needed.
+Remove any row that genuinely does not apply, but do not remove G1 or G2 —
+those two are unconditional.
+-->
+
+### How to clear a gate
+
+1. The loop writes a gate-request entry to `{{STATE_PATH}}` with the gate ID,
+   reason, and proposed action.
+2. A human reads the entry, confirms the action is safe, and replies with an
+   explicit approval (a commit, a comment, a chat message — whatever the
+   project convention is).
+3. The loop reads the approval signal, records it in `{{STATE_PATH}}`, then
+   continues.
+
+Never self-approve. A loop must not treat its own output as a gate clearance.
+
+---
+
+## Budget / stop
+
+These limits are **hard stops**, not suggestions. When any limit is reached,
+the loop halts immediately, writes a `budget-exceeded` status to `{{STATE_PATH}}`,
+and waits for a human to either raise the budget or mark the loop done.
+
+| Dimension | Limit | Action on breach |
+|-----------|-------|-----------------|
+| Max iterations | _(set at scaffold time)_ | Halt + write budget-exceeded |
+| Token / API cost cap | _(set at scaffold time)_ | Halt + write budget-exceeded |
+| Wall-clock time cap | _(set at scaffold time)_ | Halt + write budget-exceeded |
+
+<!--
+Fill in concrete values at scaffold time, for example:
+  Max iterations : 50
+  Token cap      : $5.00 USD
+  Wall-clock     : 4 hours
+Do not leave blanks in production — an unset limit is the same as no limit.
+-->
+
+### Why a hard stop is required
+
+An agent loop cold-starts on every run with no inherent awareness of how many
+times it has already fired. Without an external counter in `{{STATE_PATH}}` and
+a ceiling checked against that counter, nothing prevents the loop from running
+indefinitely — exhausting quota, billing, or compute. The budget row in
+`{{STATE_PATH}}` is the only reliable brake because it persists across cold
+starts, unlike any in-memory counter the loop might maintain during a single
+session.
+
+---
+
+## Why each worktree has its own state file
+
+When a loop runs in parallel worktrees — for example, processing multiple
+independent work items concurrently — each worktree needs its own isolated
+ledger. A single shared `STATE.md` would create write conflicts as concurrent
+runs try to append rows at the same time, and a partially written row could
+corrupt the ledger for all workers. By giving each worktree its own copy at a
+predictable path under `{{STATE_PATH}}`, each worker reads and writes
+independently, and the gate-checker can aggregate across files without locking.
+The trade-off is that a reconciliation step is needed at the end to merge
+per-worktree results into a canonical record — but that step is safe to
+automate because each input file is already complete and self-consistent.

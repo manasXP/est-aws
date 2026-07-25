@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Only est-spec is public and read by tests (the contract harness).
+      # est-pm/est-tcc/est-deploy are private, cross-reference-only, and
+      # unreadable by the default GITHUB_TOKEN — do not fetch them here.
+      - run: git submodule update --init est-spec
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - run: npm ci
+
+      - run: npm test

@@ -6,7 +6,7 @@
 import { randomUUID } from 'node:crypto';
 import { sql } from '@aws-blocks/blocks';
 import type { Database } from '@aws-blocks/blocks';
-import { moneyEquals, sumMoney } from '../money';
+import { moneyEquals, parseMoney, sumMoney } from '../money';
 
 export type PostingDirection = 'debit' | 'credit';
 
@@ -43,9 +43,17 @@ export async function postJournalEntry(
     throw new JournalError('A journal entry needs at least one line.');
   }
 
-  const accounts = await db.query<{ id: string }>(sql`SELECT id FROM ledger_accounts`);
+  const nonPositive = lines.filter(line => parseMoney(line.amount) <= 0n);
+  if (nonPositive.length > 0) {
+    throw new JournalError(`Journal line amounts must be positive: ${nonPositive.map(line => line.amount).join(', ')}`);
+  }
+
+  const referencedAccountIds = [...new Set(lines.map(line => line.accountId))];
+  const accounts = await db.query<{ id: string }>(
+    sql`SELECT id FROM ledger_accounts WHERE id = ANY(${referencedAccountIds})`,
+  );
   const knownAccountIds = new Set(accounts.map(row => row.id));
-  const missing = [...new Set(lines.map(line => line.accountId))].filter(id => !knownAccountIds.has(id));
+  const missing = referencedAccountIds.filter(id => !knownAccountIds.has(id));
   if (missing.length > 0) {
     throw new JournalError(`Unknown ledger account(s): ${missing.join(', ')}`);
   }

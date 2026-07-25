@@ -46,6 +46,26 @@ describe('STR-021 posting writer — append-only double-entry journal', () => {
     expect(lines).toHaveLength(0);
   });
 
+  // Regression: a balanced-but-zero posting (debits == credits, both "0.00")
+  // must be rejected as a domain error before anything is written, not left
+  // to the `journal_lines` CHECK (amount > 0) constraint to catch deep in
+  // the transaction.
+  it('rejects a zero-amount posting and writes nothing', async () => {
+    const db = await freshMigratedDb();
+
+    await expect(
+      postJournalEntry(db, 'zero amount test posting', [
+        { accountId: 'cash', direction: 'debit', amount: '0.00' },
+        { accountId: 'bank', direction: 'credit', amount: '0.00' },
+      ]),
+    ).rejects.toThrow(JournalError);
+
+    const entries = await db.query(sql`SELECT * FROM journal_entries`);
+    const lines = await db.query(sql`SELECT * FROM journal_lines`);
+    expect(entries).toHaveLength(0);
+    expect(lines).toHaveLength(0);
+  });
+
   // T-U2 (covers TC-FIN-009): amounts posted as decimal strings read back
   // exactly, as strings — including amounts that would visibly round-trip
   // wrong under float arithmetic ("0.10" + "0.20").

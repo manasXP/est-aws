@@ -6,6 +6,7 @@
 import { RawRoute } from '@aws-blocks/blocks';
 import type { Database, Scope } from '@aws-blocks/blocks';
 import { createProject, getProject, listProjects, updateProject } from './projects-api';
+import { sendNotFound } from '../http/problem-response';
 
 export function registerProjectRoutes(scope: Scope, db: Database): void {
   new RawRoute(scope, 'list-projects', {
@@ -34,8 +35,7 @@ export function registerProjectRoutes(scope: Scope, db: Database): void {
     handler: async ctx => {
       const project = await getProject(db, ctx.request.params.projectId);
       if (!project) {
-        ctx.response.status = 404;
-        ctx.response.send({ error: { code: 'not_found', message: `No project ${ctx.request.params.projectId}` } });
+        sendNotFound(ctx, `No project ${ctx.request.params.projectId}`);
         return;
       }
       ctx.response.send(project);
@@ -49,8 +49,7 @@ export function registerProjectRoutes(scope: Scope, db: Database): void {
       const input = await ctx.request.json();
       const project = await updateProject(db, ctx.request.params.projectId, input);
       if (!project) {
-        ctx.response.status = 404;
-        ctx.response.send({ error: { code: 'not_found', message: `No project ${ctx.request.params.projectId}` } });
+        sendNotFound(ctx, `No project ${ctx.request.params.projectId}`);
         return;
       }
       ctx.response.send(project);

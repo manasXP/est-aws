@@ -7,6 +7,7 @@
 import { randomUUID } from 'node:crypto';
 import { sql } from '@aws-blocks/blocks';
 import type { Database } from '@aws-blocks/blocks';
+import { ValidationError } from '../http/problem-response';
 
 export type MemberStatus = 'pending' | 'active' | 'suspended' | 'ceased';
 
@@ -35,7 +36,7 @@ export interface MemberInput {
 
 /** Domain rejection for a PATCH that tries to write a lifecycle-only field.
  * Nothing is written when this is thrown. */
-export class MemberValidationError extends Error {
+export class MemberValidationError extends ValidationError {
   constructor(message: string) {
     super(message);
     this.name = 'MemberValidationError';

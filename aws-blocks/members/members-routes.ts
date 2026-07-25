@@ -6,6 +6,7 @@
 import { RawRoute } from '@aws-blocks/blocks';
 import type { Database, Scope } from '@aws-blocks/blocks';
 import { createMember, getMember, listMembers, updateMember, MemberValidationError, type MemberStatus } from './members-api';
+import { sendNotFound, sendValidationError } from '../http/problem-response';
 
 const MEMBER_STATUSES: readonly MemberStatus[] = ['pending', 'active', 'suspended', 'ceased'];
 
@@ -41,8 +42,7 @@ export function registerMemberRoutes(scope: Scope, db: Database): void {
     handler: async ctx => {
       const member = await getMember(db, ctx.request.params.memberId);
       if (!member) {
-        ctx.response.status = 404;
-        ctx.response.send({ error: { code: 'not_found', message: `No member ${ctx.request.params.memberId}` } });
+        sendNotFound(ctx, `No member ${ctx.request.params.memberId}`);
         return;
       }
       ctx.response.send(member);
@@ -57,15 +57,13 @@ export function registerMemberRoutes(scope: Scope, db: Database): void {
       try {
         const member = await updateMember(db, ctx.request.params.memberId, input);
         if (!member) {
-          ctx.response.status = 404;
-          ctx.response.send({ error: { code: 'not_found', message: `No member ${ctx.request.params.memberId}` } });
+          sendNotFound(ctx, `No member ${ctx.request.params.memberId}`);
           return;
         }
         ctx.response.send(member);
       } catch (e) {
         if (e instanceof MemberValidationError) {
-          ctx.response.status = 422;
-          ctx.response.send({ error: { code: 'validation_error', message: e.message } });
+          sendValidationError(ctx, e);
           return;
         }
         throw e;

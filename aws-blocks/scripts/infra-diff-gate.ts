@@ -27,6 +27,15 @@ if (!existsSync(BASELINE_PATH)) {
 }
 
 const baseline = JSON.parse(readFileSync(BASELINE_PATH, 'utf-8')) as CfnTemplate;
+
+// Fail closed: a baseline with no resources (corrupt file, botched merge,
+// truncated write) would otherwise diff clean against anything and silently
+// disable the gate instead of blocking.
+if (Object.keys(baseline.Resources ?? {}).length === 0) {
+  console.error(`[infra-diff] baseline at ${BASELINE_PATH} has no Resources — treating as corrupt, not as "nothing to protect".`);
+  process.exit(1);
+}
+
 const violations = diffStatefulResources(baseline, candidate);
 
 if (violations.length > 0) {

@@ -28,10 +28,11 @@ jobs:
       - run: npm test
 
       # Release & Rollback pipeline gate 2 (infra diff) — synthesizes the
-      # candidate CloudFormation template and fails on any replacement or
-      # deletion of a stateful resource (Aurora cluster, document bucket)
-      # relative to the committed main-branch baseline. Runs before any
-      # sandbox deploy so a Block-ID rename can never reach one.
+      # candidate CloudFormation template and fails if a stateful resource
+      # (Aurora cluster, document bucket) present in the committed
+      # main-branch baseline doesn't survive at the same logical ID — the
+      # exact shape a Block-ID rename produces. Runs before any sandbox
+      # deploy so a rename can never reach one.
       - run: npm run infra-diff
 
       # Release & Rollback pipeline gate 3 (migration review) — the

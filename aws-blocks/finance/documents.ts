@@ -11,10 +11,13 @@ import { randomUUID } from 'node:crypto';
 import { DatabaseErrors, isBlocksError, sql } from '@aws-blocks/blocks';
 import type { Database, FileBucket } from '@aws-blocks/blocks';
 
-export interface DocumentLink {
+export interface DocumentLinkResult {
   documentId: string;
   fileName: string;
   linkedAt: string;
+}
+
+export interface DocumentLink extends DocumentLinkResult {
   downloadUrl: string;
 }
 
@@ -43,7 +46,7 @@ export async function linkDocumentToEntry(
   bucket: FileBucket,
   entryId: string,
   documentId: string,
-): Promise<DocumentLink> {
+): Promise<DocumentLinkResult> {
   const entry = await db.queryOne(sql`SELECT id FROM journal_entries WHERE id = ${entryId}`);
   if (!entry) {
     throw new DocumentLinkError(`No journal entry found with id: ${entryId}`, 'entry_not_found');
@@ -60,7 +63,7 @@ export async function linkDocumentToEntry(
           VALUES (${randomUUID()}, ${entryId}, ${documentId})
           RETURNING linked_at::text AS linked_at`,
     );
-    return { documentId, fileName: fileNameFromPath(documentId), linkedAt: row!.linked_at, downloadUrl: await bucket.getUrl(documentId) };
+    return { documentId, fileName: fileNameFromPath(documentId), linkedAt: row!.linked_at };
   } catch (e: unknown) {
     if (isBlocksError(e, DatabaseErrors.UniqueConstraintViolation)) {
       throw new DocumentLinkError(`Document ${documentId} is already linked to entry ${entryId}.`, 'already_linked');

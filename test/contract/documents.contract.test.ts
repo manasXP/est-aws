@@ -17,10 +17,13 @@ import { dispatchRequest } from '../support/dispatch';
 // Known, recorded gap (see aws-blocks/finance/documents.ts and this story's
 // PR): the Admin OpenAPI's DocumentLink schema requires `title`/`category`,
 // which only a document *registry* can supply — E12 (M3) builds that
-// registry, not this story. The 201 success response below is therefore
-// checked directly rather than against the full DocumentLink schema; the
-// 404 paths (which use the registry-agnostic Error schema) are fully
-// schema-validated.
+// registry, not this story. `contractTest()` below still proves POST
+// .../documents is a declared admin-surface operation (it throws otherwise),
+// but the 201 success response's *body* is checked directly against every
+// field the real handler returns rather than the full DocumentLink schema
+// (which `op.expectValidResponse` would fail on the missing title/category).
+// The 404 paths (which use the registry-agnostic Error schema) are fully
+// schema-validated via `op.expectValidResponse`.
 
 async function linkedEntryId(): Promise<string> {
   const { entryId } = await postJournalEntry(db, 'STR-025 contract fixture', [
@@ -43,7 +46,11 @@ describe('STR-025 T-C1 — link-document-to-entry endpoint contract', () => {
 
     await contractTest('admin', '/books/{book}/entries/{entryId}/documents', 'post');
     expect(response.status).toBe(201);
-    expect(response.body).toMatchObject({ document_id: documentPath });
+    expect(response.body).toMatchObject({
+      document_id: documentPath,
+      file_name: expect.any(String),
+      linked_at: expect.any(String),
+    });
   });
 
   it('linking to a nonexistent entry fails 404 per the contract', async () => {

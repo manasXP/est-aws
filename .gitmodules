@@ -1,0 +1,9 @@
+[submodule "est-spec"]
+	path = est-spec
+	url = https://github.com/manasXP/est-spec.git
+[submodule "est-tcc"]
+	path = est-tcc
+	url = https://github.com/manasXP/est-tcc.git
+[submodule "est-deploy"]
+	path = est-deploy
+	url = https://github.com/manasXP/est-deploy.git

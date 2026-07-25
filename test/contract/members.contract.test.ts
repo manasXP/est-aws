@@ -95,8 +95,13 @@ describe('STR-032 T-C1 — admit/suspend/reinstate contract', () => {
   });
 
   it('POST /v1/members/{memberId}/suspend then /reinstate conform for an active member (covers TC-MEM-003)', async () => {
+    // joining_date seeded (sidesteps the known Member.joining_date
+    // non-nullable-schema gap noted above, same as the other seeded-active
+    // cases in this file) -- suspend/reinstate never touch it.
     const id = randomUUID();
-    await db.execute(sql`INSERT INTO members (id, name, member_status) VALUES (${id}, 'Contract Suspend Member', 'active')`);
+    await db.execute(
+      sql`INSERT INTO members (id, name, member_status, joining_date) VALUES (${id}, 'Contract Suspend Member', 'active', '2026-03-01')`,
+    );
 
     const suspendResponse = await dispatchRequest('POST', `/v1/members/${id}/suspend`, { actor: 'ec-member-1' });
     expect(suspendResponse.status).toBe(200);

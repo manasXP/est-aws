@@ -41,3 +41,23 @@ export function sendValidationError(ctx: BlocksContext, error: ValidationError):
   ctx.response.status = 422;
   ctx.response.send(problemResponse('validation_error', error.message));
 }
+
+/**
+ * Shared base for a module's domain-rejection error when an action is
+ * invalid in the resource's current state (e.g. members-api.ts's
+ * MemberLifecycleConflictError) -- writing nothing, thrown before any DB
+ * write. A route handler catches this type and calls sendConflictError
+ * below rather than inventing its own 409 mapping.
+ */
+export class ConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ConflictError';
+  }
+}
+
+/** 409 response for an action invalid in the resource's current state -- the Error schema's `Conflict` case. */
+export function sendConflictError(ctx: BlocksContext, error: ConflictError): void {
+  ctx.response.status = 409;
+  ctx.response.send(problemResponse('conflict', error.message));
+}

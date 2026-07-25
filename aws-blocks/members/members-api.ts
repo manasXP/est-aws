@@ -7,9 +7,29 @@
 import { randomUUID } from 'node:crypto';
 import { sql } from '@aws-blocks/blocks';
 import type { Database } from '@aws-blocks/blocks';
-import { ValidationError } from '../http/problem-response';
+import { ValidationError, ConflictError } from '../http/problem-response';
 
 export type MemberStatus = 'pending' | 'active' | 'suspended' | 'ceased';
+
+/**
+ * STR-032: the decided lifecycle edge set (Domain Model, "Member status
+ * lifecycle") -- `pending -> active`, `active <-> suspended`, and both
+ * non-terminal states into terminal `ceased`. Cessation transitions are
+ * listed here (the full machine) but not wired to an endpoint until
+ * STR-033.
+ */
+export const MEMBER_STATUS_TRANSITIONS: ReadonlyArray<readonly [MemberStatus, MemberStatus]> = [
+  ['pending', 'active'],
+  ['active', 'suspended'],
+  ['suspended', 'active'],
+  ['active', 'ceased'],
+  ['suspended', 'ceased'],
+];
+
+/** Pure edge-set membership check -- the single source of truth for which transitions are permitted. */
+export function canTransitionMemberStatus(from: MemberStatus, to: MemberStatus): boolean {
+  return MEMBER_STATUS_TRANSITIONS.some(([edgeFrom, edgeTo]) => edgeFrom === from && edgeTo === to);
+}
 
 /** The Admin OpenAPI's Member shape (components/schemas/Member), restricted
  * to the brief's attributes this story owns -- roles/whatsapp_opt_in/
@@ -43,6 +63,16 @@ export class MemberValidationError extends ValidationError {
   }
 }
 
+/** Domain rejection for a lifecycle action attempted from the wrong current
+ * status (e.g. suspending a pending member). Nothing is written when this
+ * is thrown. */
+export class MemberLifecycleConflictError extends ConflictError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'MemberLifecycleConflictError';
+  }
+}
+
 interface MemberRow {
   id: string;
   name: string;
@@ -54,6 +84,10 @@ interface MemberRow {
   // YYYY-MM-DD date string.
   joining_date: string | Date | null;
   member_status: MemberStatus;
+  // Who performed the last suspend/reinstate (STR-032) -- not part of the
+  // public Member shape (the OpenAPI schema doesn't expose it), recorded
+  // for audit only.
+  status_actor: string | null;
 }
 
 function toMember(row: MemberRow): Member {
@@ -132,4 +166,86 @@ export async function updateMember(db: Database, memberId: string, input: Member
         WHERE id = ${memberId}`,
   );
   return getMember(db, memberId);
+}
+
+interface TransitionMemberStatusOptions {
+  actor?: string;
+  setJoiningDate?: boolean;
+}
+
+/**
+ * STR-032: the only writer of `member_status` -- every lifecycle action
+ * (admitMember, suspendMember, reinstateMember, and STR-033's future
+ * cessation) delegates here rather than writing the column directly (AC3).
+ * Rejects -- writing nothing -- if the member isn't currently in `from`, or
+ * `from -> to` isn't in the decided edge set (MEMBER_STATUS_TRANSITIONS).
+ */
+async function transitionMemberStatus(
+  db: Database,
+  memberId: string,
+  from: MemberStatus,
+  to: MemberStatus,
+  opts: TransitionMemberStatusOptions = {},
+): Promise<Member | null> {
+  const existing = await db.queryOne<MemberRow>(sql`SELECT * FROM members WHERE id = ${memberId}`);
+  if (!existing) return null;
+
+  if (existing.member_status !== from || !canTransitionMemberStatus(from, to)) {
+    throw new MemberLifecycleConflictError(
+      `Member ${memberId} is ${existing.member_status}; cannot transition to ${to} (expected ${from}).`,
+    );
+  }
+
+  const statusActor = opts.actor ?? existing.status_actor ?? null;
+
+  if (opts.setJoiningDate) {
+    await db.execute(
+      sql`UPDATE members SET member_status = ${to}, status_actor = ${statusActor}, joining_date = (now() AT TIME ZONE 'Asia/Kolkata')::date WHERE id = ${memberId}`,
+    );
+  } else {
+    await db.execute(sql`UPDATE members SET member_status = ${to}, status_actor = ${statusActor} WHERE id = ${memberId}`);
+  }
+
+  return getMember(db, memberId);
+}
+
+/**
+ * `POST /members/{memberId}/admit` -- admits a pending member (Domain
+ * Model, "Member status lifecycle"), setting `joining_date` to today's IST
+ * calendar date. No actor is recorded (not an EC action). Returns `null` if
+ * the member doesn't exist; throws `MemberLifecycleConflictError` if the
+ * member isn't currently `pending`.
+ */
+export async function admitMember(db: Database, memberId: string): Promise<Member | null> {
+  return transitionMemberStatus(db, memberId, 'pending', 'active', { setJoiningDate: true });
+}
+
+function requireActor(actor: unknown): string {
+  if (typeof actor !== 'string' || actor.trim() === '') {
+    throw new MemberValidationError('actor is required.');
+  }
+  return actor;
+}
+
+/**
+ * `POST /members/{memberId}/suspend` -- the EC suspends an active member.
+ * Requires `actor` (the acting EC member), validated before any DB read.
+ * Returns `null` if the member doesn't exist; throws
+ * `MemberLifecycleConflictError` if the member isn't currently `active`.
+ */
+export async function suspendMember(db: Database, memberId: string, actor: unknown): Promise<Member | null> {
+  const validActor = requireActor(actor);
+  return transitionMemberStatus(db, memberId, 'active', 'suspended', { actor: validActor });
+}
+
+/**
+ * `POST /members/{memberId}/reinstate` -- the EC reinstates a suspended
+ * member. Same actor/status-conflict rules as suspendMember, but the
+ * expected `from` is `suspended` -- admission and reinstatement both target
+ * `active`, but from different source statuses, so they stay two distinct
+ * wrappers rather than one that infers `from` from the DB.
+ */
+export async function reinstateMember(db: Database, memberId: string, actor: unknown): Promise<Member | null> {
+  const validActor = requireActor(actor);
+  return transitionMemberStatus(db, memberId, 'suspended', 'active', { actor: validActor });
 }

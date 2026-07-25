@@ -2,6 +2,7 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
+    setupFiles: ['./test/setup.ts'],
     // The local Blocks runtime backs `Database` with a file-based PGlite
     // instance shared across every test file that imports it (`.bb-data/`).
     // Running test files in parallel worker processes races concurrent

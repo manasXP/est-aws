@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { rmSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { Scope, Database, sql } from '@aws-blocks/blocks';
+import { Scope, Database, sql, DatabaseErrors, isBlocksError } from '@aws-blocks/blocks';
 import { runLocalMigrations, MIGRATIONS_DIR } from '../../aws-blocks/migrations-runner';
 import { postJournalEntry, JournalError } from '../../aws-blocks/finance/journal';
 import { reverseJournalEntry } from '../../aws-blocks/finance/reversal';
@@ -161,6 +161,38 @@ describe('STR-022 reverseJournalEntry — reversing-entry corrections', () => {
     await reverseJournalEntry(db, entryId, 'first reversal');
 
     await expect(reverseJournalEntry(db, entryId, 'second reversal')).rejects.toThrow(JournalError);
+
+    const reversals = await db.query(sql`SELECT id FROM journal_entries WHERE reverses_entry_id = ${entryId}`);
+    expect(reversals).toHaveLength(1);
+  });
+
+  // Regression for the TOCTOU race in reverseJournalEntry's app-level
+  // "already reversed" check (SELECT ... WHERE reverses_entry_id = ...
+  // outside any transaction): two concurrent callers could both pass that
+  // check before either commits its INSERT. migrations/003_reversal_uniqueness.sql
+  // backstops this with a partial unique index on journal_entries
+  // (reverses_entry_id) WHERE reverses_entry_id IS NOT NULL, so the second
+  // INSERT fails at the database level even when the app-level check is
+  // bypassed entirely — simulated here by calling postJournalEntry directly
+  // twice, as two callers who both already passed the SELECT check would.
+  it('rejects a second direct postJournalEntry reversing the same entry, even bypassing the app-level check', async () => {
+    const db = await freshMigratedDb();
+    const { entryId } = await postJournalEntry(db, 'erroneous posting', [
+      { accountId: 'cash', direction: 'debit', amount: '50.00' },
+      { accountId: 'bank', direction: 'credit', amount: '50.00' },
+    ]);
+
+    await postJournalEntry(db, 'first reversal', [
+      { accountId: 'cash', direction: 'credit', amount: '50.00' },
+      { accountId: 'bank', direction: 'debit', amount: '50.00' },
+    ], { reversesEntryId: entryId });
+
+    await expect(
+      postJournalEntry(db, 'second reversal', [
+        { accountId: 'cash', direction: 'credit', amount: '50.00' },
+        { accountId: 'bank', direction: 'debit', amount: '50.00' },
+      ], { reversesEntryId: entryId }),
+    ).rejects.toSatisfy((e: unknown) => isBlocksError(e, DatabaseErrors.UniqueConstraintViolation));
 
     const reversals = await db.query(sql`SELECT id FROM journal_entries WHERE reverses_entry_id = ${entryId}`);
     expect(reversals).toHaveLength(1);

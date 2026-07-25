@@ -128,7 +128,12 @@ describe('STR-021 posting writer — append-only double-entry journal', () => {
     cleanupDbs.push(db);
 
     const first = await runLocalMigrations(db, MIGRATIONS_DIR);
-    expect(first.applied).toEqual(['000_baseline.sql', '001_finance_journal.sql', '002_journal_immutability.sql']);
+    expect(first.applied).toEqual([
+      '000_baseline.sql',
+      '001_finance_journal.sql',
+      '002_journal_immutability.sql',
+      '003_reversal_uniqueness.sql',
+    ]);
 
     const second = await runLocalMigrations(db, MIGRATIONS_DIR);
     expect(second.applied).toEqual([]);

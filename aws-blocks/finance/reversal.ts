@@ -7,7 +7,7 @@
 // `reverses_entry_id`. The original is never touched: migration 002's
 // immutability trigger guarantees that even in principle, but this service
 // only ever INSERTs, never UPDATEs.
-import { sql } from '@aws-blocks/blocks';
+import { DatabaseErrors, isBlocksError, sql } from '@aws-blocks/blocks';
 import type { Database } from '@aws-blocks/blocks';
 import { JournalError, postJournalEntry, type PostingDirection, type PostingLine } from './journal';
 
@@ -55,9 +55,20 @@ export async function reverseJournalEntry(
     amount: line.amount,
   }));
 
-  const { entryId: reversalEntryId } = await postJournalEntry(db, description, mirroredLines, {
-    reversesEntryId: entryId,
-  });
-
-  return { entryId: reversalEntryId };
+  try {
+    const { entryId: reversalEntryId } = await postJournalEntry(db, description, mirroredLines, {
+      reversesEntryId: entryId,
+    });
+    return { entryId: reversalEntryId };
+  } catch (e: unknown) {
+    // migrations/003_reversal_uniqueness.sql backstops the SELECT check
+    // above against the TOCTOU race between two concurrent reversals of the
+    // same entry: if both pass that check before either commits, one of the
+    // two INSERTs here hits the partial unique index and lands here instead
+    // of succeeding.
+    if (isBlocksError(e, DatabaseErrors.UniqueConstraintViolation)) {
+      throw new JournalError(`Journal entry ${entryId} has already been reversed.`);
+    }
+    throw e;
+  }
 }

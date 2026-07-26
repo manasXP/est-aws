@@ -90,7 +90,7 @@ export async function getMaintenanceFee(db: Database): Promise<string> {
 
 /** STR-065: the flat amount and grace period (in days past the source
  * charge's due date) that `runLateFeeSweep` applies -- both per-society,
- * alongside the maintenance fee (migrations/020_charges_late_fee.sql). */
+ * alongside the maintenance fee (migrations/021_charges_late_fee.sql). */
 export interface LateFeeConfig {
   amount: string;
   gracePeriodDays: number;

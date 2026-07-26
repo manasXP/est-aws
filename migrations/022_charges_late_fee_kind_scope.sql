@@ -8,7 +8,7 @@
 -- collide on this constraint -- charges.ts's insertChargeIfAbsent uses a
 -- bare `ON CONFLICT DO NOTHING` (no arbiter), which catches a violation of
 -- *any* applicable unique constraint, so the second late fee is silently
--- dropped. `020_charges_late_fee.sql`'s own
+-- dropped. `021_charges_late_fee.sql`'s own
 -- charges_source_charge_period_unique partial index already correctly
 -- dedups `late_fee` rows by source charge -- this constraint was only ever
 -- meant to be the maintenance charge run's own dedup key (019's comment:

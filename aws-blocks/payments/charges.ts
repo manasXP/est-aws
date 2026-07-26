@@ -5,6 +5,12 @@
 // payments/charge-run.test.ts). Mirrors aws-blocks/finance/journal.ts's
 // style: plain exported functions over a Database, no HTTP concerns (this
 // story adds no HTTP route, hence no `-api.ts` suffix).
+//
+// `charges` itself predates this file (migrations/016_ownership_transfer.sql,
+// STR-055, merged first) -- its `asset_id` on a returned `Charge` is built
+// from the in-memory `BillableOwnership` this module already has on hand,
+// never a stored column, so it stays in sync with STR-055's schema with no
+// migration coupling beyond the ALTERs in 017_charges.sql.
 import { randomUUID } from 'node:crypto';
 import { sql } from '@aws-blocks/blocks';
 import type { Database } from '@aws-blocks/blocks';
@@ -114,8 +120,8 @@ export async function runMaintenanceChargeRun(db: Database, periodKey: string, d
   for (const ownership of accruing) {
     const chargeId = randomUUID();
     await db.execute(
-      sql`INSERT INTO charges (id, member_id, ownership_id, asset_id, kind, period_key, amount, due_date, status)
-          VALUES (${chargeId}, ${ownership.member_id}, ${ownership.ownership_id}, ${ownership.asset_id}, 'maintenance', ${periodKey}, ${fee}, ${dueDate}, 'due')`,
+      sql`INSERT INTO charges (id, member_id, ownership_id, kind, period_key, amount, due_date, status)
+          VALUES (${chargeId}, ${ownership.member_id}, ${ownership.ownership_id}, 'maintenance', ${periodKey}, ${fee}, ${dueDate}, 'due')`,
     );
     charges.push({
       charge_id: chargeId,

@@ -6,7 +6,7 @@ import { runLocalMigrations, MIGRATIONS_DIR } from '../../aws-blocks/migrations-
 import { createOwnership, transferOwnership, OwnershipConflictError } from '../../aws-blocks/assets/ownerships-api';
 import { createAsset, getAssetDetail } from '../../aws-blocks/assets/assets-api';
 import { createProject } from '../../aws-blocks/projects/projects-api';
-import { createMember } from '../../aws-blocks/members/members-api';
+import { createMember, admitMember } from '../../aws-blocks/members/members-api';
 import { mulberry32 } from '../finance/prng';
 
 // STR-053 — T-P1 (BE-P): for any generated sequence of asset creations and
@@ -126,9 +126,14 @@ describe('STR-055 property: close-and-create transfers preserve owner history (A
     const ASSET_COUNT = 4;
     const TRANSFER_COUNT = 30;
 
+    // Transfer targets must be active (Admin OpenAPI: "422 if the receiving
+    // member is not active") -- admitted right after creation so every
+    // random pick below is a legal transfer target.
     const members = [];
     for (let i = 0; i < MEMBER_COUNT; i++) {
-      members.push(await createMember(db, { name: `Member ${i}` }));
+      const member = await createMember(db, { name: `Member ${i}` });
+      await admitMember(db, member.member_id);
+      members.push(member);
     }
     const assets = [];
     for (let i = 0; i < ASSET_COUNT; i++) {

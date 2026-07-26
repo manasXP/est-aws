@@ -192,10 +192,17 @@ export async function updateOwnership(
   const existing = toOwnership(existingRow);
 
   const nextCoOwnerNames = 'co_owner_names' in input ? input.co_owner_names ?? null : existing.co_owner_names ?? null;
-  await db.execute(
+  // Guarded on closed_at IS NULL, not just the pre-check above: the pre-check
+  // is read-then-write and a concurrent transfer could close this row in
+  // between (same rowCount-guard pattern as transferOwnership's own closing
+  // UPDATE and reassignAsset -- ordinary row-level locking makes this safe).
+  const updated = await db.execute(
     sql`UPDATE ownerships SET co_owner_names = ${nextCoOwnerNames ? JSON.stringify(nextCoOwnerNames) : null}, updated_at = now()
-        WHERE id = ${ownershipId}`,
+        WHERE id = ${ownershipId} AND closed_at IS NULL`,
   );
+  if (updated.rowCount === 0) {
+    throw new OwnershipValidationError(`Ownership ${ownershipId} is closed; closed ownership records are immutable.`);
+  }
   return getOwnership(db, ownershipId);
 }
 
@@ -258,6 +265,13 @@ export async function transferOwnership(
   const toMember = await getMember(db, toMemberId);
   if (!toMember) {
     throw new OwnershipValidationError(`No member ${toMemberId}.`);
+  }
+  // Admin OpenAPI, POST .../transfer: "422 if the receiving member is not
+  // active" -- members always start `pending` (members-api.ts's createMember)
+  // and only ever reach `active` via admission, so this is a real, distinct
+  // case from "no such member" above, not implied by it.
+  if (toMember.member_status !== 'active') {
+    throw new OwnershipValidationError(`Member ${toMemberId} must be active to receive a transfer (is ${toMember.member_status}).`);
   }
 
   const assetId = existingRow.asset_id;

@@ -15,7 +15,7 @@ import {
 } from '../../aws-blocks/assets/ownerships-api';
 import { createAsset, updateAsset, AssetConflictError } from '../../aws-blocks/assets/assets-api';
 import { createProject } from '../../aws-blocks/projects/projects-api';
-import { createMember } from '../../aws-blocks/members/members-api';
+import { createMember, admitMember } from '../../aws-blocks/members/members-api';
 
 // STR-053 — Ownership allotment via asset_id, unit cases. Follows the
 // STR-051 test pattern (test/assets/assets-api.test.ts): fresh Database +
@@ -324,6 +324,7 @@ describe('STR-055 T-U2 — transfer of a settled ownership closes and creates (c
     const project = await createProject(db, { name: 'Green Meadows' });
     const memberA = await createMember(db, { name: 'Asha Rao' });
     const memberB = await createMember(db, { name: 'Bala Iyer' });
+    await admitMember(db, memberB.member_id);
     const asset = await createAsset(db, { project_id: project.project_id, type: 'flat', label: 'A-204' });
     const ownership = await createOwnership(db, memberA.member_id, { asset_id: asset.asset_id, co_owner_names: ['Priya Rao'] });
     await seedCharge(db, memberA.member_id, ownership.ownership_id, 'paid');
@@ -359,6 +360,7 @@ describe('STR-055 code review — updateOwnership rejects an edit of a closed ow
     const project = await createProject(db, { name: 'Green Meadows' });
     const memberA = await createMember(db, { name: 'Asha Rao' });
     const memberB = await createMember(db, { name: 'Bala Iyer' });
+    await admitMember(db, memberB.member_id);
     const asset = await createAsset(db, { project_id: project.project_id, type: 'flat', label: 'A-204' });
     const ownership = await createOwnership(db, memberA.member_id, { asset_id: asset.asset_id });
     await transferOwnership(db, ownership.ownership_id, { to_member_id: memberB.member_id });
@@ -378,6 +380,7 @@ describe('STR-055 code review — listBillableOwnerships reflects transfer re-po
     const project = await createProject(db, { name: 'Green Meadows' });
     const memberA = await createMember(db, { name: 'Asha Rao' });
     const memberB = await createMember(db, { name: 'Bala Iyer' });
+    await admitMember(db, memberB.member_id);
     const asset = await createAsset(db, { project_id: project.project_id, type: 'flat', label: 'A-204' });
     const ownership = await createOwnership(db, memberA.member_id, { asset_id: asset.asset_id });
 
@@ -418,6 +421,31 @@ describe('STR-055 — transfer to a nonexistent member is rejected', () => {
   });
 });
 
+// Genuine gap, same posture as STR-053's own "code review" describe blocks:
+// the Admin OpenAPI's POST .../transfer explicitly declares "422 if the
+// receiving member is not active", and every member starts `pending`
+// (members-api.ts's createMember) -- an un-admitted to_member_id must be
+// rejected exactly like a nonexistent one, not silently accepted.
+describe('STR-055 — transfer to a non-active member is rejected', () => {
+  it('throws OwnershipValidationError, writes nothing, and leaves the ownership open', async () => {
+    const db = await freshMigratedDb();
+    const project = await createProject(db, { name: 'Green Meadows' });
+    const memberA = await createMember(db, { name: 'Asha Rao' });
+    const memberB = await createMember(db, { name: 'Bala Iyer' }); // left pending -- not admitted
+    const asset = await createAsset(db, { project_id: project.project_id, type: 'flat', label: 'A-204' });
+    const ownership = await createOwnership(db, memberA.member_id, { asset_id: asset.asset_id });
+
+    await expect(transferOwnership(db, ownership.ownership_id, { to_member_id: memberB.member_id })).rejects.toThrow(
+      OwnershipValidationError,
+    );
+
+    const row = await rawOwnershipRow(db, ownership.ownership_id);
+    expect(row!.closed_at).toBeNull();
+    const ownershipsForAsset = await db.query(sql`SELECT id FROM ownerships WHERE asset_id = ${asset.asset_id}`);
+    expect(ownershipsForAsset).toHaveLength(1);
+  });
+});
+
 // Same sequential-not-concurrent precedent as STR-053's own "a second
 // sequential createOwnership" test above (PGliteEngine is single-connection
 // and doesn't serialize genuinely concurrent beginTransaction() calls --
@@ -431,11 +459,15 @@ describe('STR-055 — transferring an already-closed ownership a second time is 
     const project = await createProject(db, { name: 'Green Meadows' });
     const memberA = await createMember(db, { name: 'Asha Rao' });
     const memberB = await createMember(db, { name: 'Bala Iyer' });
+    await admitMember(db, memberB.member_id);
     const memberC = await createMember(db, { name: 'Chetan Nair' });
     const asset = await createAsset(db, { project_id: project.project_id, type: 'flat', label: 'A-204' });
     const ownership = await createOwnership(db, memberA.member_id, { asset_id: asset.asset_id });
 
     await transferOwnership(db, ownership.ownership_id, { to_member_id: memberB.member_id });
+    // memberC is deliberately left `pending` -- the already-closed check
+    // (existingRow.closed_at !== null) fires before the active-member check,
+    // so this still proves OwnershipConflictError, not the unrelated 422.
     await expect(transferOwnership(db, ownership.ownership_id, { to_member_id: memberC.member_id })).rejects.toThrow(
       OwnershipConflictError,
     );

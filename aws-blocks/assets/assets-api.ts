@@ -185,7 +185,7 @@ export async function getAssetDetail(db: Database, assetId: string): Promise<Ass
   const rows = await db.query<OwnerHistoryRow>(
     sql`SELECT o.id, o.member_id, m.name AS member_name, o.created_at, o.closed_at
         FROM ownerships o JOIN members m ON m.id = o.member_id
-        WHERE o.asset_id = ${assetId} ORDER BY o.created_at DESC`,
+        WHERE o.asset_id = ${assetId} ORDER BY o.created_at DESC, o.id DESC`,
   );
 
   const owner_history: AssetOwnerHistoryEntry[] = rows.map(row => ({

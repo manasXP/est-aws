@@ -6,7 +6,7 @@ import { runLocalMigrations, MIGRATIONS_DIR } from '../../aws-blocks/migrations-
 import { createAsset, listAssets, updateAsset, getAssetDetail, AssetValidationError } from '../../aws-blocks/assets/assets-api';
 import { createOwnership, transferOwnership } from '../../aws-blocks/assets/ownerships-api';
 import { createProject } from '../../aws-blocks/projects/projects-api';
-import { createMember } from '../../aws-blocks/members/members-api';
+import { createMember, admitMember } from '../../aws-blocks/members/members-api';
 
 // STR-051 — Asset registry business logic, unit cases. Follows the STR-031
 // test pattern (test/projects/projects-api.test.ts): fresh Database + Scope
@@ -156,7 +156,9 @@ describe('STR-055 T-U3 — asset detail returns the full owner history across tr
     const project = await createProject(db, { name: 'Green Meadows' });
     const memberA = await createMember(db, { name: 'Asha Rao' });
     const memberB = await createMember(db, { name: 'Bala Iyer' });
+    await admitMember(db, memberB.member_id);
     const memberC = await createMember(db, { name: 'Chetan Nair' });
+    await admitMember(db, memberC.member_id);
     const asset = await createAsset(db, { project_id: project.project_id, type: 'flat', label: 'A-204' });
 
     const ownership1 = await createOwnership(db, memberA.member_id, { asset_id: asset.asset_id });

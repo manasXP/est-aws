@@ -4,7 +4,7 @@
 // format the final receipt string (STR-073), decide GST/plain shape
 // (STR-075), or persist a receipt record (STR-079).
 import { sql } from '@aws-blocks/blocks';
-import type { Database, Transaction } from '@aws-blocks/blocks';
+import type { Transaction } from '@aws-blocks/blocks';
 import { financialYearOf } from './financial-year';
 
 /**
@@ -42,13 +42,17 @@ export async function allocateReceiptSeriesNumber(tx: Transaction, fyLabel: stri
  * receipt issued in the UTC evening of Mar 31 that is already IST Apr 1
  * lands in the new FY, not the old one.
  *
- * The IST-date read runs against `db`; the counter allocation and the
- * `society_settings.receipt_prefix` read both run against the caller's
- * `tx`, so they're transactionally consistent with each other as part of
- * the same atomic receipt-numbering operation.
+ * All reads run against the caller's own `tx` -- the date resolution has no
+ * correctness reason to hold a second pool connection outside the
+ * transaction that's about to allocate the counter.
+ *
+ * Throws if `society_settings.receipt_prefix` hasn't been configured yet
+ * (still the migration's placeholder `''`): silently minting a
+ * prefix-less, auditor-facing statutory receipt number is worse than
+ * failing loudly before anything is written.
  */
-export async function formatReceiptNumber(db: Database, tx: Transaction, issuedOnDate: string): Promise<string> {
-  const dateRow = await db.queryOne<{ ist_date: string }>(
+export async function formatReceiptNumber(tx: Transaction, issuedOnDate: string): Promise<string> {
+  const dateRow = await tx.queryOne<{ ist_date: string }>(
     sql`SELECT (${issuedOnDate}::timestamptz AT TIME ZONE 'Asia/Kolkata')::date::text AS ist_date`,
   );
   const fy = financialYearOf(dateRow!.ist_date);
@@ -58,6 +62,9 @@ export async function formatReceiptNumber(db: Database, tx: Transaction, issuedO
   const settings = await tx.queryOne<{ receipt_prefix: string }>(
     sql`SELECT receipt_prefix FROM society_settings WHERE id = 'default'`,
   );
+  if (!settings!.receipt_prefix) {
+    throw new Error('society_settings.receipt_prefix is not configured -- set it before issuing receipts.');
+  }
 
   return `${settings!.receipt_prefix}/${fy.label}/${String(allocated).padStart(6, '0')}`;
 }

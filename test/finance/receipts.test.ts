@@ -108,10 +108,10 @@ describe('STR-073 formatReceiptNumber', () => {
     const db = await freshMigratedDb();
     await seedReceiptPrefix(db, 'SOC');
 
-    const beforeBoundary = await db.transaction(tx => formatReceiptNumber(db, tx, '2026-03-31T10:00:00Z'));
+    const beforeBoundary = await db.transaction(tx => formatReceiptNumber(tx, '2026-03-31T10:00:00Z'));
     expect(beforeBoundary).toBe('SOC/2025-26/000001');
 
-    const afterBoundary = await db.transaction(tx => formatReceiptNumber(db, tx, '2026-04-01T10:00:00Z'));
+    const afterBoundary = await db.transaction(tx => formatReceiptNumber(tx, '2026-04-01T10:00:00Z'));
     expect(afterBoundary).toBe('SOC/2026-27/000001');
   });
 
@@ -123,7 +123,7 @@ describe('STR-073 formatReceiptNumber', () => {
     await seedReceiptPrefix(db, 'SOC');
 
     // 2026-03-31T20:00:00Z is 2026-04-01T01:30 IST (UTC+5:30).
-    const receiptNumber = await db.transaction(tx => formatReceiptNumber(db, tx, '2026-03-31T20:00:00Z'));
+    const receiptNumber = await db.transaction(tx => formatReceiptNumber(tx, '2026-03-31T20:00:00Z'));
 
     expect(receiptNumber).toBe('SOC/2026-27/000001');
   });
@@ -133,8 +133,20 @@ describe('STR-073 formatReceiptNumber', () => {
     const db = await freshMigratedDb();
     await seedReceiptPrefix(db, 'SOC');
 
-    const receiptNumber = await db.transaction(tx => formatReceiptNumber(db, tx, '2026-04-01T10:00:00Z'));
+    const receiptNumber = await db.transaction(tx => formatReceiptNumber(tx, '2026-04-01T10:00:00Z'));
 
     expect(receiptNumber).toBe('SOC/2026-27/000001');
+  });
+
+  // Review finding: society_settings.receipt_prefix is seeded as '' (the
+  // migration's "not yet configured" placeholder, same spirit as
+  // charge_settings' 0.00 default) -- an unconfigured prefix must fail
+  // loudly rather than silently mint a prefix-less receipt number.
+  it('throws if receipt_prefix has not been configured yet', async () => {
+    const db = await freshMigratedDb();
+
+    await expect(db.transaction(tx => formatReceiptNumber(tx, '2026-04-01T10:00:00Z'))).rejects.toThrow(
+      'society_settings.receipt_prefix is not configured',
+    );
   });
 });

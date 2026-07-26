@@ -110,7 +110,11 @@ export interface ChargeRunObservability {
  * directly without touching CronJob at all. Reads the billable-asset basis
  * (STR-053's listBillableOwnerships, no status filtering by design), filters
  * to accruing members in one member-status query (no per-ownership N+1),
- * and inserts one `maintenance` charge per remaining ownership.
+ * and inserts one `maintenance` charge per remaining ownership whose
+ * (ownership_id, period_key, kind) key isn't already present (STR-063:
+ * idempotent re-run). The returned `Charge[]` is only the charges newly
+ * raised by *this* call, not every charge for the period -- a re-run against
+ * an already-complete period returns `[]`.
  */
 export async function runMaintenanceChargeRun(
   db: Database,

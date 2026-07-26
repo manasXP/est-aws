@@ -11,4 +11,9 @@
 -- against this key with ON CONFLICT ... DO NOTHING, so Lambda retries,
 -- duplicate EventBridge triggers, and manual re-runs never double-bill a
 -- member.
+--
+-- No stack has deployed STR-061's un-protected charge run yet (this story
+-- ships in the same milestone, before any production run) -- if that ever
+-- changes, an operator must dedup existing `charges` rows before this
+-- migration runs, or the ADD CONSTRAINT will fail outright.
 ALTER TABLE charges ADD CONSTRAINT charges_ownership_period_kind_unique UNIQUE (ownership_id, period_key, kind);

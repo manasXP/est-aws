@@ -107,7 +107,7 @@ describe('STR-021 posting writer — append-only double-entry journal', () => {
     expect(accounts).toEqual([
       { id: 'bank', kind: 'bank' },
       { id: 'cash', kind: 'cash' },
-      // STR-042: 010_employees.sql seeds a third ledger account, 'expense'.
+      // STR-042: 011_employees.sql seeds a third ledger account, 'expense'.
       { id: 'expense', kind: 'expense' },
     ]);
 
@@ -141,7 +141,8 @@ describe('STR-021 posting writer — append-only double-entry journal', () => {
       '007_assets.sql',
       '008_member_lifecycle.sql',
       '009_member_status_timestamp.sql',
-      '010_employees.sql',
+      '010_member_cessation.sql',
+      '011_employees.sql',
     ]);
 
     const second = await runLocalMigrations(db, MIGRATIONS_DIR);

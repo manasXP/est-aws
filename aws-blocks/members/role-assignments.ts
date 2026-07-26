@@ -131,7 +131,7 @@ export async function assignRole(
   try {
     await db.execute(
       sql`INSERT INTO role_assignments (id, member_id, role, effective_from, acting_admin)
-          VALUES (${id}, ${memberId}, ${role}, ${effectiveFrom}, ${actingAdmin})`,
+          VALUES (${id}, ${memberId}, ${role}, ${effectiveFrom}::date, ${actingAdmin})`,
     );
   } catch (e: unknown) {
     // role_assignments_open_unique (migrations/013) is the TOCTOU backstop
@@ -168,7 +168,7 @@ export async function vacateRole(
   // UUID, so ORDER BY id DESC picks an arbitrary one of them, not the one
   // this call just closed).
   const updated = await db.queryOne<{ id: string }>(
-    sql`UPDATE role_assignments SET effective_to = ${effectiveTo}, acting_admin = COALESCE(${actingAdmin ?? null}, acting_admin)
+    sql`UPDATE role_assignments SET effective_to = ${effectiveTo}::date, acting_admin = COALESCE(${actingAdmin ?? null}, acting_admin)
         WHERE member_id = ${memberId} AND role = ${role} AND effective_to IS NULL
         RETURNING id`,
   );

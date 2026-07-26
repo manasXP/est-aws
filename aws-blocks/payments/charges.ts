@@ -146,7 +146,7 @@ async function insertChargeIfAbsent(
 ): Promise<boolean> {
   const result = await db.execute(
     sql`INSERT INTO charges (id, member_id, ownership_id, kind, period_key, amount, due_date, status, source_charge_id)
-        VALUES (${charge.chargeId}, ${charge.memberId}, ${charge.ownershipId}, ${charge.kind}, ${charge.periodKey}, ${charge.amount}, ${charge.dueDate}, 'due', ${charge.sourceChargeId ?? null})
+        VALUES (${charge.chargeId}, ${charge.memberId}, ${charge.ownershipId}, ${charge.kind}, ${charge.periodKey}, ${charge.amount}::numeric, ${charge.dueDate}::date, 'due', ${charge.sourceChargeId ?? null})
         ON CONFLICT DO NOTHING`,
   );
   return result.rowCount > 0;

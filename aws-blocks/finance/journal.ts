@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { sql } from '@aws-blocks/blocks';
 import type { Database } from '@aws-blocks/blocks';
 import { moneyEquals, parseMoney, sumMoney } from '../money';
+import { pgTextArray } from '../sql-array';
 
 export type PostingDirection = 'debit' | 'credit';
 
@@ -74,7 +75,7 @@ export async function postJournalEntry(
 
   const referencedAccountIds = [...new Set(lines.map(line => line.accountId))];
   const accounts = await db.query<{ id: string }>(
-    sql`SELECT id FROM ledger_accounts WHERE id = ANY(${referencedAccountIds})`,
+    sql`SELECT id FROM ledger_accounts WHERE id = ANY(${pgTextArray(referencedAccountIds)}::text[])`,
   );
   const knownAccountIds = new Set(accounts.map(row => row.id));
   const missing = referencedAccountIds.filter(id => !knownAccountIds.has(id));
@@ -93,14 +94,14 @@ export async function postJournalEntry(
     await tx.execute(
       options.postedAt
         ? sql`INSERT INTO journal_entries (id, description, reverses_entry_id, posted_at)
-              VALUES (${entryId}, ${description}, ${options.reversesEntryId ?? null}, ${options.postedAt})`
+              VALUES (${entryId}, ${description}, ${options.reversesEntryId ?? null}, ${options.postedAt}::timestamptz)`
         : sql`INSERT INTO journal_entries (id, description, reverses_entry_id)
               VALUES (${entryId}, ${description}, ${options.reversesEntryId ?? null})`,
     );
     for (const line of lines) {
       await tx.execute(
         sql`INSERT INTO journal_lines (id, entry_id, account_id, direction, amount, counterparty_type, counterparty_id)
-            VALUES (${randomUUID()}, ${entryId}, ${line.accountId}, ${line.direction}, ${line.amount}, ${line.counterpartyType ?? null}, ${line.counterpartyId ?? null})`,
+            VALUES (${randomUUID()}, ${entryId}, ${line.accountId}, ${line.direction}, ${line.amount}::numeric, ${line.counterpartyType ?? null}, ${line.counterpartyId ?? null})`,
       );
     }
   });

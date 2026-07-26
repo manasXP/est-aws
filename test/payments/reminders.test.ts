@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { rmSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { Scope, Database, sql } from '@aws-blocks/blocks';
@@ -176,5 +176,32 @@ describe('STR-067 T-U3 — dispatch reflects only the run\'s own returned charge
 
     await dispatchDueDateReminders(db, adapter, rerun);
     expect(adapter.sent).toHaveLength(sentBefore);
+  });
+});
+
+// Regression: the RDS Data API has no array Field type -- a bare JS array
+// marshals as a JSON string (`["a","b"]`), which Postgres's `ANY()` rejects
+// ("op ANY/ALL (array) requires array on right side") -- a real-Aurora-only
+// failure that PGlite never surfaces locally (its driver binds JS arrays
+// natively). Asserted at the query-text level since PGlite accepts the
+// pgTextArray + ::text[] cast as a no-op either way.
+describe('STR-067 regression — member_id = ANY(...) is bound via pgTextArray + an explicit ::text[] cast', () => {
+  it('dispatchDueDateReminders casts the member id array parameter', async () => {
+    const db = await freshMigratedDb();
+    await setMaintenanceFee(db, '2500.00');
+    const project = await createProject(db, { name: 'Green Meadows' });
+    const member = await createMember(db, { name: 'Asha Rao' });
+    await admitMember(db, member.member_id);
+    const asset = await createAsset(db, { project_id: project.project_id, type: 'flat', label: 'A-101' });
+    await createOwnership(db, member.member_id, { asset_id: asset.asset_id });
+    await registerDevice(db, member.member_id, 'ios', 'ios-token-1');
+
+    const raisedCharges = await runMaintenanceChargeRun(db, '2026-07', '2026-07-05');
+    const querySpy = vi.spyOn(db, 'query');
+    await dispatchDueDateReminders(db, new FakePushAdapter(), raisedCharges);
+
+    const selectCall = querySpy.mock.calls.map(([query]) => query).find(query => query.sql.includes('registered_devices'));
+    expect(selectCall).toBeDefined();
+    expect(selectCall!.sql).toMatch(/ANY\(\$\d+::text\[\]\)/);
   });
 });

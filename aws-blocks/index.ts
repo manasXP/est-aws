@@ -1,6 +1,6 @@
 import { Scope, Database, FileBucket, RawRoute, CronJob } from '@aws-blocks/blocks';
 import { SCOPE_ID, DB_BLOCK_ID, DOCUMENTS_BLOCK_ID } from './block-ids';
-import { runMaintenanceChargeRun } from './payments/charges';
+import { runMaintenanceChargeRun, chargeRunPeriodFromScheduledTime } from './payments/charges';
 import { linkDocumentToEntry, DocumentLinkError } from './finance/documents';
 import { registerBookRoutes } from './finance/books-routes';
 import { registerMemberRoutes } from './members/members-routes';
@@ -111,12 +111,7 @@ new CronJob(scope, 'maintenance-charge-run', {
   timezone: 'Asia/Kolkata',
   description: 'Monthly maintenance charge run',
   handler: async (event) => {
-    // Due the same IST calendar date the run executes -- no AC pins a
-    // different rule; an N-days-out grace period is a later story's call.
-    const scheduled = new Date(event.scheduledTime);
-    const ist = new Date(scheduled.getTime() + 5.5 * 60 * 60 * 1000);
-    const periodKey = `${ist.getUTCFullYear()}-${String(ist.getUTCMonth() + 1).padStart(2, '0')}`;
-    const dueDate = ist.toISOString().slice(0, 10);
+    const { periodKey, dueDate } = chargeRunPeriodFromScheduledTime(event.scheduledTime);
     await runMaintenanceChargeRun(db, periodKey, dueDate);
   },
 });

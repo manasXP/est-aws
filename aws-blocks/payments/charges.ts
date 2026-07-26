@@ -15,6 +15,28 @@ import { formatMoney, parseMoney } from '../money';
 export type ChargeKind = 'maintenance' | 'late_fee';
 export type ChargeStatus = 'due' | 'in_payment' | 'paid';
 
+export interface ChargeRunPeriod {
+  periodKey: string;
+  dueDate: string;
+}
+
+/**
+ * Resolves a CronJob's `scheduledTime` (UTC ISO timestamp) into the
+ * `YYYY-MM` IST period key and IST due date the maintenance charge run
+ * writes -- extracted out of the CronJob handler (aws-blocks/index.ts) so
+ * STR-063's idempotent re-run and STR-065's late-fee run can key off the
+ * same period resolution instead of each re-deriving it. Due on the same
+ * IST calendar date the run executes -- no AC pins a different rule; an
+ * N-days-out grace period is a later story's call.
+ */
+export function chargeRunPeriodFromScheduledTime(scheduledTime: string): ChargeRunPeriod {
+  const scheduled = new Date(scheduledTime);
+  const ist = new Date(scheduled.getTime() + 5.5 * 60 * 60 * 1000);
+  const periodKey = `${ist.getUTCFullYear()}-${String(ist.getUTCMonth() + 1).padStart(2, '0')}`;
+  const dueDate = ist.toISOString().slice(0, 10);
+  return { periodKey, dueDate };
+}
+
 export interface Charge {
   charge_id: string;
   member_id: string;

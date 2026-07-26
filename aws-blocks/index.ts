@@ -7,6 +7,7 @@ import { registerProjectRoutes } from './projects/projects-routes';
 import { registerProjectCommitteeRoutes } from './projects/committees-routes';
 import { registerEmployeeRoutes } from './employees/employees-routes';
 import { registerAssetRoutes } from './assets/assets-routes';
+import { registerOwnershipRoutes } from './assets/ownerships-routes';
 // STR-041 code review: no HTTP surface of its own -- imported for its
 // module-load side effect (registering vacateRolesOnStatusChange with
 // members-api.ts's memberStatusTransitionListeners). Without this import,
@@ -95,3 +96,7 @@ registerEmployeeRoutes(scope, db);
 // any ownership. STR-053 builds allotment on it; STR-057 builds
 // visibility-scoped reads.
 registerAssetRoutes(scope, db);
+
+// STR-053: ownership allotment via asset_id -- creating an ownership is the
+// sole writer of an asset's status/current_ownership_id.
+registerOwnershipRoutes(scope, db);

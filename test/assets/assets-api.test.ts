@@ -3,8 +3,10 @@ import { rmSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { Scope, Database } from '@aws-blocks/blocks';
 import { runLocalMigrations, MIGRATIONS_DIR } from '../../aws-blocks/migrations-runner';
-import { createAsset, listAssets, updateAsset, AssetValidationError } from '../../aws-blocks/assets/assets-api';
+import { createAsset, listAssets, updateAsset, getAssetDetail, AssetValidationError } from '../../aws-blocks/assets/assets-api';
+import { createOwnership, transferOwnership } from '../../aws-blocks/assets/ownerships-api';
 import { createProject } from '../../aws-blocks/projects/projects-api';
+import { createMember } from '../../aws-blocks/members/members-api';
 
 // STR-051 — Asset registry business logic, unit cases. Follows the STR-031
 // test pattern (test/projects/projects-api.test.ts): fresh Database + Scope
@@ -145,5 +147,48 @@ describe('STR-051 — creating an asset against a nonexistent project is rejecte
     const db = await freshMigratedDb();
     await expect(createAsset(db, { project_id: 'no-such-project', type: 'flat' })).rejects.toThrow(AssetValidationError);
     expect(await listAssets(db)).toHaveLength(0);
+  });
+});
+
+describe('STR-055 T-U3 — asset detail returns the full owner history across transfers (covers TC-AST-022)', () => {
+  it('lists every ownership newest first, with to: null only for the currently-open one', async () => {
+    const db = await freshMigratedDb();
+    const project = await createProject(db, { name: 'Green Meadows' });
+    const memberA = await createMember(db, { name: 'Asha Rao' });
+    const memberB = await createMember(db, { name: 'Bala Iyer' });
+    const memberC = await createMember(db, { name: 'Chetan Nair' });
+    const asset = await createAsset(db, { project_id: project.project_id, type: 'flat', label: 'A-204' });
+
+    const ownership1 = await createOwnership(db, memberA.member_id, { asset_id: asset.asset_id });
+    const ownership2 = await transferOwnership(db, ownership1.ownership_id, { to_member_id: memberB.member_id });
+    const ownership3 = await transferOwnership(db, ownership2!.ownership_id, { to_member_id: memberC.member_id });
+
+    const detail = await getAssetDetail(db, asset.asset_id);
+
+    expect(detail).not.toBeNull();
+    expect(detail!.asset_id).toBe(asset.asset_id);
+    expect(detail!.owner_history).toHaveLength(3);
+
+    const [entry3, entry2, entry1] = detail!.owner_history;
+    expect(entry3.ownership_id).toBe(ownership3!.ownership_id);
+    expect(entry3.member_id).toBe(memberC.member_id);
+    expect(entry3.member_name).toBe('Chetan Nair');
+    expect(entry3.to).toBeNull();
+
+    expect(entry2.ownership_id).toBe(ownership2!.ownership_id);
+    expect(entry2.member_id).toBe(memberB.member_id);
+    expect(entry2.member_name).toBe('Bala Iyer');
+    expect(entry2.to).not.toBeNull();
+
+    expect(entry1.ownership_id).toBe(ownership1.ownership_id);
+    expect(entry1.member_id).toBe(memberA.member_id);
+    expect(entry1.member_name).toBe('Asha Rao');
+    expect(entry1.to).not.toBeNull();
+    expect(typeof entry1.from).toBe('string');
+  });
+
+  it('returns null for a nonexistent asset', async () => {
+    const db = await freshMigratedDb();
+    expect(await getAssetDetail(db, 'does-not-exist')).toBeNull();
   });
 });

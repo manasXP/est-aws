@@ -9,6 +9,7 @@ import {
   listOwnershipsForMember,
   updateOwnership,
   listBillableOwnerships,
+  transferOwnership,
   OwnershipValidationError,
   OwnershipConflictError,
 } from '../../aws-blocks/assets/ownerships-api';
@@ -257,5 +258,189 @@ describe('STR-053 — updateOwnership amends co_owner_names only', () => {
     expect(updated!.co_owner_names).toEqual(['Priya Rao']);
 
     expect(await updateOwnership(db, 'does-not-exist', { co_owner_names: ['X'] })).toBeNull();
+  });
+});
+
+// STR-055 — Ownership transfer (close-and-create) and its settlement gate.
+// Follows STR-053's own test pattern above: fresh Database + Scope per test.
+
+interface RawOwnershipRow {
+  id: string;
+  member_id: string;
+  asset_id: string;
+  co_owner_names: string | null;
+  created_at: string | Date;
+  closed_at: string | Date | null;
+}
+
+async function rawOwnershipRow(db: Database, ownershipId: string): Promise<RawOwnershipRow | null> {
+  return db.queryOne<RawOwnershipRow>(
+    sql`SELECT id, member_id, asset_id, co_owner_names, created_at, closed_at FROM ownerships WHERE id = ${ownershipId}`,
+  );
+}
+
+async function seedCharge(
+  db: Database,
+  memberId: string,
+  ownershipId: string,
+  status: 'due' | 'in_payment' | 'paid',
+): Promise<void> {
+  await db.execute(
+    sql`INSERT INTO charges (id, member_id, ownership_id, amount, due_date, status)
+        VALUES (${randomUUID()}, ${memberId}, ${ownershipId}, '1250.00', '2026-08-01', ${status})`,
+  );
+}
+
+describe('STR-055 T-U1 — transfer of an ownership with outstanding charges is rejected (covers TC-AST-020)', () => {
+  it('throws OwnershipConflictError, leaving the ownership open and the asset unchanged', async () => {
+    const db = await freshMigratedDb();
+    const project = await createProject(db, { name: 'Green Meadows' });
+    const memberA = await createMember(db, { name: 'Asha Rao' });
+    const memberB = await createMember(db, { name: 'Bala Iyer' });
+    const asset = await createAsset(db, { project_id: project.project_id, type: 'flat', label: 'A-204' });
+    const ownership = await createOwnership(db, memberA.member_id, { asset_id: asset.asset_id });
+    await seedCharge(db, memberA.member_id, ownership.ownership_id, 'due');
+
+    await expect(transferOwnership(db, ownership.ownership_id, { to_member_id: memberB.member_id })).rejects.toThrow(
+      OwnershipConflictError,
+    );
+
+    const row = await rawOwnershipRow(db, ownership.ownership_id);
+    expect(row!.closed_at).toBeNull();
+
+    const ownershipsForAsset = await db.query(sql`SELECT id FROM ownerships WHERE asset_id = ${asset.asset_id}`);
+    expect(ownershipsForAsset).toHaveLength(1);
+
+    const assetRow = await db.queryOne<{ current_ownership_id: string | null }>(
+      sql`SELECT current_ownership_id FROM assets WHERE id = ${asset.asset_id}`,
+    );
+    expect(assetRow!.current_ownership_id).toBe(ownership.ownership_id);
+  });
+});
+
+describe('STR-055 T-U2 — transfer of a settled ownership closes and creates (covers TC-AST-021)', () => {
+  it('closes the old record unchanged, creates a new one for the new member, and re-points current_ownership', async () => {
+    const db = await freshMigratedDb();
+    const project = await createProject(db, { name: 'Green Meadows' });
+    const memberA = await createMember(db, { name: 'Asha Rao' });
+    const memberB = await createMember(db, { name: 'Bala Iyer' });
+    const asset = await createAsset(db, { project_id: project.project_id, type: 'flat', label: 'A-204' });
+    const ownership = await createOwnership(db, memberA.member_id, { asset_id: asset.asset_id, co_owner_names: ['Priya Rao'] });
+    await seedCharge(db, memberA.member_id, ownership.ownership_id, 'paid');
+
+    const before = await rawOwnershipRow(db, ownership.ownership_id);
+
+    const transferred = await transferOwnership(db, ownership.ownership_id, { to_member_id: memberB.member_id });
+
+    expect(transferred).not.toBeNull();
+    expect(transferred!.ownership_id).not.toBe(ownership.ownership_id);
+    expect(transferred!.member_id).toBe(memberB.member_id);
+    expect(transferred!.asset_id).toBe(asset.asset_id);
+    expect(transferred!.co_owner_names).toBeUndefined();
+
+    const closed = await rawOwnershipRow(db, ownership.ownership_id);
+    expect(closed!.closed_at).not.toBeNull();
+    expect(closed!.member_id).toBe(before!.member_id);
+    expect(closed!.asset_id).toBe(before!.asset_id);
+    expect(closed!.co_owner_names).toBe(before!.co_owner_names);
+    expect(closed!.created_at).toEqual(before!.created_at);
+
+    const assetRow = await db.queryOne<{ status: string; current_ownership_id: string | null }>(
+      sql`SELECT status, current_ownership_id FROM assets WHERE id = ${asset.asset_id}`,
+    );
+    expect(assetRow!.status).toBe('allotted');
+    expect(assetRow!.current_ownership_id).toBe(transferred!.ownership_id);
+  });
+});
+
+describe('STR-055 code review — updateOwnership rejects an edit of a closed ownership (AC2)', () => {
+  it('throws OwnershipValidationError and writes nothing', async () => {
+    const db = await freshMigratedDb();
+    const project = await createProject(db, { name: 'Green Meadows' });
+    const memberA = await createMember(db, { name: 'Asha Rao' });
+    const memberB = await createMember(db, { name: 'Bala Iyer' });
+    const asset = await createAsset(db, { project_id: project.project_id, type: 'flat', label: 'A-204' });
+    const ownership = await createOwnership(db, memberA.member_id, { asset_id: asset.asset_id });
+    await transferOwnership(db, ownership.ownership_id, { to_member_id: memberB.member_id });
+
+    await expect(updateOwnership(db, ownership.ownership_id, { co_owner_names: ['X'] })).rejects.toThrow(
+      OwnershipValidationError,
+    );
+
+    const row = await rawOwnershipRow(db, ownership.ownership_id);
+    expect(row!.co_owner_names).toBeNull();
+  });
+});
+
+describe('STR-055 code review — listBillableOwnerships reflects transfer re-pointing (AC4)', () => {
+  it('includes the new ownership for the asset and excludes the old, now-closed one', async () => {
+    const db = await freshMigratedDb();
+    const project = await createProject(db, { name: 'Green Meadows' });
+    const memberA = await createMember(db, { name: 'Asha Rao' });
+    const memberB = await createMember(db, { name: 'Bala Iyer' });
+    const asset = await createAsset(db, { project_id: project.project_id, type: 'flat', label: 'A-204' });
+    const ownership = await createOwnership(db, memberA.member_id, { asset_id: asset.asset_id });
+
+    const transferred = await transferOwnership(db, ownership.ownership_id, { to_member_id: memberB.member_id });
+
+    const billable = await listBillableOwnerships(db);
+    const forAsset = billable.filter(b => b.asset_id === asset.asset_id);
+    expect(forAsset).toHaveLength(1);
+    expect(forAsset[0].ownership_id).toBe(transferred!.ownership_id);
+  });
+});
+
+describe('STR-055 — transfer against a nonexistent ownership id', () => {
+  it('returns null', async () => {
+    const db = await freshMigratedDb();
+    const member = await createMember(db, { name: 'Bala Iyer' });
+
+    expect(await transferOwnership(db, 'does-not-exist', { to_member_id: member.member_id })).toBeNull();
+  });
+});
+
+describe('STR-055 — transfer to a nonexistent member is rejected', () => {
+  it('throws OwnershipValidationError, writes nothing, and leaves the ownership open', async () => {
+    const db = await freshMigratedDb();
+    const project = await createProject(db, { name: 'Green Meadows' });
+    const memberA = await createMember(db, { name: 'Asha Rao' });
+    const asset = await createAsset(db, { project_id: project.project_id, type: 'flat', label: 'A-204' });
+    const ownership = await createOwnership(db, memberA.member_id, { asset_id: asset.asset_id });
+
+    await expect(transferOwnership(db, ownership.ownership_id, { to_member_id: 'no-such-member' })).rejects.toThrow(
+      OwnershipValidationError,
+    );
+
+    const row = await rawOwnershipRow(db, ownership.ownership_id);
+    expect(row!.closed_at).toBeNull();
+    const ownershipsForAsset = await db.query(sql`SELECT id FROM ownerships WHERE asset_id = ${asset.asset_id}`);
+    expect(ownershipsForAsset).toHaveLength(1);
+  });
+});
+
+// Same sequential-not-concurrent precedent as STR-053's own "a second
+// sequential createOwnership" test above (PGliteEngine is single-connection
+// and doesn't serialize genuinely concurrent beginTransaction() calls --
+// see test/finance/reversal.test.ts's own precedent -- so this proves the
+// guarded-close logic directly rather than attempting an unreliable
+// Promise.allSettled race against this engine; production runs on
+// DataApiEngine, not PGliteEngine).
+describe('STR-055 — transferring an already-closed ownership a second time is rejected', () => {
+  it('the second sequential call throws OwnershipConflictError', async () => {
+    const db = await freshMigratedDb();
+    const project = await createProject(db, { name: 'Green Meadows' });
+    const memberA = await createMember(db, { name: 'Asha Rao' });
+    const memberB = await createMember(db, { name: 'Bala Iyer' });
+    const memberC = await createMember(db, { name: 'Chetan Nair' });
+    const asset = await createAsset(db, { project_id: project.project_id, type: 'flat', label: 'A-204' });
+    const ownership = await createOwnership(db, memberA.member_id, { asset_id: asset.asset_id });
+
+    await transferOwnership(db, ownership.ownership_id, { to_member_id: memberB.member_id });
+    await expect(transferOwnership(db, ownership.ownership_id, { to_member_id: memberC.member_id })).rejects.toThrow(
+      OwnershipConflictError,
+    );
+
+    const ownershipsForAsset = await db.query(sql`SELECT id FROM ownerships WHERE asset_id = ${asset.asset_id}`);
+    expect(ownershipsForAsset).toHaveLength(2);
   });
 });

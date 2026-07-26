@@ -117,12 +117,18 @@ export async function runMaintenanceChargeRun(db: Database, periodKey: string, d
   });
 
   const charges: Charge[] = [];
+  let skipped = 0;
   for (const ownership of accruing) {
     const chargeId = randomUUID();
-    await db.execute(
+    const result = await db.execute(
       sql`INSERT INTO charges (id, member_id, ownership_id, kind, period_key, amount, due_date, status)
-          VALUES (${chargeId}, ${ownership.member_id}, ${ownership.ownership_id}, 'maintenance', ${periodKey}, ${fee}, ${dueDate}, 'due')`,
+          VALUES (${chargeId}, ${ownership.member_id}, ${ownership.ownership_id}, 'maintenance', ${periodKey}, ${fee}, ${dueDate}, 'due')
+          ON CONFLICT (ownership_id, period_key, kind) DO NOTHING`,
     );
+    if (result.rowCount === 0) {
+      skipped++;
+      continue;
+    }
     charges.push({
       charge_id: chargeId,
       member_id: ownership.member_id,

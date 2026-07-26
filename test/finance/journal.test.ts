@@ -150,6 +150,7 @@ describe('STR-021 posting writer — append-only double-entry journal', () => {
       '016_ownership_transfer.sql',
       '017_asset_view_grants.sql',
       '018_charges.sql',
+      '019_charges_idempotency.sql',
     ]);
 
     const second = await runLocalMigrations(db, MIGRATIONS_DIR);

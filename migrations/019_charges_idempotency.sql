@@ -1,0 +1,14 @@
+-- STR-063: idempotent period-keyed charge re-runs. Purely additive -- no
+-- `-- contract-migration:` annotation needed (see aws-blocks/migrations-lint.ts):
+-- ADD CONSTRAINT matches none of the destructive patterns.
+--
+-- (ownership_id, period_key, kind) is the charge run's own dedup key --
+-- 018_charges.sql deliberately deferred this constraint to this story. A
+-- standard UNIQUE constraint treats NULL as never-colliding, so the
+-- pre-existing STR-055 fixture rows with a NULL period_key (test/assets/
+-- ownerships-api.test.ts, seedCharge) are unaffected -- no partial index
+-- needed. The charge run (aws-blocks/payments/charges.ts) now inserts
+-- against this key with ON CONFLICT ... DO NOTHING, so Lambda retries,
+-- duplicate EventBridge triggers, and manual re-runs never double-bill a
+-- member.
+ALTER TABLE charges ADD CONSTRAINT charges_ownership_period_kind_unique UNIQUE (ownership_id, period_key, kind);

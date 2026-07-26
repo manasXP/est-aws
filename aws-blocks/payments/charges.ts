@@ -1,5 +1,5 @@
 // STR-061: the maintenance charge run's business logic, sitting between the
-// `charges`/`charge_settings` tables (migrations/017_charges.sql) and the
+// `charges`/`charge_settings` tables (migrations/018_charges.sql) and the
 // CronJob handler (aws-blocks/index.ts) -- kept separate so it's testable
 // with a plain Database, no CronJob/event types touched at all (test/
 // payments/charge-run.test.ts). Mirrors aws-blocks/finance/journal.ts's
@@ -10,7 +10,7 @@
 // STR-055, merged first) -- its `asset_id` on a returned `Charge` is built
 // from the in-memory `BillableOwnership` this module already has on hand,
 // never a stored column, so it stays in sync with STR-055's schema with no
-// migration coupling beyond the ALTERs in 017_charges.sql.
+// migration coupling beyond the ALTERs in 018_charges.sql.
 import { randomUUID } from 'node:crypto';
 import { sql } from '@aws-blocks/blocks';
 import type { Database } from '@aws-blocks/blocks';
@@ -69,7 +69,7 @@ export class ChargeSettingsNotConfiguredError extends Error {
 }
 
 /**
- * Reads the singleton `charge_settings` row (migrations/017_charges.sql,
+ * Reads the singleton `charge_settings` row (migrations/018_charges.sql,
  * `id = 'default'`) -- single-society-per-deployment, so this is the one
  * maintenance fee, not a per-society config table. The `::text` cast avoids
  * the NUMERIC column round-tripping through a JS `number` (same pattern as

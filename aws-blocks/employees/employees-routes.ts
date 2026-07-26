@@ -16,9 +16,10 @@ import {
   recordSalaryPayment,
   EmployeeValidationError,
 } from './employees-api';
+import { getAssetViewGrants, setAssetViewGrants, AssetViewGrantValidationError } from './asset-view-grants-api';
 import { JournalError } from '../finance/journal';
 import { sendNotFound, sendValidationError, problemResponse, ValidationError } from '../http/problem-response';
-import { requireCapability } from '../http/capability-gate';
+import { requireCapability, resolveActor } from '../http/capability-gate';
 
 export function registerEmployeeRoutes(scope: Scope, db: Database): void {
   new RawRoute(scope, 'list-employees', {
@@ -143,6 +144,48 @@ export function registerEmployeeRoutes(scope: Scope, db: Database): void {
         if (e instanceof JournalError) {
           ctx.response.status = 422;
           ctx.response.send(problemResponse('validation_error', e.message));
+          return;
+        }
+        throw e;
+      }
+    },
+  });
+
+  // STR-057: per-project asset-view grants -- an audited admin action
+  // (Asset Management spec), not gated on a governance capability of its
+  // own (none is named for it, unlike finance-recorder above).
+  new RawRoute(scope, 'get-asset-view-grants', {
+    method: 'GET',
+    path: '/v1/employees/{employeeId}/asset-view-grants',
+    handler: async ctx => {
+      const { employeeId } = ctx.request.params;
+      const employee = await getEmployee(db, employeeId);
+      if (!employee) {
+        sendNotFound(ctx, `No employee ${employeeId}`);
+        return;
+      }
+      const projectIds = await getAssetViewGrants(db, employeeId);
+      ctx.response.send({ project_ids: projectIds });
+    },
+  });
+
+  new RawRoute(scope, 'set-asset-view-grants', {
+    method: 'PUT',
+    path: '/v1/employees/{employeeId}/asset-view-grants',
+    handler: async ctx => {
+      const { employeeId } = ctx.request.params;
+      const { project_ids } = await ctx.request.json();
+      const actor = resolveActor(ctx);
+      try {
+        const projectIds = await setAssetViewGrants(db, employeeId, project_ids, actor);
+        if (projectIds === null) {
+          sendNotFound(ctx, `No employee ${employeeId}`);
+          return;
+        }
+        ctx.response.send({ project_ids: projectIds });
+      } catch (e) {
+        if (e instanceof AssetViewGrantValidationError) {
+          sendValidationError(ctx, e);
           return;
         }
         throw e;

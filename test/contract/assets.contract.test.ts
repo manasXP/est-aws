@@ -89,6 +89,39 @@ describe('STR-053 code review — PATCH /v1/assets/{assetId} rejects a status ch
   });
 });
 
+describe('STR-055 T-C (contract) — GET /v1/assets/{assetId} returns AssetDetail with owner history', () => {
+  it('is schema-valid and lists the transfer chain newest first', async () => {
+    const projectId = await createTestProject();
+    const memberAId = await createTestMember();
+    const memberBId = await createTestMember();
+    await dispatchRequest('POST', `/v1/members/${memberBId}/admit`, {});
+    const createResponse = await dispatchRequest('POST', '/v1/assets', { project_id: projectId, type: 'flat', label: 'A-401' });
+    const assetId = (createResponse.body as { asset_id: string }).asset_id;
+    const ownershipResponse = await dispatchRequest('POST', `/v1/members/${memberAId}/ownerships`, { asset_id: assetId });
+    const ownershipId = (ownershipResponse.body as { ownership_id: string }).ownership_id;
+    await dispatchRequest('POST', `/v1/ownerships/${ownershipId}/transfer`, { to_member_id: memberBId });
+
+    const response = await dispatchRequest('GET', `/v1/assets/${assetId}`);
+    expect(response.status).toBe(200);
+    const op = await contractTest('admin', '/assets/{assetId}', 'get');
+    expect(() => op.expectValidResponse(200, response.body)).not.toThrow();
+
+    const body = response.body as { owner_history: { member_id: string; to: string | null }[] };
+    expect(body.owner_history).toHaveLength(2);
+    expect(body.owner_history[0].member_id).toBe(memberBId);
+    expect(body.owner_history[0].to).toBeNull();
+    expect(body.owner_history[1].member_id).toBe(memberAId);
+    expect(body.owner_history[1].to).not.toBeNull();
+  });
+
+  it('returns a schema-valid 404 for a nonexistent asset', async () => {
+    const response = await dispatchRequest('GET', '/v1/assets/no-such-asset');
+    expect(response.status).toBe(404);
+    const op = await contractTest('admin', '/assets/{assetId}', 'get');
+    expect(() => op.expectValidResponse(404, response.body)).not.toThrow();
+  });
+});
+
 describe('STR-053 code review — GET /v1/assets reports the real current_ownership_id once allotted', () => {
   it('is null for a freshly-created asset and the ownership id once allotted', async () => {
     const projectId = await createTestProject();

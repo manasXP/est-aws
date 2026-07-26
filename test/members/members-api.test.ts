@@ -11,6 +11,7 @@ import {
   admitMember,
   suspendMember,
   reinstateMember,
+  ceaseMember,
   canTransitionMemberStatus,
   MEMBER_STATUS_TRANSITIONS,
   MemberLifecycleConflictError,
@@ -167,7 +168,7 @@ describe('STR-032 T-U3 — invalid transitions are rejected without side effects
   it('rejects ceased -> active (via reinstateMember, which requires suspended)', async () => {
     const db = await freshMigratedDb();
     const id = randomUUID();
-    await db.execute(sql`INSERT INTO members (id, name, member_status) VALUES (${id}, 'Ceased Member', 'ceased')`);
+    await db.execute(sql`INSERT INTO members (id, name, member_status, cessation_reason) VALUES (${id}, 'Ceased Member', 'ceased', 'resigned')`);
 
     await expect(reinstateMember(db, id, 'ec-member-1')).rejects.toThrow(MemberLifecycleConflictError);
 
@@ -205,4 +206,148 @@ describe('STR-032 T-P1 — canTransitionMemberStatus permits exactly the decided
       });
     }
   }
+});
+
+// STR-033 T-U1 (covers TC-MEM-005): cessation always requires a valid
+// cessation_reason, checked before any DB write.
+describe('STR-033 T-U1 — cessation requires a valid cessation_reason (covers TC-MEM-005)', () => {
+  it('rejects cessation with no reason, writing nothing', async () => {
+    const db = await freshMigratedDb();
+    const member = await createMember(db, { name: 'No Reason Member' });
+    await admitMember(db, member.member_id);
+
+    await expect(ceaseMember(db, member.member_id, undefined)).rejects.toThrow(MemberValidationError);
+
+    const after = await getMember(db, member.member_id);
+    expect(after!.member_status).toBe('active');
+  });
+
+  it('rejects cessation with a reason outside resigned|expelled|deceased|transferred, writing nothing', async () => {
+    const db = await freshMigratedDb();
+    const member = await createMember(db, { name: 'Bad Reason Member' });
+    await admitMember(db, member.member_id);
+
+    await expect(ceaseMember(db, member.member_id, 'retired')).rejects.toThrow(MemberValidationError);
+
+    const after = await getMember(db, member.member_id);
+    expect(after!.member_status).toBe('active');
+  });
+});
+
+// STR-033 T-U2 (covers TC-MEM-006): non-deceased cessation of a member
+// holding ownerships fails until the ownerships are transferred. The
+// ownership check goes only through the injectable lookup port -- stubbed
+// until E06 supplies the real ownership store.
+describe('STR-033 T-U2 — non-deceased cessation is blocked while ownerships are held (covers TC-MEM-006)', () => {
+  it('fails while the ownership lookup reports ownerships held, then succeeds once it reports none', async () => {
+    const db = await freshMigratedDb();
+    const member = await createMember(db, { name: 'Owner Member' });
+    await admitMember(db, member.member_id);
+
+    await expect(
+      ceaseMember(db, member.member_id, 'resigned', { ownershipLookup: async () => true }),
+    ).rejects.toThrow(MemberLifecycleConflictError);
+    expect((await getMember(db, member.member_id))!.member_status).toBe('active');
+
+    const ceased = await ceaseMember(db, member.member_id, 'resigned', { ownershipLookup: async () => false });
+    expect(ceased!.member_status).toBe('ceased');
+    expect(ceased!.cessation_reason).toBe('resigned');
+  });
+});
+
+// STR-033 T-U3 (covers TC-MEM-007): deceased cessation succeeds while
+// ownerships are held -- retained pending succession, no guard applied.
+describe('STR-033 T-U3 — deceased cessation succeeds with ownerships retained (covers TC-MEM-007)', () => {
+  it('succeeds even while the ownership lookup reports ownerships held', async () => {
+    const db = await freshMigratedDb();
+    const member = await createMember(db, { name: 'Deceased Owner Member' });
+    await admitMember(db, member.member_id);
+
+    const ceased = await ceaseMember(db, member.member_id, 'deceased', { ownershipLookup: async () => true });
+
+    expect(ceased!.member_status).toBe('ceased');
+    expect(ceased!.cessation_reason).toBe('deceased');
+  });
+});
+
+// STR-033 T-U4 (covers TC-MEM-008): a ceased member's outstanding dues
+// survive cessation untouched -- cessation writes only to the members
+// table, never the journal (the books are derived views over it), so no
+// dues are written off and no new charges are created as a side effect.
+describe('STR-033 T-U4 — outstanding dues survive cessation untouched (covers TC-MEM-008)', () => {
+  it('leaves the journal completely untouched by the cessation call itself', async () => {
+    const db = await freshMigratedDb();
+    const member = await createMember(db, { name: 'Dues Member' });
+    await admitMember(db, member.member_id);
+
+    const entriesBefore = await db.query(sql`SELECT * FROM journal_entries`);
+    const linesBefore = await db.query(sql`SELECT * FROM journal_lines`);
+
+    await ceaseMember(db, member.member_id, 'resigned');
+
+    const entriesAfter = await db.query(sql`SELECT * FROM journal_entries`);
+    const linesAfter = await db.query(sql`SELECT * FROM journal_lines`);
+    expect(entriesAfter).toEqual(entriesBefore);
+    expect(linesAfter).toEqual(linesBefore);
+  });
+});
+
+// STR-033 T-U5 (covers TC-MEM-009, the ceased -> active case): ceased is
+// terminal -- no lifecycle action, including a second cessation, moves a
+// ceased member anywhere else.
+describe('STR-033 T-U5 — ceased is terminal (covers TC-MEM-009)', () => {
+  it('rejects admit, suspend, reinstate, and a second cessation on an already-ceased member', async () => {
+    const db = await freshMigratedDb();
+    const id = randomUUID();
+    await db.execute(sql`INSERT INTO members (id, name, member_status, cessation_reason) VALUES (${id}, 'Ceased Member', 'ceased', 'resigned')`);
+
+    await expect(admitMember(db, id)).rejects.toThrow(MemberLifecycleConflictError);
+    await expect(suspendMember(db, id, 'ec-member-1')).rejects.toThrow(MemberLifecycleConflictError);
+    await expect(reinstateMember(db, id, 'ec-member-1')).rejects.toThrow(MemberLifecycleConflictError);
+    await expect(ceaseMember(db, id, 'resigned')).rejects.toThrow(MemberLifecycleConflictError);
+
+    const after = await getMember(db, id);
+    expect(after!.member_status).toBe('ceased');
+  });
+});
+
+// STR-033 code review — ceaseMember's dynamically-read `from` (unlike
+// admit/suspend/reinstate's single fixed predecessor) meant an invalid
+// source status was passed straight through, producing a self-contradictory
+// message ("is pending ... expected pending"). CESSATION_SOURCES is now
+// checked up front, so the message names the real valid sources.
+describe('STR-033 code review — cessation from an invalid source names the real expected sources', () => {
+  it('rejects a pending member with a message naming active or suspended, not pending', async () => {
+    const db = await freshMigratedDb();
+    const member = await createMember(db, { name: 'Pending Member' });
+
+    await expect(ceaseMember(db, member.member_id, 'resigned')).rejects.toThrow(/expected active or suspended/);
+  });
+});
+
+// STR-033 code review — the migration's own comment claims cessation_reason
+// is required exactly when member_status is ceased, but only a CHECK on the
+// enum values was added, not one tying it to member_status. A DB-level
+// constraint now enforces it directly, independent of ceaseMember always
+// setting both together.
+describe('STR-033 code review — DB enforces cessation_reason iff member_status is ceased', () => {
+  it('rejects an INSERT that sets ceased without a cessation_reason', async () => {
+    const db = await freshMigratedDb();
+    const id = randomUUID();
+
+    await expect(
+      db.execute(sql`INSERT INTO members (id, name, member_status) VALUES (${id}, 'Bad Insert', 'ceased')`),
+    ).rejects.toThrow();
+  });
+
+  it('rejects an INSERT that sets a cessation_reason on a non-ceased member', async () => {
+    const db = await freshMigratedDb();
+    const id = randomUUID();
+
+    await expect(
+      db.execute(
+        sql`INSERT INTO members (id, name, member_status, cessation_reason) VALUES (${id}, 'Bad Insert', 'active', 'resigned')`,
+      ),
+    ).rejects.toThrow();
+  });
 });

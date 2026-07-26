@@ -139,6 +139,7 @@ describe('STR-021 posting writer — append-only double-entry journal', () => {
       '007_assets.sql',
       '008_member_lifecycle.sql',
       '009_member_status_timestamp.sql',
+      '010_member_cessation.sql',
     ]);
 
     const second = await runLocalMigrations(db, MIGRATIONS_DIR);

@@ -7,9 +7,9 @@
 // assets-api.ts for everything else.
 import { RawRoute } from '@aws-blocks/blocks';
 import type { Database, Scope } from '@aws-blocks/blocks';
-import { createAsset, listAssets, updateAsset, AssetValidationError, type AssetType, type AssetStatus } from './assets-api';
+import { createAsset, listAssets, updateAsset, AssetValidationError, AssetConflictError, type AssetType, type AssetStatus } from './assets-api';
 import { ASSET_TYPES, WRITABLE_STATUSES } from './asset-types';
-import { sendNotFound, sendValidationError } from '../http/problem-response';
+import { sendConflictError, sendNotFound, sendValidationError } from '../http/problem-response';
 
 function isAssetType(value: string): value is AssetType {
   return (ASSET_TYPES as readonly string[]).includes(value);
@@ -73,6 +73,10 @@ export function registerAssetRoutes(scope: Scope, db: Database): void {
         }
         ctx.response.send(asset);
       } catch (e) {
+        if (e instanceof AssetConflictError) {
+          sendConflictError(ctx, e);
+          return;
+        }
         if (e instanceof AssetValidationError) {
           sendValidationError(ctx, e);
           return;

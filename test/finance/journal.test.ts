@@ -107,6 +107,8 @@ describe('STR-021 posting writer — append-only double-entry journal', () => {
     expect(accounts).toEqual([
       { id: 'bank', kind: 'bank' },
       { id: 'cash', kind: 'cash' },
+      // STR-042: 007_employees.sql seeds a third ledger account, 'expense'.
+      { id: 'expense', kind: 'expense' },
     ]);
 
     await expect(

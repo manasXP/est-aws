@@ -10,6 +10,8 @@ import type { Database } from '@aws-blocks/blocks';
 import { ConflictError, ValidationError } from '../http/problem-response';
 import type { AssetType } from './assets-api';
 import { reassignAsset } from './asset-state';
+import { getMember } from '../members/members-api';
+import { isOwnershipSettled } from './ownership-settlement';
 
 /** The Admin OpenAPI's Ownership shape (components/schemas/Ownership).
  * `project_id` is derived at read time from a join against `assets` --
@@ -54,6 +56,12 @@ interface OwnershipRow {
   asset_id: string;
   co_owner_names: string | null;
   project_id: string;
+  // STR-055: null means "currently open/active"; once set, never unset or
+  // changed again (AC2, append-only). Not part of the public Ownership
+  // shape (the OpenAPI Ownership schema has no closed_at field) -- carried
+  // on the internal row only, for updateOwnership's/transferOwnership's own
+  // guards.
+  closed_at: string | Date | null;
 }
 
 function toOwnership(row: OwnershipRow): Ownership {
@@ -128,12 +136,19 @@ export async function createOwnership(db: Database, memberId: string, input: Own
   return ownership!;
 }
 
+/** STR-055: the raw row (including `closed_at`), needed by both
+ * updateOwnership's and transferOwnership's own immutability/state guards --
+ * `getOwnership` below only exposes the public Ownership shape. */
+async function getOwnershipRow(db: Database, ownershipId: string): Promise<OwnershipRow | null> {
+  return db.queryOne<OwnershipRow>(
+    sql`SELECT o.*, a.project_id AS project_id FROM ownerships o JOIN assets a ON a.id = o.asset_id WHERE o.id = ${ownershipId}`,
+  );
+}
+
 /** A single ownership, with `project_id` joined from its asset, or `null`
  * if it doesn't exist. */
 export async function getOwnership(db: Database, ownershipId: string): Promise<Ownership | null> {
-  const row = await db.queryOne<OwnershipRow>(
-    sql`SELECT o.*, a.project_id AS project_id FROM ownerships o JOIN assets a ON a.id = o.asset_id WHERE o.id = ${ownershipId}`,
-  );
+  const row = await getOwnershipRow(db, ownershipId);
   return row ? toOwnership(row) : null;
 }
 
@@ -150,7 +165,9 @@ export async function listOwnershipsForMember(db: Database, memberId: string): P
  * `asset_id`/`member_id` are rejected if present, writing nothing --
  * `current_ownership` is only ever re-pointed by assignment/transfer
  * (TC-AST-023), never a raw PATCH. Returns `null` if the ownership doesn't
- * exist.
+ * exist. STR-055 AC2: a closed ownership record is immutable -- rejected
+ * (422, same status family as the asset_id/member_id checks above; the
+ * OpenAPI PATCH declares no 409) once `closed_at` is set.
  */
 export async function updateOwnership(
   db: Database,
@@ -167,8 +184,12 @@ export async function updateOwnership(
     throw new OwnershipValidationError('co_owner_names must be an array of strings.');
   }
 
-  const existing = await getOwnership(db, ownershipId);
-  if (!existing) return null;
+  const existingRow = await getOwnershipRow(db, ownershipId);
+  if (!existingRow) return null;
+  if (existingRow.closed_at !== null) {
+    throw new OwnershipValidationError(`Ownership ${ownershipId} is closed; closed ownership records are immutable.`);
+  }
+  const existing = toOwnership(existingRow);
 
   const nextCoOwnerNames = 'co_owner_names' in input ? input.co_owner_names ?? null : existing.co_owner_names ?? null;
   await db.execute(
@@ -190,8 +211,81 @@ export interface BillableOwnership {
 }
 
 export async function listBillableOwnerships(db: Database): Promise<BillableOwnership[]> {
+  // STR-055 AC4: scoped to open ownerships only -- once a transfer can
+  // close one and create another for the same asset, an unfiltered query
+  // would double-count the asset (the old closed ownership alongside the
+  // new one it was re-pointed to).
   const rows = await db.query<{ id: string; member_id: string; asset_id: string; type: AssetType }>(
-    sql`SELECT o.id, o.member_id, o.asset_id, a.type FROM ownerships o JOIN assets a ON a.id = o.asset_id ORDER BY o.id`,
+    sql`SELECT o.id, o.member_id, o.asset_id, a.type FROM ownerships o JOIN assets a ON a.id = o.asset_id WHERE o.closed_at IS NULL ORDER BY o.id`,
   );
   return rows.map(row => ({ ownership_id: row.id, member_id: row.member_id, asset_id: row.asset_id, asset_type: row.type }));
+}
+
+/**
+ * `POST /ownerships/{ownershipId}/transfer` -- closes this ownership record
+ * and creates a new one for `to_member_id` (records are never rewritten,
+ * TC-AST-021), re-pointing the asset's `current_ownership_id` to the new
+ * record. Rejected (409) while the ownership carries outstanding charges
+ * (TC-AST-020, the settlement gate) or is already closed. Rejected (422) if
+ * `to_member_id` is missing or doesn't reference an existing member.
+ * Returns `null` if the ownership doesn't exist.
+ *
+ * `notes` has no home in the Ownership schema and no audit-log table exists
+ * in this repo yet -- accepted but not persisted (not rejected as an
+ * unrecognized field either).
+ */
+export async function transferOwnership(
+  db: Database,
+  ownershipId: string,
+  input: { to_member_id?: unknown; notes?: unknown },
+): Promise<Ownership | null> {
+  if (typeof input.to_member_id !== 'string' || input.to_member_id.trim() === '') {
+    throw new OwnershipValidationError('to_member_id is required.');
+  }
+  const toMemberId = input.to_member_id;
+
+  const existingRow = await getOwnershipRow(db, ownershipId);
+  if (!existingRow) return null;
+  if (existingRow.closed_at !== null) {
+    throw new OwnershipConflictError(`Ownership ${ownershipId} is already closed.`);
+  }
+
+  const settled = await isOwnershipSettled(db, ownershipId);
+  if (!settled) {
+    throw new OwnershipConflictError(`Ownership ${ownershipId} has unsettled charges; settle before transfer.`);
+  }
+
+  const toMember = await getMember(db, toMemberId);
+  if (!toMember) {
+    throw new OwnershipValidationError(`No member ${toMemberId}.`);
+  }
+
+  const assetId = existingRow.asset_id;
+  const newId = randomUUID();
+
+  await db.transaction(async tx => {
+    const closed = await tx.execute(
+      sql`UPDATE ownerships SET closed_at = now(), updated_at = now() WHERE id = ${ownershipId} AND closed_at IS NULL`,
+    );
+    if (closed.rowCount === 0) {
+      // Race: closed by another call between the read above and this
+      // guarded UPDATE -- ordinary row-level locking makes this safe under
+      // concurrent attempts, same pattern as reassignAsset below.
+      throw new OwnershipConflictError(`Ownership ${ownershipId} was already closed.`);
+    }
+
+    const reassigned = await reassignAsset(tx, assetId, 'allotted', 'allotted', newId);
+    if (!reassigned.ok) {
+      throw new OwnershipConflictError(`Asset ${assetId} could not be re-pointed.`);
+    }
+
+    // A transfer starts a fresh holding -- co_owner_names is not carried
+    // over from the closed record (nothing in the schema or story ACs says
+    // otherwise).
+    await tx.execute(
+      sql`INSERT INTO ownerships (id, member_id, asset_id, co_owner_names) VALUES (${newId}, ${toMemberId}, ${assetId}, NULL)`,
+    );
+  });
+
+  return getOwnership(db, newId);
 }

@@ -5,6 +5,7 @@ import { registerBookRoutes } from './finance/books-routes';
 import { registerMemberRoutes } from './members/members-routes';
 import { registerProjectRoutes } from './projects/projects-routes';
 import { registerEmployeeRoutes } from './employees/employees-routes';
+import { registerAssetRoutes } from './assets/assets-routes';
 
 // For coding agents: Leave these comments in place for future reference.
 // Read node_modules/@aws-blocks/blocks/README.md for all available Building Blocks
@@ -77,3 +78,8 @@ registerProjectRoutes(scope, db);
 // STR-042: employee records, capability designation, and salary posting to
 // the Expense Ledger through the E03 journal engine.
 registerEmployeeRoutes(scope, db);
+
+// STR-051: the asset registry -- first-class entity existing before/without
+// any ownership. STR-053 builds allotment on it; STR-057 builds
+// visibility-scoped reads.
+registerAssetRoutes(scope, db);

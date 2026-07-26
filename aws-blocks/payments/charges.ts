@@ -13,7 +13,7 @@
 // migration coupling beyond the ALTERs in 018_charges.sql.
 import { randomUUID } from 'node:crypto';
 import { sql } from '@aws-blocks/blocks';
-import type { Database } from '@aws-blocks/blocks';
+import type { Database, Logger, Metrics } from '@aws-blocks/blocks';
 import { listBillableOwnerships } from '../assets/ownerships-api';
 import type { MemberStatus } from '../members/members-api';
 import { formatMoney, parseMoney } from '../money';
@@ -96,6 +96,14 @@ export function isAccruingStatus(status: MemberStatus): boolean {
   return ACCRUING_STATUSES.has(status);
 }
 
+/** STR-063 refactor: optional observability hooks for the run summary --
+ * omitted entirely by STR-061's existing call sites/tests, which keep
+ * passing unmodified with zero test changes. */
+export interface ChargeRunObservability {
+  log?: Logger;
+  metrics?: Metrics;
+}
+
 /**
  * The pure, directly-testable core the CronJob handler (aws-blocks/index.ts)
  * calls -- no `event`/AWS types in this signature, so unit tests call it
@@ -104,7 +112,12 @@ export function isAccruingStatus(status: MemberStatus): boolean {
  * to accruing members in one member-status query (no per-ownership N+1),
  * and inserts one `maintenance` charge per remaining ownership.
  */
-export async function runMaintenanceChargeRun(db: Database, periodKey: string, dueDate: string): Promise<Charge[]> {
+export async function runMaintenanceChargeRun(
+  db: Database,
+  periodKey: string,
+  dueDate: string,
+  observability?: ChargeRunObservability,
+): Promise<Charge[]> {
   const fee = await getMaintenanceFee(db);
   const billable = await listBillableOwnerships(db);
 
@@ -141,5 +154,10 @@ export async function runMaintenanceChargeRun(db: Database, periodKey: string, d
       status: 'due',
     });
   }
+
+  observability?.log?.info('maintenance charge run summary', { periodKey, raised: charges.length, skipped });
+  observability?.metrics?.emit('ChargesRaised', charges.length, { unit: 'Count' });
+  observability?.metrics?.emit('ChargesSkipped', skipped, { unit: 'Count' });
+
   return charges;
 }

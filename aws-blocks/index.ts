@@ -1,4 +1,4 @@
-import { Scope, Database, FileBucket, RawRoute, CronJob } from '@aws-blocks/blocks';
+import { Scope, Database, FileBucket, RawRoute, CronJob, Logger, Metrics } from '@aws-blocks/blocks';
 import { SCOPE_ID, DB_BLOCK_ID, DOCUMENTS_BLOCK_ID } from './block-ids';
 import { runMaintenanceChargeRun, chargeRunPeriodFromScheduledTime } from './payments/charges';
 import { linkDocumentToEntry, DocumentLinkError } from './finance/documents';
@@ -104,6 +104,12 @@ registerAssetRoutes(scope, db);
 // sole writer of an asset's status/current_ownership_id.
 registerOwnershipRoutes(scope, db);
 
+// STR-063: run-summary observability for the charge run -- raised/skipped
+// counts surface duplicate triggers (Lambda retries, duplicate EventBridge
+// triggers, manual re-runs) for operational visibility.
+const chargeRunLog = new Logger(scope, 'charge-run-log');
+const chargeRunMetrics = new Metrics(scope, 'charge-run-metrics');
+
 // STR-061: the scheduled maintenance charge run -- monthly, first-of-month
 // at 03:00 IST (this repo's established IST convention, aws-blocks/finance/
 // financial-year.ts). Raises one `maintenance` charge per accruing
@@ -114,7 +120,7 @@ new CronJob(scope, 'maintenance-charge-run', {
   description: 'Monthly maintenance charge run',
   handler: async (event) => {
     const { periodKey, dueDate } = chargeRunPeriodFromScheduledTime(event.scheduledTime);
-    await runMaintenanceChargeRun(db, periodKey, dueDate);
+    await runMaintenanceChargeRun(db, periodKey, dueDate, { log: chargeRunLog, metrics: chargeRunMetrics });
   },
 });
 

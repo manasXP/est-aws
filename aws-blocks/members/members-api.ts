@@ -6,7 +6,7 @@
 // books-routes.ts split.
 import { randomUUID } from 'node:crypto';
 import { sql } from '@aws-blocks/blocks';
-import type { Database } from '@aws-blocks/blocks';
+import type { Database, Transaction } from '@aws-blocks/blocks';
 import { ValidationError, ConflictError } from '../http/problem-response';
 
 export type MemberStatus = 'pending' | 'active' | 'suspended' | 'ceased';
@@ -238,11 +238,13 @@ export interface MemberStatusTransitionEvent {
   actor?: string;
 }
 
-/** Listeners called synchronously by transitionMemberStatus after its DB
- * write succeeds. A future consumer registers with
- * `memberStatusTransitionListeners.push(fn)` -- no persistence, retries, or
- * async dispatch here; that's this seam's whole job. */
-export const memberStatusTransitionListeners: Array<(event: MemberStatusTransitionEvent) => void> = [];
+/** Listeners called by transitionMemberStatus after its UPDATE, inside the
+ * same transaction (STR-041 AC2 -- a listener's write must commit or roll
+ * back together with the member status UPDATE, e.g. role vacation on
+ * suspension/cessation). A future consumer registers with
+ * `memberStatusTransitionListeners.push(fn)` -- no persistence or retry
+ * beyond the transaction itself; that's this seam's whole job. */
+export const memberStatusTransitionListeners: Array<(event: MemberStatusTransitionEvent, tx: Transaction) => Promise<void>> = [];
 
 /**
  * STR-032: the only writer of `member_status` -- every lifecycle action
@@ -286,25 +288,33 @@ async function transitionMemberStatus(
   // commits its UPDATE, so the WHERE clause itself must re-verify `from`.
   // Only the first to commit affects a row; the second's UPDATE matches
   // nothing and rowCount is 0.
-  const { rowCount } = opts.setJoiningDate
-    ? await db.execute(
-        sql`UPDATE members SET member_status = ${to}, status_actor = ${statusActor}, status_changed_at = ${statusChangedAt}, joining_date = (now() AT TIME ZONE 'Asia/Kolkata')::date WHERE id = ${memberId} AND member_status = ${from}`,
-      )
-    : opts.cessationReason
-      ? await db.execute(
-          sql`UPDATE members SET member_status = ${to}, status_actor = ${statusActor}, status_changed_at = ${statusChangedAt}, cessation_reason = ${opts.cessationReason} WHERE id = ${memberId} AND member_status = ${from}`,
+  //
+  // STR-041 AC2: the UPDATE and the listener dispatch run inside one
+  // transaction (aws-blocks/finance/journal.ts's postJournalEntry is the
+  // template for this shape) so a listener's own write (e.g. role vacation)
+  // commits or rolls back atomically with the status change -- a throwing
+  // listener rolls back the member UPDATE too.
+  await db.transaction(async tx => {
+    const { rowCount } = opts.setJoiningDate
+      ? await tx.execute(
+          sql`UPDATE members SET member_status = ${to}, status_actor = ${statusActor}, status_changed_at = ${statusChangedAt}, joining_date = (now() AT TIME ZONE 'Asia/Kolkata')::date WHERE id = ${memberId} AND member_status = ${from}`,
         )
-      : await db.execute(
-          sql`UPDATE members SET member_status = ${to}, status_actor = ${statusActor}, status_changed_at = ${statusChangedAt} WHERE id = ${memberId} AND member_status = ${from}`,
-        );
+      : opts.cessationReason
+        ? await tx.execute(
+            sql`UPDATE members SET member_status = ${to}, status_actor = ${statusActor}, status_changed_at = ${statusChangedAt}, cessation_reason = ${opts.cessationReason} WHERE id = ${memberId} AND member_status = ${from}`,
+          )
+        : await tx.execute(
+            sql`UPDATE members SET member_status = ${to}, status_actor = ${statusActor}, status_changed_at = ${statusChangedAt} WHERE id = ${memberId} AND member_status = ${from}`,
+          );
 
-  if (rowCount === 0) {
-    throw conflictError();
-  }
+    if (rowCount === 0) {
+      throw conflictError();
+    }
 
-  for (const listener of memberStatusTransitionListeners) {
-    listener({ memberId, from, to, actor: opts.actor });
-  }
+    for (const listener of memberStatusTransitionListeners) {
+      await listener({ memberId, from, to, actor: opts.actor }, tx);
+    }
+  });
 
   return getMember(db, memberId);
 }

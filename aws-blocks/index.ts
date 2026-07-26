@@ -4,6 +4,7 @@ import { linkDocumentToEntry, DocumentLinkError } from './finance/documents';
 import { registerBookRoutes } from './finance/books-routes';
 import { registerMemberRoutes } from './members/members-routes';
 import { registerProjectRoutes } from './projects/projects-routes';
+import { registerProjectCommitteeRoutes } from './projects/committees-routes';
 import { registerEmployeeRoutes } from './employees/employees-routes';
 import { registerAssetRoutes } from './assets/assets-routes';
 
@@ -74,6 +75,10 @@ new RawRoute(scope, 'link-book-entry-document', {
 // registries ownerships, charges, and governance roles hang off.
 registerMemberRoutes(scope, db);
 registerProjectRoutes(scope, db);
+
+// STR-043: the project committee (PC) sub-resource of a project -- appointed
+// and dissolved by the EC, replacing the whole composition per call.
+registerProjectCommitteeRoutes(scope, db);
 
 // STR-042: employee records, capability designation, and salary posting to
 // the Expense Ledger through the E03 journal engine.

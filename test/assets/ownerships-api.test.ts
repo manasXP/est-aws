@@ -12,7 +12,7 @@ import {
   OwnershipValidationError,
   OwnershipConflictError,
 } from '../../aws-blocks/assets/ownerships-api';
-import { createAsset, updateAsset, AssetValidationError } from '../../aws-blocks/assets/assets-api';
+import { createAsset, updateAsset, AssetConflictError } from '../../aws-blocks/assets/assets-api';
 import { createProject } from '../../aws-blocks/projects/projects-api';
 import { createMember } from '../../aws-blocks/members/members-api';
 
@@ -83,21 +83,25 @@ describe('STR-053 T-U2 — a second assignment against an allotted asset is reje
   // attempts" -- the guarded UPDATE (WHERE status = 'available') is a single
   // atomic SQL statement, so two genuinely concurrent createOwnership calls
   // for the same asset are serialized by ordinary row-level locking: exactly
-  // one succeeds.
-  it('under concurrent attempts against the same asset, exactly one createOwnership succeeds', async () => {
+  // one succeeds. Following test/finance/reversal.test.ts's precedent
+  // (~line 216-224) for its own double-write race: PGliteEngine is
+  // single-connection and its own docstring warns concurrent
+  // beginTransaction() calls interleave rather than serialize, so a real
+  // Promise.allSettled-style concurrent test against it is unreliable in
+  // this repo (it can produce a raw TransactionFailedException instead of
+  // the app's OwnershipConflictError) and would prove nothing about the
+  // guarded-UPDATE logic itself. Calling createOwnership twice sequentially
+  // instead proves that logic directly (AC2's actual guarantee); production
+  // runs on DataApiEngine, not PGliteEngine.
+  it('a second sequential createOwnership against the same asset rejects with OwnershipConflictError', async () => {
     const db = await freshMigratedDb();
     const project = await createProject(db, { name: 'Green Meadows' });
     const memberA = await createMember(db, { name: 'Asha Rao' });
     const memberB = await createMember(db, { name: 'Bala Iyer' });
     const asset = await createAsset(db, { project_id: project.project_id, type: 'flat', label: 'A-204' });
 
-    const results = await Promise.allSettled([
-      createOwnership(db, memberA.member_id, { asset_id: asset.asset_id }),
-      createOwnership(db, memberB.member_id, { asset_id: asset.asset_id }),
-    ]);
-
-    expect(results.filter(r => r.status === 'fulfilled')).toHaveLength(1);
-    expect(results.filter(r => r.status === 'rejected')).toHaveLength(1);
+    await createOwnership(db, memberA.member_id, { asset_id: asset.asset_id });
+    await expect(createOwnership(db, memberB.member_id, { asset_id: asset.asset_id })).rejects.toThrow(OwnershipConflictError);
 
     const ownershipsForAsset = await db.query(sql`SELECT id FROM ownerships WHERE asset_id = ${asset.asset_id}`);
     expect(ownershipsForAsset).toHaveLength(1);
@@ -189,14 +193,14 @@ describe('STR-053 T-U4 — a dividend holding appears in the billable-asset basi
 // the story text names it -- covered here rather than left silently
 // unverified.
 describe('STR-053 code review — updateAsset rejects a status change on an allotted asset', () => {
-  it('throws AssetValidationError, leaving the asset allotted and the ownership intact', async () => {
+  it('throws AssetConflictError, leaving the asset allotted and the ownership intact', async () => {
     const db = await freshMigratedDb();
     const project = await createProject(db, { name: 'Green Meadows' });
     const member = await createMember(db, { name: 'Asha Rao' });
     const asset = await createAsset(db, { project_id: project.project_id, type: 'flat', label: 'A-204' });
     const ownership = await createOwnership(db, member.member_id, { asset_id: asset.asset_id });
 
-    await expect(updateAsset(db, asset.asset_id, { status: 'available' })).rejects.toThrow(AssetValidationError);
+    await expect(updateAsset(db, asset.asset_id, { status: 'available' })).rejects.toThrow(AssetConflictError);
 
     const row = await db.queryOne<{ status: string; current_ownership_id: string | null }>(
       sql`SELECT status, current_ownership_id FROM assets WHERE id = ${asset.asset_id}`,

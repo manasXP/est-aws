@@ -6,6 +6,11 @@ import { runLocalMigrations, MIGRATIONS_DIR } from '../../aws-blocks/migrations-
 import { contractTest } from './harness';
 import { dispatchRequest } from '../support/dispatch';
 
+async function createTestMember(): Promise<string> {
+  const response = await dispatchRequest('POST', '/v1/members', { name: `Contract Test Member ${randomUUID()}` });
+  return (response.body as { member_id: string }).member_id;
+}
+
 // STR-051 — Admin API asset registry contract cases. Same approach as
 // test/contract/projects.contract.test.ts: dispatch the real handler
 // against the singleton `db`, feed its response through the harness.
@@ -65,5 +70,42 @@ describe('STR-051 code review — POST /v1/assets rejects an invalid type', () =
 
     const op = await contractTest('admin', '/assets', 'post');
     expect(() => op.expectValidResponse(422, response.body)).not.toThrow();
+  });
+});
+
+describe('STR-053 code review — PATCH /v1/assets/{assetId} rejects a status change on an allotted asset', () => {
+  it('returns a schema-valid 409 Conflict response', async () => {
+    const projectId = await createTestProject();
+    const memberId = await createTestMember();
+    const createResponse = await dispatchRequest('POST', '/v1/assets', { project_id: projectId, type: 'flat', label: 'A-301' });
+    const assetId = (createResponse.body as { asset_id: string }).asset_id;
+    await dispatchRequest('POST', `/v1/members/${memberId}/ownerships`, { asset_id: assetId });
+
+    const response = await dispatchRequest('PATCH', `/v1/assets/${assetId}`, { status: 'society_retained' });
+    expect(response.status).toBe(409);
+
+    const op = await contractTest('admin', '/assets/{assetId}', 'patch');
+    expect(() => op.expectValidResponse(409, response.body)).not.toThrow();
+  });
+});
+
+describe('STR-053 code review — GET /v1/assets reports the real current_ownership_id once allotted', () => {
+  it('is null for a freshly-created asset and the ownership id once allotted', async () => {
+    const projectId = await createTestProject();
+    const memberId = await createTestMember();
+    const createResponse = await dispatchRequest('POST', '/v1/assets', { project_id: projectId, type: 'flat', label: 'A-302' });
+    const assetId = (createResponse.body as { asset_id: string }).asset_id;
+    expect((createResponse.body as { current_ownership_id: unknown }).current_ownership_id).toBeNull();
+
+    const ownershipResponse = await dispatchRequest('POST', `/v1/members/${memberId}/ownerships`, { asset_id: assetId });
+    const ownershipId = (ownershipResponse.body as { ownership_id: string }).ownership_id;
+
+    const listResponse = await dispatchRequest('GET', '/v1/assets');
+    const op = await contractTest('admin', '/assets', 'get');
+    expect(() => op.expectValidResponse(listResponse.status, listResponse.body)).not.toThrow();
+    const listed = (listResponse.body as { items: { asset_id: string; current_ownership_id: unknown }[] }).items.find(
+      a => a.asset_id === assetId,
+    );
+    expect(listed?.current_ownership_id).toBe(ownershipId);
   });
 });

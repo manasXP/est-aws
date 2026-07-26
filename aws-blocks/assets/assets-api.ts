@@ -6,14 +6,15 @@
 import { randomUUID } from 'node:crypto';
 import { sql } from '@aws-blocks/blocks';
 import type { Database } from '@aws-blocks/blocks';
-import { ValidationError } from '../http/problem-response';
+import { ConflictError, ValidationError } from '../http/problem-response';
 import { type AssetType, type AssetStatus, ASSET_TYPES, WRITABLE_STATUSES } from './asset-types';
 
 export type { AssetType, AssetStatus };
 
-/** The Admin OpenAPI's Asset shape (components/schemas/Asset), restricted
- * to what this story owns -- current_ownership_id/current_owner are always
- * null here; allotment and owner history are STR-053. */
+/** The Admin OpenAPI's Asset shape (components/schemas/Asset). STR-053
+ * added the `current_ownership_id` column its allotment writes point at;
+ * `current_owner` (the embedded member name) still requires a join through
+ * to `members` that no read here performs, so it stays null. */
 export interface Asset {
   asset_id: string;
   project_id: string;
@@ -21,7 +22,7 @@ export interface Asset {
   label?: string;
   attributes?: Record<string, unknown>;
   status: AssetStatus;
-  current_ownership_id: null;
+  current_ownership_id: string | null;
   current_owner: null;
   created_at: string;
   updated_at: string;
@@ -45,6 +46,18 @@ export class AssetValidationError extends ValidationError {
   }
 }
 
+/** An allotted asset's status was targeted by a raw PATCH (409) -- the
+ * Admin OpenAPI's `PATCH /assets/{assetId}` declares 409 "while an active
+ * ownership exists (the asset is allotted)"; only transfer/cessation
+ * (STR-055, not built yet) may change it. Nothing is written when this is
+ * thrown. */
+export class AssetConflictError extends ConflictError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'AssetConflictError';
+  }
+}
+
 interface AssetRow {
   id: string;
   project_id: string;
@@ -52,6 +65,7 @@ interface AssetRow {
   label: string | null;
   attributes: string | null;
   status: AssetStatus;
+  current_ownership_id: string | null;
   created_at: string | Date;
   updated_at: string | Date;
 }
@@ -73,7 +87,7 @@ function toAsset(row: AssetRow): Asset {
     project_id: row.project_id,
     type: row.type,
     status: row.status,
-    current_ownership_id: null,
+    current_ownership_id: row.current_ownership_id,
     current_owner: null,
     created_at: toIso(row.created_at),
     updated_at: toIso(row.updated_at),
@@ -169,7 +183,7 @@ export async function updateAsset(db: Database, assetId: string, input: AssetInp
     throw new AssetValidationError('type is immutable.');
   }
   if (existing.status === 'allotted' && input.status !== undefined && input.status !== existing.status) {
-    throw new AssetValidationError("an allotted asset's status can only change via transfer/cessation.");
+    throw new AssetConflictError("an allotted asset's status can only change via transfer/cessation.");
   }
   if (input.status !== undefined && !WRITABLE_STATUSES.includes(input.status as AssetStatus)) {
     throw new AssetValidationError(`status must be one of ${WRITABLE_STATUSES.join(', ')}.`);

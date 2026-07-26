@@ -77,6 +77,23 @@ describe('STR-053 (contract) — PATCH /v1/ownerships/{ownershipId}', () => {
   });
 });
 
+describe('STR-053 code review — PATCH /v1/ownerships/{ownershipId} rejects a body carrying asset_id', () => {
+  it('returns a schema-valid 422 Invalid response', async () => {
+    const projectId = await createTestProject();
+    const memberId = await createTestMember();
+    const assetA = await createTestAsset(projectId);
+    const assetB = await createTestAsset(projectId);
+    const createResponse = await dispatchRequest('POST', `/v1/members/${memberId}/ownerships`, { asset_id: assetA });
+    const ownershipId = (createResponse.body as { ownership_id: string }).ownership_id;
+
+    const response = await dispatchRequest('PATCH', `/v1/ownerships/${ownershipId}`, { asset_id: assetB });
+    expect(response.status).toBe(422);
+
+    const op = await contractTest('admin', '/ownerships/{ownershipId}', 'patch');
+    expect(() => op.expectValidResponse(422, response.body)).not.toThrow();
+  });
+});
+
 describe('STR-053 (contract) — POST /v1/members/{memberId}/ownerships rejects double allotment', () => {
   it('returns a schema-valid 409 Conflict response', async () => {
     const projectId = await createTestProject();

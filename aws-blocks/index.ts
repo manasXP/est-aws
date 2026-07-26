@@ -4,6 +4,7 @@ import { linkDocumentToEntry, DocumentLinkError } from './finance/documents';
 import { registerBookRoutes } from './finance/books-routes';
 import { registerMemberRoutes } from './members/members-routes';
 import { registerProjectRoutes } from './projects/projects-routes';
+import { registerProjectCommitteeRoutes } from './projects/committees-routes';
 import { registerAssetRoutes } from './assets/assets-routes';
 
 // For coding agents: Leave these comments in place for future reference.
@@ -73,6 +74,10 @@ new RawRoute(scope, 'link-book-entry-document', {
 // registries ownerships, charges, and governance roles hang off.
 registerMemberRoutes(scope, db);
 registerProjectRoutes(scope, db);
+
+// STR-043: the project committee (PC) sub-resource of a project -- appointed
+// and dissolved by the EC, replacing the whole composition per call.
+registerProjectCommitteeRoutes(scope, db);
 
 // STR-051: the asset registry -- first-class entity existing before/without
 // any ownership. STR-053 builds allotment on it; STR-057 builds

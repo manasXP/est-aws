@@ -66,6 +66,29 @@ describe('STR-067 T-U1 — due-date reminders push to registered devices (TC-PAY
     expect(adapter.sent).toHaveLength(2);
     expect(new Set(adapter.sent.map(s => s.pushToken))).toEqual(new Set(['ios-token-1', 'android-token-1']));
   });
+
+  it('a member with two due charges (two owned assets) still gets exactly one send per device, not one per charge', async () => {
+    const db = await freshMigratedDb();
+    await setMaintenanceFee(db, '2500.00');
+    const project = await createProject(db, { name: 'Green Meadows' });
+    const member = await createMember(db, { name: 'Asha Rao' });
+    await admitMember(db, member.member_id);
+    const flatA = await createAsset(db, { project_id: project.project_id, type: 'flat', label: 'A-101' });
+    const flatB = await createAsset(db, { project_id: project.project_id, type: 'flat', label: 'A-102' });
+    await createOwnership(db, member.member_id, { asset_id: flatA.asset_id });
+    await createOwnership(db, member.member_id, { asset_id: flatB.asset_id });
+    await registerDevice(db, member.member_id, 'ios', 'ios-token-1');
+    await registerDevice(db, member.member_id, 'android', 'android-token-1');
+
+    const charges = await runMaintenanceChargeRun(db, '2026-07', '2026-07-05');
+    expect(charges).toHaveLength(2); // two charges, same member
+
+    const adapter = new FakePushAdapter();
+    await dispatchDueDateReminders(db, adapter, charges);
+
+    expect(adapter.sent).toHaveLength(2); // deduped to one send per device, not per charge
+    expect(new Set(adapter.sent.map(s => s.pushToken))).toEqual(new Set(['ios-token-1', 'android-token-1']));
+  });
 });
 
 describe('STR-067 T-U2 — no due charges, or no registered devices, produces no send', () => {

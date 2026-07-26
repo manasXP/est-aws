@@ -116,3 +116,55 @@ describe('STR-044 T-C1 — salary-payment capability gate (real claims-derivatio
     expect(() => op.expectValidResponse(422, response.body)).not.toThrow();
   });
 });
+
+// STR-057 T-C3 — GET/PUT /v1/employees/{employeeId}/asset-view-grants
+// admin API contract cases.
+describe('STR-057 T-C3 — asset-view-grants API contract', () => {
+  it('GET /v1/employees/{employeeId}/asset-view-grants returns an empty list by default', async () => {
+    const createResponse = await dispatchRequest('POST', '/v1/employees', { name: 'Grants Target' });
+    const employeeId = (createResponse.body as { employee_id: string }).employee_id;
+
+    const response = await dispatchRequest('GET', `/v1/employees/${employeeId}/asset-view-grants`);
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ project_ids: [] });
+
+    const op = await contractTest('admin', '/employees/{employeeId}/asset-view-grants', 'get');
+    expect(() => op.expectValidResponse(200, response.body)).not.toThrow();
+  });
+
+  it('GET /v1/employees/{employeeId}/asset-view-grants returns 404 for an unknown employee', async () => {
+    const response = await dispatchRequest('GET', `/v1/employees/${randomUUID()}/asset-view-grants`);
+    expect(response.status).toBe(404);
+
+    const op = await contractTest('admin', '/employees/{employeeId}/asset-view-grants', 'get');
+    expect(() => op.expectValidResponse(404, response.body)).not.toThrow();
+  });
+
+  it('PUT /v1/employees/{employeeId}/asset-view-grants replaces the grant set, conforming to the Admin OpenAPI', async () => {
+    const projectResponse = await dispatchRequest('POST', '/v1/projects', { name: `Grants Contract Project ${randomUUID()}` });
+    const projectId = (projectResponse.body as { project_id: string }).project_id;
+    const createResponse = await dispatchRequest('POST', '/v1/employees', { name: 'Grantable Employee' });
+    const employeeId = (createResponse.body as { employee_id: string }).employee_id;
+    await dispatchRequest('PUT', `/v1/employees/${employeeId}/capabilities`, { capabilities: ['data-entry'] });
+
+    const response = await dispatchRequest('PUT', `/v1/employees/${employeeId}/asset-view-grants`, { project_ids: [projectId] });
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ project_ids: [projectId] });
+    const op = await contractTest('admin', '/employees/{employeeId}/asset-view-grants', 'put');
+    expect(() => op.expectValidResponse(200, response.body)).not.toThrow();
+  });
+
+  it('PUT /v1/employees/{employeeId}/asset-view-grants returns 422 for an employee with no admin account', async () => {
+    const projectResponse = await dispatchRequest('POST', '/v1/projects', { name: `Grants Contract Project ${randomUUID()}` });
+    const projectId = (projectResponse.body as { project_id: string }).project_id;
+    const createResponse = await dispatchRequest('POST', '/v1/employees', { name: 'Undesignated Employee' });
+    const employeeId = (createResponse.body as { employee_id: string }).employee_id;
+
+    const response = await dispatchRequest('PUT', `/v1/employees/${employeeId}/asset-view-grants`, { project_ids: [projectId] });
+    expect(response.status).toBe(422);
+
+    const op = await contractTest('admin', '/employees/{employeeId}/asset-view-grants', 'put');
+    expect(() => op.expectValidResponse(422, response.body)).not.toThrow();
+  });
+});

@@ -72,3 +72,15 @@ export function sendCapabilityRequired(ctx: BlocksContext, capability: string): 
   ctx.response.status = 403;
   ctx.response.send(problemResponse('capability_required', `Missing required capability: ${capability}`));
 }
+
+/**
+ * STR-057: 401 response for a request with no resolvable caller identity --
+ * the Error schema's `Unauthorized` case. The first mobile self-service
+ * (`/me`) endpoint in this repo; every prior protected endpoint denies an
+ * unresolvable actor with 403 (capability_required) instead, since they're
+ * all capability-gated Admin API routes, not caller-identity-scoped reads.
+ */
+export function sendUnauthorized(ctx: BlocksContext, message: string): void {
+  ctx.response.status = 401;
+  ctx.response.send(problemResponse('unauthorized', message));
+}

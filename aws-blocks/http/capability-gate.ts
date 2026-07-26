@@ -15,7 +15,13 @@ import type { BlocksContext, Database } from '@aws-blocks/blocks';
 import { buildClaims, hasCapability, type Actor, type GovernanceCapability } from '../members/capabilities';
 import { sendCapabilityRequired } from './problem-response';
 
-function resolveActor(ctx: BlocksContext): Actor | null {
+/**
+ * STR-057: exported for reuse by asset-view-grants-routes.ts, which needs
+ * the caller's actor identity recorded in the grant audit trail -- the same
+ * header-stub resolution this module already established for capability
+ * gating.
+ */
+export function resolveActor(ctx: BlocksContext): Actor | null {
   const employeeId = ctx.request.headers.get('X-Actor-Employee-Id');
   if (employeeId) return { employeeId };
   const memberId = ctx.request.headers.get('X-Actor-Member-Id');

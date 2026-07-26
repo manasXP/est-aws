@@ -8,6 +8,8 @@ import { registerProjectCommitteeRoutes } from './projects/committees-routes';
 import { registerEmployeeRoutes } from './employees/employees-routes';
 import { registerAssetRoutes } from './assets/assets-routes';
 import { registerOwnershipRoutes } from './assets/ownerships-routes';
+import { registerMeOwnershipRoutes } from './assets/me-ownerships-routes';
+import { registerPcAssetRoutes } from './assets/pc-assets-routes';
 // STR-041 code review: no HTTP surface of its own -- imported for its
 // module-load side effect (registering vacateRolesOnStatusChange with
 // members-api.ts's memberStatusTransitionListeners). Without this import,
@@ -100,3 +102,9 @@ registerAssetRoutes(scope, db);
 // STR-053: ownership allotment via asset_id -- creating an ownership is the
 // sole writer of an asset's status/current_ownership_id.
 registerOwnershipRoutes(scope, db);
+
+// STR-057: role-scoped asset visibility -- the mobile member's own
+// ownerships (with embedded asset detail) and the PC's project-scoped
+// registry read.
+registerMeOwnershipRoutes(scope, db);
+registerPcAssetRoutes(scope, db);

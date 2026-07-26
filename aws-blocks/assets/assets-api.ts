@@ -6,14 +6,15 @@
 import { randomUUID } from 'node:crypto';
 import { sql } from '@aws-blocks/blocks';
 import type { Database } from '@aws-blocks/blocks';
-import { ValidationError } from '../http/problem-response';
+import { ConflictError, ValidationError } from '../http/problem-response';
 import { type AssetType, type AssetStatus, ASSET_TYPES, WRITABLE_STATUSES } from './asset-types';
 
 export type { AssetType, AssetStatus };
 
-/** The Admin OpenAPI's Asset shape (components/schemas/Asset), restricted
- * to what this story owns -- current_ownership_id/current_owner are always
- * null here; allotment and owner history are STR-053. */
+/** The Admin OpenAPI's Asset shape (components/schemas/Asset). STR-053
+ * added the `current_ownership_id` column its allotment writes point at;
+ * `current_owner` (the embedded member name) still requires a join through
+ * to `members` that no read here performs, so it stays null. */
 export interface Asset {
   asset_id: string;
   project_id: string;
@@ -21,7 +22,7 @@ export interface Asset {
   label?: string;
   attributes?: Record<string, unknown>;
   status: AssetStatus;
-  current_ownership_id: null;
+  current_ownership_id: string | null;
   current_owner: null;
   created_at: string;
   updated_at: string;
@@ -45,6 +46,18 @@ export class AssetValidationError extends ValidationError {
   }
 }
 
+/** An allotted asset's status was targeted by a raw PATCH (409) -- the
+ * Admin OpenAPI's `PATCH /assets/{assetId}` declares 409 "while an active
+ * ownership exists (the asset is allotted)"; only transfer/cessation
+ * (STR-055, not built yet) may change it. Nothing is written when this is
+ * thrown. */
+export class AssetConflictError extends ConflictError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'AssetConflictError';
+  }
+}
+
 interface AssetRow {
   id: string;
   project_id: string;
@@ -52,6 +65,7 @@ interface AssetRow {
   label: string | null;
   attributes: string | null;
   status: AssetStatus;
+  current_ownership_id: string | null;
   created_at: string | Date;
   updated_at: string | Date;
 }
@@ -73,7 +87,7 @@ function toAsset(row: AssetRow): Asset {
     project_id: row.project_id,
     type: row.type,
     status: row.status,
-    current_ownership_id: null,
+    current_ownership_id: row.current_ownership_id,
     current_owner: null,
     created_at: toIso(row.created_at),
     updated_at: toIso(row.updated_at),
@@ -152,9 +166,11 @@ export async function listAssets(db: Database, options: ListAssetsOptions = {}):
  * `PATCH /assets/{assetId}` -- edits label/attributes/status. `project_id`
  * and `type` are immutable (Admin OpenAPI's AssetInput description) and
  * rejected if the caller attempts to change them. `status` may only move
- * between `available` and `society_retained` -- `allotted` can't yet arise
- * (STR-053 not built), so the 409-while-allotted guard is deferred to that
- * story. Returns `null` if the asset doesn't exist.
+ * between `available` and `society_retained` -- an `allotted` asset's
+ * status can only change via transfer/cessation (STR-055, not built yet),
+ * never a raw PATCH; attempting to is rejected here (STR-053's fix for a
+ * gap left open by STR-051, which had no `allotted` asset to guard
+ * against yet). Returns `null` if the asset doesn't exist.
  */
 export async function updateAsset(db: Database, assetId: string, input: AssetInput): Promise<Asset | null> {
   const existing = await getAsset(db, assetId);
@@ -165,6 +181,9 @@ export async function updateAsset(db: Database, assetId: string, input: AssetInp
   }
   if (input.type !== undefined && input.type !== existing.type) {
     throw new AssetValidationError('type is immutable.');
+  }
+  if (existing.status === 'allotted' && input.status !== undefined && input.status !== existing.status) {
+    throw new AssetConflictError("an allotted asset's status can only change via transfer/cessation.");
   }
   if (input.status !== undefined && !WRITABLE_STATUSES.includes(input.status as AssetStatus)) {
     throw new AssetValidationError(`status must be one of ${WRITABLE_STATUSES.join(', ')}.`);

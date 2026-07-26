@@ -6,7 +6,7 @@
 // path/query/body/headers, then delegates to employees-api.ts for
 // everything else. Mirrors members/members-routes.ts.
 import { RawRoute } from '@aws-blocks/blocks';
-import type { BlocksContext, Database, Scope } from '@aws-blocks/blocks';
+import type { Database, Scope } from '@aws-blocks/blocks';
 import {
   createEmployee,
   getEmployee,
@@ -15,30 +15,10 @@ import {
   setEmployeeCapabilities,
   recordSalaryPayment,
   EmployeeValidationError,
-  type EmployeeCapability,
 } from './employees-api';
 import { JournalError } from '../finance/journal';
-import { sendNotFound, sendValidationError, sendCapabilityRequired, problemResponse, ValidationError } from '../http/problem-response';
-
-/**
- * STR-042: caller-declared capability stub for the salary-payments
- * capability gate. No auth/JWT system exists in this repo yet (E05/
- * STR-044 not built) -- per an explicit human decision already made for
- * this story, the caller declares their capabilities via the
- * `X-Capabilities` header (comma-separated capability names), standing in
- * for real JWT claims until STR-044 replaces this wholesale with real
- * claims-derivation.
- *
- * This is UNRELATED to an individual employee's `Employee.capabilities` DB
- * column: that field is about what a *specific employee's future real
- * account* would be granted once real auth exists. This header is a
- * generic "what does the *caller* of this request claim" stand-in, not
- * tied to any employee record in this story.
- */
-function hasCapability(ctx: BlocksContext, capability: EmployeeCapability): boolean {
-  const header = ctx.request.headers.get('X-Capabilities') ?? '';
-  return header.split(',').map(c => c.trim()).includes(capability);
-}
+import { sendNotFound, sendValidationError, problemResponse, ValidationError } from '../http/problem-response';
+import { requireCapability } from '../http/capability-gate';
 
 export function registerEmployeeRoutes(scope: Scope, db: Database): void {
   new RawRoute(scope, 'list-employees', {
@@ -130,10 +110,10 @@ export function registerEmployeeRoutes(scope: Scope, db: Database): void {
     method: 'POST',
     path: '/v1/employees/{employeeId}/salary-payments',
     handler: async ctx => {
-      // 1. Capability gate (403, stub for STR-044) -- checked before
-      // anything else touches the request.
-      if (!hasCapability(ctx, 'finance-recorder')) {
-        sendCapabilityRequired(ctx, 'finance-recorder');
+      // 1. Capability gate (403) -- checked before anything else touches
+      // the request. STR-044: real claims-derivation via the shared gate,
+      // replacing this story's own original X-Capabilities stub.
+      if (!(await requireCapability(ctx, db, 'finance-recorder'))) {
         return;
       }
 

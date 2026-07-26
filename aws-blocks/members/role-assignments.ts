@@ -18,8 +18,11 @@ import { isRoleEligible } from './entitlements';
 
 export type ManagementRole = 'management' | 'president' | 'vice_president' | 'general_secretary' | 'treasurer' | 'executive_member';
 
-/** The five EC offices -- each requires an open `management` assignment (subset-chain, AC1). */
-const EC_OFFICES: readonly ManagementRole[] = ['president', 'vice_president', 'general_secretary', 'treasurer', 'executive_member'];
+/** The five EC offices -- each requires an open `management` assignment
+ * (subset-chain, AC1). Exported for STR-044's claims builder, which needs
+ * to check "does this member currently hold any EC office" without
+ * re-deriving the list. */
+export const EC_OFFICES: readonly ManagementRole[] = ['president', 'vice_president', 'general_secretary', 'treasurer', 'executive_member'];
 
 export interface RoleAssignment {
   id: string;

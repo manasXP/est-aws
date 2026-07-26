@@ -39,9 +39,9 @@ describe('STR-042 T-C1 — admin employee CRUD API contract', () => {
   });
 });
 
-describe('STR-042 T-C1 — salary-payment capability gate and posting', () => {
-  it('rejects a salary payment with no X-Capabilities header: 403 capability_required', async () => {
-    const createResponse = await dispatchRequest('POST', '/v1/employees', { name: 'No Capability Payee' });
+describe('STR-044 T-C1 — salary-payment capability gate (real claims-derivation) and posting', () => {
+  it('rejects a salary payment with no actor header: 403 capability_required', async () => {
+    const createResponse = await dispatchRequest('POST', '/v1/employees', { name: 'No Actor Payee' });
     const employeeId = (createResponse.body as { employee_id: string }).employee_id;
 
     const response = await dispatchRequest(
@@ -65,15 +65,16 @@ describe('STR-042 T-C1 — salary-payment capability gate and posting', () => {
     expect(() => op.expectValidResponse(403, response.body)).toThrow(/no 403 response declared/);
   });
 
-  it('rejects a salary payment with a capability set missing finance-recorder: 403', async () => {
+  it('rejects a salary payment for an actor without finance-recorder: 403', async () => {
     const createResponse = await dispatchRequest('POST', '/v1/employees', { name: 'Wrong Capability Payee' });
     const employeeId = (createResponse.body as { employee_id: string }).employee_id;
+    await dispatchRequest('PUT', `/v1/employees/${employeeId}/capabilities`, { capabilities: ['data-entry'] });
 
     const response = await dispatchRequest(
       'POST',
       `/v1/employees/${employeeId}/salary-payments`,
       { method: 'bank', amount: '10000.00', period: '2026-07', paid_on: '2026-07-25' },
-      { 'Idempotency-Key': randomUUID(), 'X-Capabilities': 'data-entry' },
+      { 'Idempotency-Key': randomUUID(), 'X-Actor-Employee-Id': employeeId },
     );
 
     expect(response.status).toBe(403);
@@ -81,15 +82,16 @@ describe('STR-042 T-C1 — salary-payment capability gate and posting', () => {
     expect(body.error.code).toBe('capability_required');
   });
 
-  it('records a salary payment with finance-recorder and an Idempotency-Key: 201 LedgerEntry', async () => {
+  it('records a salary payment for a finance-recorder-capable actor with an Idempotency-Key: 201 LedgerEntry', async () => {
     const createResponse = await dispatchRequest('POST', '/v1/employees', { name: 'Paid Employee' });
     const employeeId = (createResponse.body as { employee_id: string }).employee_id;
+    await dispatchRequest('PUT', `/v1/employees/${employeeId}/capabilities`, { capabilities: ['finance-recorder'] });
 
     const response = await dispatchRequest(
       'POST',
       `/v1/employees/${employeeId}/salary-payments`,
       { method: 'bank', amount: '10000.00', period: '2026-07', paid_on: '2026-07-25' },
-      { 'Idempotency-Key': randomUUID(), 'X-Capabilities': 'finance-recorder' },
+      { 'Idempotency-Key': randomUUID(), 'X-Actor-Employee-Id': employeeId },
     );
 
     expect(response.status).toBe(201);
@@ -100,12 +102,13 @@ describe('STR-042 T-C1 — salary-payment capability gate and posting', () => {
   it('rejects a salary payment with the capability present but no Idempotency-Key: 422', async () => {
     const createResponse = await dispatchRequest('POST', '/v1/employees', { name: 'No Idempotency Payee' });
     const employeeId = (createResponse.body as { employee_id: string }).employee_id;
+    await dispatchRequest('PUT', `/v1/employees/${employeeId}/capabilities`, { capabilities: ['finance-recorder'] });
 
     const response = await dispatchRequest(
       'POST',
       `/v1/employees/${employeeId}/salary-payments`,
       { method: 'bank', amount: '10000.00', period: '2026-07', paid_on: '2026-07-25' },
-      { 'X-Capabilities': 'finance-recorder' },
+      { 'X-Actor-Employee-Id': employeeId },
     );
 
     expect(response.status).toBe(422);

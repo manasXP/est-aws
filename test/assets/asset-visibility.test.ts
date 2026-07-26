@@ -35,11 +35,13 @@ afterEach(async () => {
 // the admin panel only, never on the mobile surface in v1 (AC3). The
 // all-projects read is GET /v1/assets with no project_id filter (already
 // built by STR-051, no new code here) -- this test's job is the negative
-// half: no mobile `/ec` asset path exists to expose it there.
+// half: no mobile `/ec` *asset* path exists to expose it there (the mobile
+// surface does have an existing /ec/invoices approval inbox -- an unrelated
+// EC capability -- so the check must be asset-specific, not any /ec prefix).
 describe('STR-057 T-U1 — EC all-projects view is admin-only', () => {
   it('the mobile OpenAPI declares no /ec asset surface', () => {
     const mobilePaths = Object.keys(documents.mobile.paths ?? {});
-    expect(mobilePaths.some(path => path.startsWith('/ec'))).toBe(false);
+    expect(mobilePaths.some(path => path.startsWith('/ec') && path.includes('asset'))).toBe(false);
   });
 
   it('GET /v1/assets (admin, no project_id filter) spans every project', async () => {

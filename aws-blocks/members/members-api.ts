@@ -183,6 +183,11 @@ interface TransitionMemberStatusOptions {
   actor?: string;
   setJoiningDate?: boolean;
   cessationReason?: CessationReason;
+  /** STR-033 Refactor: an async precondition checked after the from/edge
+   * check passes but before the write -- throws to reject the transition
+   * (e.g. ceaseMember's ownership guard). Future guarded transitions plug
+   * in the same way, rather than each inlining its own pre-check. */
+  guard?: () => Promise<void>;
 }
 
 /**
@@ -206,8 +211,8 @@ export const memberStatusTransitionListeners: Array<(event: MemberStatusTransiti
 
 /**
  * STR-032: the only writer of `member_status` -- every lifecycle action
- * (admitMember, suspendMember, reinstateMember, and STR-033's future
- * cessation) delegates here rather than writing the column directly (AC3).
+ * (admitMember, suspendMember, reinstateMember, ceaseMember) delegates here
+ * rather than writing the column directly (AC3).
  * Rejects -- writing nothing -- if the member isn't currently in `from`, or
  * `from -> to` isn't in the decided edge set (MEMBER_STATUS_TRANSITIONS).
  */
@@ -228,6 +233,10 @@ async function transitionMemberStatus(
 
   if (existing.member_status !== from || !canTransitionMemberStatus(from, to)) {
     throw conflictError();
+  }
+
+  if (opts.guard) {
+    await opts.guard();
   }
 
   const statusActor = opts.actor ?? existing.status_actor ?? null;
@@ -345,12 +354,15 @@ export async function ceaseMember(db: Database, memberId: string, reason: unknow
   const existing = await getMember(db, memberId);
   if (!existing) return null;
 
-  if (cessationReason !== 'deceased') {
-    const holdsOwnerships = await (opts.ownershipLookup ?? stubMemberHoldsOwnerships)(db, memberId);
-    if (holdsOwnerships) {
-      throw new MemberLifecycleConflictError(`Member ${memberId} holds ownerships; transfer them before cessation.`);
-    }
-  }
+  const ownershipGuard =
+    cessationReason === 'deceased'
+      ? undefined
+      : async () => {
+          const holdsOwnerships = await (opts.ownershipLookup ?? stubMemberHoldsOwnerships)(db, memberId);
+          if (holdsOwnerships) {
+            throw new MemberLifecycleConflictError(`Member ${memberId} holds ownerships; transfer them before cessation.`);
+          }
+        };
 
-  return transitionMemberStatus(db, memberId, existing.member_status, 'ceased', { cessationReason });
+  return transitionMemberStatus(db, memberId, existing.member_status, 'ceased', { cessationReason, guard: ownershipGuard });
 }

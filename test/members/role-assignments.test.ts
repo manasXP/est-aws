@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { rmSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { sql, Scope, Database } from '@aws-blocks/blocks';
@@ -246,5 +246,38 @@ describe('STR-041 code review Finding 2 — vacateRole returns the row it actual
       expect(vacated.id).toBe(assigned.id);
       expect(vacated.actingAdmin).toBe(`admin-vacate-${i}`);
     }
+  });
+});
+
+// Regression: the RDS Data API sends string parameters as untyped
+// `stringValue` (no typeHint), and Postgres refuses to implicitly
+// assign-cast text to a DATE column -- a real-sandbox-only failure
+// ("column effective_from/effective_to is of type date but expression is
+// of type text") that PGlite never surfaces locally. Asserted at the
+// query-text level since PGlite accepts the cast as a no-op either way.
+describe('STR-041 regression — effective_from/effective_to are bound with explicit ::date casts', () => {
+  it('assignRole casts effective_from on INSERT', async () => {
+    const db = await freshMigratedDb();
+    const member = await activeMember(db, 'Cast Check Member');
+
+    const executeSpy = vi.spyOn(db, 'execute');
+    await assignRole(db, member.member_id, 'management', '2026-01-01', 'ec-admin');
+
+    const insertCall = executeSpy.mock.calls.map(([query]) => query).find(query => query.sql.includes('INSERT INTO role_assignments'));
+    expect(insertCall).toBeDefined();
+    expect(insertCall!.sql).toMatch(/\$\d+::date/);
+  });
+
+  it('vacateRole casts effective_to on UPDATE', async () => {
+    const db = await freshMigratedDb();
+    const member = await activeMember(db, 'Cast Check Member 2');
+    await assignRole(db, member.member_id, 'management', '2026-01-01', 'ec-admin');
+
+    const executeSpy = vi.spyOn(db, 'queryOne');
+    await vacateRole(db, member.member_id, 'management', '2026-01-02', 'ec-admin');
+
+    const updateCall = executeSpy.mock.calls.map(([query]) => query).find(query => query.sql.includes('UPDATE role_assignments'));
+    expect(updateCall).toBeDefined();
+    expect(updateCall!.sql).toMatch(/\$\d+::date/);
   });
 });

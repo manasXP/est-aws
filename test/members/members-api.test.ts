@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { rmSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { sql, Scope, Database } from '@aws-blocks/blocks';
@@ -417,5 +417,29 @@ describe('STR-033 code review — DB enforces cessation_reason iff member_status
         sql`INSERT INTO members (id, name, member_status, cessation_reason) VALUES (${id}, 'Bad Insert', 'active', 'resigned')`,
       ),
     ).rejects.toThrow();
+  });
+});
+
+// Regression: the RDS Data API sends string parameters as untyped
+// `stringValue` (no typeHint), and Postgres refuses to implicitly
+// assign-cast text to a TIMESTAMPTZ column -- a real-sandbox-only failure
+// ("column status_changed_at is of type timestamp with time zone but
+// expression is of type text") that PGlite never surfaces locally.
+// Asserted at the query-text level, via the engine actually used to run
+// the transition's transaction, since PGlite accepts the cast as a no-op
+// either way.
+describe('STR-032 regression — status_changed_at is bound with an explicit ::timestamptz cast', () => {
+  it('suspendMember casts status_changed_at on the transition UPDATE', async () => {
+    const db = await freshMigratedDb();
+    const member = await createMember(db, { name: 'Cast Check Member' });
+    await admitMember(db, member.member_id);
+
+    const engine = await db.getEngine();
+    const executeSpy = vi.spyOn(engine, 'executeInTransaction');
+    await suspendMember(db, member.member_id, 'ec-admin');
+
+    const updateCall = executeSpy.mock.calls.find(([, sql]) => sql.includes('UPDATE members') && sql.includes('status_changed_at'));
+    expect(updateCall).toBeDefined();
+    expect(updateCall![1]).toMatch(/\$\d+::timestamptz/);
   });
 });

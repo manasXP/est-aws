@@ -143,7 +143,7 @@ export async function createEmployee(db: Database, input: EmployeeInput): Promis
   const id = randomUUID();
   await db.execute(
     sql`INSERT INTO employees (id, name, designation, email, phone, monthly_salary, joined_on)
-        VALUES (${id}, ${input.name}, ${input.designation ?? null}, ${input.email ?? null}, ${input.phone ?? null}, ${input.monthly_salary ?? null}, ${input.joined_on ?? null})`,
+        VALUES (${id}, ${input.name}, ${input.designation ?? null}, ${input.email ?? null}, ${input.phone ?? null}, ${input.monthly_salary ?? null}::numeric, ${input.joined_on ?? null}::date)`,
   );
   const employee = await getEmployee(db, id);
   return employee!;
@@ -187,8 +187,8 @@ export async function updateEmployee(db: Database, employeeId: string, input: Em
           designation = ${'designation' in input ? input.designation ?? null : existing.designation ?? null},
           email = ${'email' in input ? input.email ?? null : existing.email ?? null},
           phone = ${'phone' in input ? input.phone ?? null : existing.phone ?? null},
-          monthly_salary = ${'monthly_salary' in input ? input.monthly_salary ?? null : existing.monthly_salary ?? null},
-          joined_on = ${'joined_on' in input ? input.joined_on ?? null : existing.joined_on ?? null}
+          monthly_salary = ${'monthly_salary' in input ? input.monthly_salary ?? null : existing.monthly_salary ?? null}::numeric,
+          joined_on = ${'joined_on' in input ? input.joined_on ?? null : existing.joined_on ?? null}::date
         WHERE id = ${employeeId}`,
   );
   return getEmployee(db, employeeId);

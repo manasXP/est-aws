@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { rmSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { sql, Scope, Database } from '@aws-blocks/blocks';
@@ -251,5 +251,36 @@ describe('STR-042 code review — employees and members stay disjoint on update 
 
     const refetched = await getEmployee(db, employee.employee_id);
     expect(refetched!.phone).toBe('9111111111');
+  });
+});
+
+// Regression: the RDS Data API sends string parameters as untyped
+// `stringValue` (no typeHint), and Postgres refuses to implicitly
+// assign-cast text to a NUMERIC column -- a real-sandbox-only failure
+// ("column monthly_salary is of type numeric but expression is of type
+// text") that PGlite never surfaces locally. Asserted at the query-text
+// level since PGlite accepts the cast as a no-op either way.
+describe('STR-042 regression — monthly_salary is bound with an explicit ::numeric cast', () => {
+  it('createEmployee casts the monthly_salary parameter on INSERT', async () => {
+    const db = await freshMigratedDb();
+    const executeSpy = vi.spyOn(db, 'execute');
+
+    await createEmployee(db, { name: 'Salaried Employee', monthly_salary: '50000.00' });
+
+    const insertCall = executeSpy.mock.calls.map(([query]) => query).find(query => query.sql.includes('INSERT INTO employees'));
+    expect(insertCall).toBeDefined();
+    expect(insertCall!.sql).toMatch(/\$\d+::numeric/);
+  });
+
+  it('updateEmployee casts the monthly_salary parameter on UPDATE', async () => {
+    const db = await freshMigratedDb();
+    const employee = await createEmployee(db, { name: 'Salaried Employee', monthly_salary: '50000.00' });
+
+    const executeSpy = vi.spyOn(db, 'execute');
+    await updateEmployee(db, employee.employee_id, { monthly_salary: '55000.00' });
+
+    const updateCall = executeSpy.mock.calls.map(([query]) => query).find(query => query.sql.includes('UPDATE employees'));
+    expect(updateCall).toBeDefined();
+    expect(updateCall!.sql).toMatch(/\$\d+::numeric/);
   });
 });

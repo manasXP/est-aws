@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { rmSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { Scope, Database, sql } from '@aws-blocks/blocks';
@@ -159,5 +159,32 @@ describe('STR-061 review fix — chargeRunPeriodFromScheduledTime IST period res
       periodKey: '2026-01',
       dueDate: '2026-01-01',
     });
+  });
+});
+
+// Regression: the RDS Data API sends string parameters as untyped
+// `stringValue` (no typeHint), and Postgres refuses to implicitly
+// assign-cast text to a NUMERIC column -- a real-sandbox-only failure
+// (`ChargeSettingsNotConfiguredError`'s sibling, "column amount is of type
+// numeric but expression is of type text") that PGlite never surfaces
+// locally, which is exactly why AC4's live-sandbox proof caught it and no
+// local test previously did. Asserted at the query-text level since PGlite
+// accepts the cast as a no-op either way.
+describe('STR-061 regression — charges.amount is bound with an explicit ::numeric cast', () => {
+  it('the charge INSERT casts the amount parameter, not just interpolates it as text', async () => {
+    const db = await freshMigratedDb();
+    await setMaintenanceFee(db, '2500.00');
+    const project = await createProject(db, { name: 'Green Meadows' });
+    const member = await createMember(db, { name: 'Asha Rao' });
+    await admitMember(db, member.member_id);
+    const asset = await createAsset(db, { project_id: project.project_id, type: 'flat', label: 'A-101' });
+    await createOwnership(db, member.member_id, { asset_id: asset.asset_id });
+
+    const executeSpy = vi.spyOn(db, 'execute');
+    await runMaintenanceChargeRun(db, '2026-07', '2026-07-05');
+
+    const insertCall = executeSpy.mock.calls.map(([query]) => query).find(query => query.sql.includes('INSERT INTO charges'));
+    expect(insertCall).toBeDefined();
+    expect(insertCall!.sql).toMatch(/\$\d+::numeric/);
   });
 });

@@ -298,14 +298,14 @@ async function transitionMemberStatus(
     await db.transaction(async tx => {
       const { rowCount } = opts.setJoiningDate
         ? await tx.execute(
-            sql`UPDATE members SET member_status = ${to}, status_actor = ${statusActor}, status_changed_at = ${statusChangedAt}, joining_date = (now() AT TIME ZONE 'Asia/Kolkata')::date WHERE id = ${memberId} AND member_status = ${from}`,
+            sql`UPDATE members SET member_status = ${to}, status_actor = ${statusActor}, status_changed_at = ${statusChangedAt}::timestamptz, joining_date = (now() AT TIME ZONE 'Asia/Kolkata')::date WHERE id = ${memberId} AND member_status = ${from}`,
           )
         : opts.cessationReason
           ? await tx.execute(
-              sql`UPDATE members SET member_status = ${to}, status_actor = ${statusActor}, status_changed_at = ${statusChangedAt}, cessation_reason = ${opts.cessationReason} WHERE id = ${memberId} AND member_status = ${from}`,
+              sql`UPDATE members SET member_status = ${to}, status_actor = ${statusActor}, status_changed_at = ${statusChangedAt}::timestamptz, cessation_reason = ${opts.cessationReason} WHERE id = ${memberId} AND member_status = ${from}`,
             )
           : await tx.execute(
-              sql`UPDATE members SET member_status = ${to}, status_actor = ${statusActor}, status_changed_at = ${statusChangedAt} WHERE id = ${memberId} AND member_status = ${from}`,
+              sql`UPDATE members SET member_status = ${to}, status_actor = ${statusActor}, status_changed_at = ${statusChangedAt}::timestamptz WHERE id = ${memberId} AND member_status = ${from}`,
             );
 
       if (rowCount === 0) {

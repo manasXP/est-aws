@@ -6,6 +6,7 @@ import { sql } from '@aws-blocks/blocks';
 import type { Database } from '@aws-blocks/blocks';
 import type { Charge } from './charges';
 import type { PushAdapter, PushNotification } from '../notifications/push-adapter';
+import { pgTextArray } from '../sql-array';
 
 /**
  * Dispatches one due-date reminder push per registered device to every
@@ -29,7 +30,7 @@ export async function dispatchDueDateReminders(
   if (memberIds.length === 0) return;
 
   const devices = await db.query<{ push_token: string }>(
-    sql`SELECT push_token FROM registered_devices WHERE member_id = ANY(${memberIds})`,
+    sql`SELECT push_token FROM registered_devices WHERE member_id = ANY(${pgTextArray(memberIds)}::text[])`,
   );
 
   const notification: PushNotification = {

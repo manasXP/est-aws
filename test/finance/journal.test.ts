@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { rmSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { Scope, Database, sql } from '@aws-blocks/blocks';
@@ -158,5 +158,73 @@ describe('STR-021 posting writer — append-only double-entry journal', () => {
 
     const second = await runLocalMigrations(db, MIGRATIONS_DIR);
     expect(second.applied).toEqual([]);
+  });
+
+  // Regression: the RDS Data API sends string parameters as untyped
+  // `stringValue` (no typeHint), and Postgres refuses to implicitly
+  // assign-cast text to a NUMERIC column -- a real-sandbox-only failure
+  // ("column amount is of type numeric but expression is of type text")
+  // that PGlite never surfaces locally. Asserted at the query-text level,
+  // via the engine actually used to run the transaction's INSERT, since
+  // PGlite accepts the cast as a no-op either way.
+  it('the journal_lines INSERT casts the amount parameter, not just interpolates it as text', async () => {
+    const db = await freshMigratedDb();
+    const engine = await db.getEngine();
+    const executeSpy = vi.spyOn(engine, 'executeInTransaction');
+
+    await postJournalEntry(db, 'cast regression posting', [
+      { accountId: 'cash', direction: 'debit', amount: '10.00' },
+      { accountId: 'bank', direction: 'credit', amount: '10.00' },
+    ]);
+
+    const insertCall = executeSpy.mock.calls.find(([, sql]) => sql.includes('INSERT INTO journal_lines'));
+    expect(insertCall).toBeDefined();
+    expect(insertCall![1]).toMatch(/\$\d+::numeric/);
+  });
+
+  it('the journal_entries INSERT casts an explicit posted_at parameter, not just interpolates it as text', async () => {
+    const db = await freshMigratedDb();
+    const engine = await db.getEngine();
+    const executeSpy = vi.spyOn(engine, 'executeInTransaction');
+
+    await postJournalEntry(
+      db,
+      'cast regression posting with explicit postedAt',
+      [
+        { accountId: 'cash', direction: 'debit', amount: '10.00' },
+        { accountId: 'bank', direction: 'credit', amount: '10.00' },
+      ],
+      { postedAt: '2026-01-01T00:00:00.000Z' },
+    );
+
+    const insertCall = executeSpy.mock.calls.find(([, sql]) => sql.includes('INSERT INTO journal_entries') && sql.includes('posted_at'));
+    expect(insertCall).toBeDefined();
+    expect(insertCall![1]).toMatch(/\$\d+::timestamptz/);
+  });
+
+  // Regression: the RDS Data API has no array Field type -- a bare JS array
+  // marshals as a JSON string, which Postgres's `ANY()` rejects -- a
+  // real-Aurora-only failure PGlite never surfaces locally. Asserted at the
+  // query-text level since PGlite accepts the pgTextArray + ::text[] cast
+  // as a no-op either way.
+  it('the ledger_accounts existence check casts the referenced-account-ids array parameter', async () => {
+    const db = await freshMigratedDb();
+
+    await expect(
+      postJournalEntry(db, 'cast regression account check', [
+        { accountId: 'cash', direction: 'debit', amount: '10.00' },
+        { accountId: 'bank', direction: 'credit', amount: '10.00' },
+      ]),
+    ).resolves.toBeDefined();
+
+    const queryRawSpy = vi.spyOn(db, 'query');
+    await postJournalEntry(db, 'second posting', [
+      { accountId: 'cash', direction: 'debit', amount: '5.00' },
+      { accountId: 'bank', direction: 'credit', amount: '5.00' },
+    ]);
+
+    const accountCheckCall = queryRawSpy.mock.calls.map(([query]) => query).find(query => query.sql.includes('ledger_accounts'));
+    expect(accountCheckCall).toBeDefined();
+    expect(accountCheckCall!.sql).toMatch(/ANY\(\$\d+::text\[\]\)/);
   });
 });

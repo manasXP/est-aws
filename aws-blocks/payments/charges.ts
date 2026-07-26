@@ -50,6 +50,18 @@ export interface Charge {
   status: ChargeStatus;
 }
 
+/** Thrown when the `charge_settings` singleton fee is still at its seeded
+ * "0.00" default -- this story ships no HTTP endpoint to configure it (the
+ * only way is a direct SQL `UPDATE`), so an unconfigured fee must surface as
+ * a clear, named error rather than tripping the raw `charges.amount CHECK
+ * (amount > 0)` constraint inside the Lambda. */
+export class ChargeSettingsNotConfiguredError extends Error {
+  constructor() {
+    super('Maintenance fee is not configured — update the charge_settings singleton row before running the charge run.');
+    this.name = 'ChargeSettingsNotConfiguredError';
+  }
+}
+
 /**
  * Reads the singleton `charge_settings` row (migrations/016_charges.sql,
  * `id = 'default'`) -- single-society-per-deployment, so this is the one
@@ -61,7 +73,10 @@ export async function getMaintenanceFee(db: Database): Promise<string> {
   const row = await db.queryOne<{ maintenance_fee: string }>(
     sql`SELECT maintenance_fee::text AS maintenance_fee FROM charge_settings WHERE id = 'default'`,
   );
-  return formatMoney(parseMoney(row!.maintenance_fee));
+  if (!row) throw new Error('charge_settings singleton row is missing — this should never happen outside manual intervention');
+  const fee = formatMoney(parseMoney(row.maintenance_fee));
+  if (fee === '0.00') throw new ChargeSettingsNotConfiguredError();
+  return fee;
 }
 
 /** Domain Model member lifecycle: `pending` accrues nothing; `active` and

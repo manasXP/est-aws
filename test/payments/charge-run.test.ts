@@ -3,7 +3,7 @@ import { rmSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { Scope, Database, sql } from '@aws-blocks/blocks';
 import { runLocalMigrations, MIGRATIONS_DIR } from '../../aws-blocks/migrations-runner';
-import { runMaintenanceChargeRun, getMaintenanceFee } from '../../aws-blocks/payments/charges';
+import { runMaintenanceChargeRun, getMaintenanceFee, chargeRunPeriodFromScheduledTime, ChargeSettingsNotConfiguredError } from '../../aws-blocks/payments/charges';
 import { createMember, admitMember, suspendMember } from '../../aws-blocks/members/members-api';
 import { createProject } from '../../aws-blocks/projects/projects-api';
 import { createAsset } from '../../aws-blocks/assets/assets-api';
@@ -122,5 +122,42 @@ describe('STR-061 T-U4 — amounts round-trip as exact decimal strings', () => {
       sql`SELECT amount::text AS amount FROM charges WHERE id = ${charges[0].charge_id}`,
     );
     expect(row!.amount).toBe('1833.33');
+  });
+});
+
+describe('STR-061 review fix — an unconfigured maintenance fee is rejected with a clear error', () => {
+  it('runMaintenanceChargeRun throws ChargeSettingsNotConfiguredError when the fee is still the seeded "0.00" default', async () => {
+    const db = await freshMigratedDb();
+    const project = await createProject(db, { name: 'Green Meadows' });
+    const member = await createMember(db, { name: 'Asha Rao' });
+    await admitMember(db, member.member_id);
+    const asset = await createAsset(db, { project_id: project.project_id, type: 'flat', label: 'A-101' });
+    await createOwnership(db, member.member_id, { asset_id: asset.asset_id });
+
+    await expect(runMaintenanceChargeRun(db, '2026-07', '2026-07-05')).rejects.toThrow(ChargeSettingsNotConfiguredError);
+
+    const rows = await db.query(sql`SELECT id FROM charges`);
+    expect(rows).toHaveLength(0);
+  });
+
+  it('getMaintenanceFee itself throws ChargeSettingsNotConfiguredError when the fee is unconfigured', async () => {
+    const db = await freshMigratedDb();
+    await expect(getMaintenanceFee(db)).rejects.toThrow(ChargeSettingsNotConfiguredError);
+  });
+});
+
+describe('STR-061 review fix — chargeRunPeriodFromScheduledTime IST period resolution', () => {
+  it('resolves a plain mid-month UTC instant to its IST period key and due date', () => {
+    expect(chargeRunPeriodFromScheduledTime('2026-07-15T04:00:00Z')).toEqual({
+      periodKey: '2026-07',
+      dueDate: '2026-07-15',
+    });
+  });
+
+  it('resolves a UTC instant that crosses the IST year/month boundary', () => {
+    expect(chargeRunPeriodFromScheduledTime('2025-12-31T21:30:00Z')).toEqual({
+      periodKey: '2026-01',
+      dueDate: '2026-01-01',
+    });
   });
 });

@@ -158,19 +158,22 @@ export async function vacateRole(
   effectiveTo: string,
   actingAdmin?: string,
 ): Promise<RoleAssignment> {
-  const { rowCount } = await db.execute(
+  // RETURNING id captures exactly the row this UPDATE closed -- unlike a
+  // post-write re-query on (member_id, role, effective_to), which is
+  // ambiguous whenever two same-day assign+vacate cycles for the same
+  // member+role leave two closed rows sharing that tuple (id is a random
+  // UUID, so ORDER BY id DESC picks an arbitrary one of them, not the one
+  // this call just closed).
+  const updated = await db.queryOne<{ id: string }>(
     sql`UPDATE role_assignments SET effective_to = ${effectiveTo}, acting_admin = COALESCE(${actingAdmin ?? null}, acting_admin)
-        WHERE member_id = ${memberId} AND role = ${role} AND effective_to IS NULL`,
+        WHERE member_id = ${memberId} AND role = ${role} AND effective_to IS NULL
+        RETURNING id`,
   );
-  if (rowCount === 0) {
+  if (!updated) {
     throw new RoleAssignmentConflictError(`Member ${memberId} has no open assignment for role ${role} to vacate.`);
   }
 
-  // The partial unique index guarantees at most one row could have been
-  // open, so this re-query has exactly one possible match.
-  const row = await db.queryOne<RoleAssignmentRow>(
-    sql`SELECT * FROM role_assignments WHERE member_id = ${memberId} AND role = ${role} AND effective_to = ${effectiveTo} ORDER BY id DESC LIMIT 1`,
-  );
+  const row = await db.queryOne<RoleAssignmentRow>(sql`SELECT * FROM role_assignments WHERE id = ${updated.id}`);
   return toRoleAssignment(row!);
 }
 

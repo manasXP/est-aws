@@ -222,3 +222,29 @@ describe('STR-041 T-P1 — tenure history is append-only with non-overlapping in
     ).rejects.toThrow();
   });
 });
+
+// STR-041 code review Finding 2 — vacateRole's post-write re-query matched
+// on (member_id, role, effective_to) ordered by the row's random UUID id,
+// which is ambiguous whenever two same-day assign+vacate cycles for the
+// same member+role leave two closed rows sharing that exact tuple: the
+// re-query could return either row, not necessarily the one this call just
+// closed. The DB write itself was always correct (the partial unique index
+// guarantees only the intended row is ever open) — only the returned value
+// was wrong. Repeating a same-day cycle many times over one member+role
+// makes a wrong pick overwhelmingly likely to surface at least once if the
+// re-query is ambiguous, without relying on a single unreliable trial.
+describe('STR-041 code review Finding 2 — vacateRole returns the row it actually just closed', () => {
+  it('returns the just-closed row across repeated same-day assign+vacate cycles for the same member+role', async () => {
+    const db = await freshMigratedDb();
+    const member = await activeMember(db, 'Same Day Cycles Member');
+    await assignRole(db, member.member_id, 'management', '2026-01-01', 'ec-admin');
+
+    for (let i = 0; i < 20; i++) {
+      const assigned = await assignRole(db, member.member_id, 'treasurer', '2026-01-01', `admin-assign-${i}`);
+      const vacated = await vacateRole(db, member.member_id, 'treasurer', '2026-01-01', `admin-vacate-${i}`);
+
+      expect(vacated.id).toBe(assigned.id);
+      expect(vacated.actingAdmin).toBe(`admin-vacate-${i}`);
+    }
+  });
+});

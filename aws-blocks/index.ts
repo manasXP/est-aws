@@ -1,5 +1,6 @@
-import { Scope, Database, FileBucket, RawRoute } from '@aws-blocks/blocks';
+import { Scope, Database, FileBucket, RawRoute, CronJob } from '@aws-blocks/blocks';
 import { SCOPE_ID, DB_BLOCK_ID, DOCUMENTS_BLOCK_ID } from './block-ids';
+import { runMaintenanceChargeRun, chargeRunPeriodFromScheduledTime } from './payments/charges';
 import { linkDocumentToEntry, DocumentLinkError } from './finance/documents';
 import { registerBookRoutes } from './finance/books-routes';
 import { registerMemberRoutes } from './members/members-routes';
@@ -102,6 +103,20 @@ registerAssetRoutes(scope, db);
 // STR-053: ownership allotment via asset_id -- creating an ownership is the
 // sole writer of an asset's status/current_ownership_id.
 registerOwnershipRoutes(scope, db);
+
+// STR-061: the scheduled maintenance charge run -- monthly, first-of-month
+// at 03:00 IST (this repo's established IST convention, aws-blocks/finance/
+// financial-year.ts). Raises one `maintenance` charge per accruing
+// (active/suspended) member's owned asset for the period the run fires in.
+new CronJob(scope, 'maintenance-charge-run', {
+  schedule: 'cron(0 3 1 * ? *)',
+  timezone: 'Asia/Kolkata',
+  description: 'Monthly maintenance charge run',
+  handler: async (event) => {
+    const { periodKey, dueDate } = chargeRunPeriodFromScheduledTime(event.scheduledTime);
+    await runMaintenanceChargeRun(db, periodKey, dueDate);
+  },
+});
 
 // STR-057: role-scoped asset visibility -- the mobile member's own
 // ownerships (with embedded asset detail) and the PC's project-scoped

@@ -13,7 +13,7 @@
 // migration coupling beyond the ALTERs in 018_charges.sql.
 import { randomUUID } from 'node:crypto';
 import { sql } from '@aws-blocks/blocks';
-import type { Database } from '@aws-blocks/blocks';
+import type { Database, Logger, Metrics } from '@aws-blocks/blocks';
 import { listBillableOwnerships } from '../assets/ownerships-api';
 import type { MemberStatus } from '../members/members-api';
 import { formatMoney, parseMoney } from '../money';
@@ -96,15 +96,32 @@ export function isAccruingStatus(status: MemberStatus): boolean {
   return ACCRUING_STATUSES.has(status);
 }
 
+/** STR-063 refactor: optional observability hooks for the run summary --
+ * omitted entirely by STR-061's existing call sites/tests, which keep
+ * passing unmodified with zero test changes. */
+export interface ChargeRunObservability {
+  log?: Logger;
+  metrics?: Metrics;
+}
+
 /**
  * The pure, directly-testable core the CronJob handler (aws-blocks/index.ts)
  * calls -- no `event`/AWS types in this signature, so unit tests call it
  * directly without touching CronJob at all. Reads the billable-asset basis
  * (STR-053's listBillableOwnerships, no status filtering by design), filters
  * to accruing members in one member-status query (no per-ownership N+1),
- * and inserts one `maintenance` charge per remaining ownership.
+ * and inserts one `maintenance` charge per remaining ownership whose
+ * (ownership_id, period_key, kind) key isn't already present (STR-063:
+ * idempotent re-run). The returned `Charge[]` is only the charges newly
+ * raised by *this* call, not every charge for the period -- a re-run against
+ * an already-complete period returns `[]`.
  */
-export async function runMaintenanceChargeRun(db: Database, periodKey: string, dueDate: string): Promise<Charge[]> {
+export async function runMaintenanceChargeRun(
+  db: Database,
+  periodKey: string,
+  dueDate: string,
+  observability?: ChargeRunObservability,
+): Promise<Charge[]> {
   const fee = await getMaintenanceFee(db);
   const billable = await listBillableOwnerships(db);
 
@@ -117,12 +134,18 @@ export async function runMaintenanceChargeRun(db: Database, periodKey: string, d
   });
 
   const charges: Charge[] = [];
+  let skipped = 0;
   for (const ownership of accruing) {
     const chargeId = randomUUID();
-    await db.execute(
+    const result = await db.execute(
       sql`INSERT INTO charges (id, member_id, ownership_id, kind, period_key, amount, due_date, status)
-          VALUES (${chargeId}, ${ownership.member_id}, ${ownership.ownership_id}, 'maintenance', ${periodKey}, ${fee}, ${dueDate}, 'due')`,
+          VALUES (${chargeId}, ${ownership.member_id}, ${ownership.ownership_id}, 'maintenance', ${periodKey}, ${fee}, ${dueDate}, 'due')
+          ON CONFLICT (ownership_id, period_key, kind) DO NOTHING`,
     );
+    if (result.rowCount === 0) {
+      skipped++;
+      continue;
+    }
     charges.push({
       charge_id: chargeId,
       member_id: ownership.member_id,
@@ -135,5 +158,10 @@ export async function runMaintenanceChargeRun(db: Database, periodKey: string, d
       status: 'due',
     });
   }
+
+  observability?.log?.info('maintenance charge run summary', { periodKey, raised: charges.length, skipped });
+  observability?.metrics?.emit('ChargesRaised', charges.length, { unit: 'Count' });
+  observability?.metrics?.emit('ChargesSkipped', skipped, { unit: 'Count' });
+
   return charges;
 }

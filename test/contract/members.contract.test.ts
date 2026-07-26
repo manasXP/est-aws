@@ -80,6 +80,63 @@ describe('STR-031 T-C1 — admin member CRUD API contract', () => {
   });
 });
 
+// STR-032 T-C1: the lifecycle actions on /v1/members/{memberId} conform to
+// the Admin OpenAPI surface (covers TC-MEM-001, TC-MEM-003, TC-MEM-009).
+describe('STR-032 T-C1 — admit/suspend/reinstate contract', () => {
+  it('POST /v1/members/{memberId}/admit conforms for a pending member (covers TC-MEM-001)', async () => {
+    const id = randomUUID();
+    await db.execute(sql`INSERT INTO members (id, name, member_status) VALUES (${id}, 'Contract Admit Member', 'pending')`);
+
+    const response = await dispatchRequest('POST', `/v1/members/${id}/admit`);
+    expect(response.status).toBe(200);
+
+    const op = await contractTest('admin', '/members/{memberId}/admit', 'post');
+    expect(() => op.expectValidResponse(response.status, response.body)).not.toThrow();
+  });
+
+  it('POST /v1/members/{memberId}/suspend then /reinstate conform for an active member (covers TC-MEM-003)', async () => {
+    // joining_date seeded (sidesteps the known Member.joining_date
+    // non-nullable-schema gap noted above, same as the other seeded-active
+    // cases in this file) -- suspend/reinstate never touch it.
+    const id = randomUUID();
+    await db.execute(
+      sql`INSERT INTO members (id, name, member_status, joining_date) VALUES (${id}, 'Contract Suspend Member', 'active', '2026-03-01')`,
+    );
+
+    const suspendResponse = await dispatchRequest('POST', `/v1/members/${id}/suspend`, { actor: 'ec-member-1' });
+    expect(suspendResponse.status).toBe(200);
+    const suspendOp = await contractTest('admin', '/members/{memberId}/suspend', 'post');
+    expect(() => suspendOp.expectValidResponse(suspendResponse.status, suspendResponse.body)).not.toThrow();
+
+    const reinstateResponse = await dispatchRequest('POST', `/v1/members/${id}/reinstate`, { actor: 'ec-member-2' });
+    expect(reinstateResponse.status).toBe(200);
+    const reinstateOp = await contractTest('admin', '/members/{memberId}/reinstate', 'post');
+    expect(() => reinstateOp.expectValidResponse(reinstateResponse.status, reinstateResponse.body)).not.toThrow();
+  });
+
+  it('POST /v1/members/{memberId}/suspend on a pending member returns 409 Conflict (covers TC-MEM-009)', async () => {
+    const id = randomUUID();
+    await db.execute(sql`INSERT INTO members (id, name, member_status) VALUES (${id}, 'Contract Pending Member', 'pending')`);
+
+    const response = await dispatchRequest('POST', `/v1/members/${id}/suspend`, { actor: 'ec-member-1' });
+    expect(response.status).toBe(409);
+
+    const op = await contractTest('admin', '/members/{memberId}/suspend', 'post');
+    expect(() => op.expectValidResponse(response.status, response.body)).not.toThrow();
+  });
+
+  it('POST /v1/members/{memberId}/suspend with a missing actor returns 422 Invalid', async () => {
+    const id = randomUUID();
+    await db.execute(sql`INSERT INTO members (id, name, member_status) VALUES (${id}, 'Contract Missing Actor Member', 'active')`);
+
+    const response = await dispatchRequest('POST', `/v1/members/${id}/suspend`, {});
+    expect(response.status).toBe(422);
+
+    const op = await contractTest('admin', '/members/{memberId}/suspend', 'post');
+    expect(() => op.expectValidResponse(response.status, response.body)).not.toThrow();
+  });
+});
+
 describe('STR-031 code review — POST /v1/members rejects a missing name', () => {
   it('returns 422 conforming to the Admin OpenAPI Invalid response', async () => {
     const response = await dispatchRequest('POST', '/v1/members', { email: 'noname@example.com' });

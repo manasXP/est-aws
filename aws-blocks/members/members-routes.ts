@@ -5,8 +5,18 @@
 // members-api.ts for everything else.
 import { RawRoute } from '@aws-blocks/blocks';
 import type { Database, Scope } from '@aws-blocks/blocks';
-import { createMember, getMember, listMembers, updateMember, MemberValidationError, type MemberStatus } from './members-api';
-import { sendNotFound, sendValidationError } from '../http/problem-response';
+import {
+  createMember,
+  getMember,
+  listMembers,
+  updateMember,
+  admitMember,
+  suspendMember,
+  reinstateMember,
+  MemberValidationError,
+  type MemberStatus,
+} from './members-api';
+import { sendNotFound, sendValidationError, sendConflictError, ConflictError } from '../http/problem-response';
 
 const MEMBER_STATUSES: readonly MemberStatus[] = ['pending', 'active', 'suspended', 'ceased'];
 
@@ -72,6 +82,79 @@ export function registerMemberRoutes(scope: Scope, db: Database): void {
       } catch (e) {
         if (e instanceof MemberValidationError) {
           sendValidationError(ctx, e);
+          return;
+        }
+        throw e;
+      }
+    },
+  });
+
+  new RawRoute(scope, 'admit-member', {
+    method: 'POST',
+    path: '/v1/members/{memberId}/admit',
+    handler: async ctx => {
+      try {
+        const member = await admitMember(db, ctx.request.params.memberId);
+        if (!member) {
+          sendNotFound(ctx, `No member ${ctx.request.params.memberId}`);
+          return;
+        }
+        ctx.response.send(member);
+      } catch (e) {
+        if (e instanceof ConflictError) {
+          sendConflictError(ctx, e);
+          return;
+        }
+        throw e;
+      }
+    },
+  });
+
+  new RawRoute(scope, 'suspend-member', {
+    method: 'POST',
+    path: '/v1/members/{memberId}/suspend',
+    handler: async ctx => {
+      const { actor } = await ctx.request.json();
+      try {
+        const member = await suspendMember(db, ctx.request.params.memberId, actor);
+        if (!member) {
+          sendNotFound(ctx, `No member ${ctx.request.params.memberId}`);
+          return;
+        }
+        ctx.response.send(member);
+      } catch (e) {
+        if (e instanceof MemberValidationError) {
+          sendValidationError(ctx, e);
+          return;
+        }
+        if (e instanceof ConflictError) {
+          sendConflictError(ctx, e);
+          return;
+        }
+        throw e;
+      }
+    },
+  });
+
+  new RawRoute(scope, 'reinstate-member', {
+    method: 'POST',
+    path: '/v1/members/{memberId}/reinstate',
+    handler: async ctx => {
+      const { actor } = await ctx.request.json();
+      try {
+        const member = await reinstateMember(db, ctx.request.params.memberId, actor);
+        if (!member) {
+          sendNotFound(ctx, `No member ${ctx.request.params.memberId}`);
+          return;
+        }
+        ctx.response.send(member);
+      } catch (e) {
+        if (e instanceof MemberValidationError) {
+          sendValidationError(ctx, e);
+          return;
+        }
+        if (e instanceof ConflictError) {
+          sendConflictError(ctx, e);
           return;
         }
         throw e;

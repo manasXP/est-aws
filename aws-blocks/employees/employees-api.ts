@@ -10,6 +10,7 @@ import type { Database } from '@aws-blocks/blocks';
 import { ValidationError } from '../http/problem-response';
 import { postJournalEntry } from '../finance/journal';
 import { getBookEntry, type LedgerEntry } from '../finance/books-api';
+import { parseMoney, InvalidMoneyError } from '../money';
 
 export type EmployeeCapability = 'designated-verifier' | 'data-entry' | 'finance-recorder';
 
@@ -46,6 +47,26 @@ export class EmployeeValidationError extends ValidationError {
   constructor(message: string) {
     super(message);
     this.name = 'EmployeeValidationError';
+  }
+}
+
+/**
+ * STR-042 code review: `Money`-format validation for `monthly_salary`/
+ * `amount` fields -- reuses money.ts's own `parseMoney` (rather than a
+ * second regex) purely for its format check, translating its
+ * `InvalidMoneyError` into an `EmployeeValidationError` so malformed money
+ * strings produce a clean 422 through the existing employees-routes.ts
+ * catch block instead of an uncaught crash (deep inside postJournalEntry,
+ * or as a raw Postgres error against the NUMERIC(14,2) column).
+ */
+function assertValidMoney(value: string): void {
+  try {
+    parseMoney(value);
+  } catch (e) {
+    if (e instanceof InvalidMoneyError) {
+      throw new EmployeeValidationError(e.message);
+    }
+    throw e;
   }
 }
 
@@ -113,6 +134,9 @@ export async function createEmployee(db: Database, input: EmployeeInput): Promis
   if (typeof input.name !== 'string' || input.name.trim() === '') {
     throw new EmployeeValidationError('name is required.');
   }
+  if (input.monthly_salary !== undefined && input.monthly_salary !== null) {
+    assertValidMoney(input.monthly_salary);
+  }
 
   await assertNotAMember(db, input);
 
@@ -151,6 +175,11 @@ export async function updateEmployee(db: Database, employeeId: string, input: Em
 
   const existing = await getEmployee(db, employeeId);
   if (!existing) return null;
+
+  if ('monthly_salary' in input && input.monthly_salary !== undefined && input.monthly_salary !== null) {
+    assertValidMoney(input.monthly_salary);
+  }
+  await assertNotAMember(db, input);
 
   await db.execute(
     sql`UPDATE employees SET
@@ -209,6 +238,7 @@ export async function recordSalaryPayment(db: Database, employeeId: string, inpu
   if (typeof input.amount !== 'string' || input.amount === '') {
     throw new EmployeeValidationError('amount is required.');
   }
+  assertValidMoney(input.amount);
   if (typeof input.period !== 'string' || input.period === '') {
     throw new EmployeeValidationError('period is required.');
   }

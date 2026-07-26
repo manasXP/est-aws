@@ -27,8 +27,9 @@ afterEach(async () => {
 });
 
 describe('STR-071 allocateReceiptSeriesNumber', () => {
-  // T-U1 (covers TC-FIN-020): the first allocation for a brand-new FY label
-  // returns 1.
+  // T-U1 (partially covers TC-FIN-020: the raw allocation number; STR-073
+  // completes the case with the formatted string): the first allocation for
+  // a brand-new FY label returns 1.
   it('returns 1 for the first allocation against a brand-new FY label', async () => {
     const db = await freshMigratedDb();
 
@@ -60,6 +61,22 @@ describe('STR-071 allocateReceiptSeriesNumber', () => {
   // same FY label return N distinct integers with no gaps -- the returned
   // set is exactly {1..N}. Each allocation commits normally (none roll
   // back), fired concurrently via Promise.all.
+  //
+  // Scope of what this actually proves: this repo's local `@aws-blocks/bb-data`
+  // PGlite-backed Database mock (aws-blocks/scripts and
+  // node_modules/@aws-blocks/bb-data/src/engines/pglite-engine.ts) runs all
+  // work over a single shared connection, so nested `BEGIN`s from
+  // "concurrent" `db.transaction()` calls merge into the one open
+  // transaction rather than running as independent, isolated Postgres
+  // sessions. A rollback on any one of these merged transactions can
+  // silently undo another transaction's already-returned allocation, so this
+  // test is only valid evidence when every call commits (as it does here):
+  // gaplessness and no-duplication across N allocations that all commit. It
+  // does NOT prove cross-connection atomicity under concurrent load -- that
+  // rests on the `INSERT ... ON CONFLICT ... DO UPDATE ... RETURNING` upsert
+  // pattern in allocateReceiptSeriesNumber being race-free under a real
+  // Postgres connection pool, which this local, AWS-free suite cannot
+  // exercise.
   it('N concurrent allocations against the same FY label return exactly {1..N} with no gaps or duplicates', async () => {
     const db = await freshMigratedDb();
     const N = 20;

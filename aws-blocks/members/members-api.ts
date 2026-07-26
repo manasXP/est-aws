@@ -115,6 +115,31 @@ function toMember(row: MemberRow): Member {
 }
 
 /**
+ * STR-042 code review: symmetric to employees-api.ts's `assertNotAMember`
+ * -- employees and members must be provably disjoint (AC1) in both
+ * directions. Queries the `employees` table directly rather than importing
+ * employees-api.ts, matching how `assertNotAMember` itself queries
+ * `members` directly, to avoid a circular import between the two sibling
+ * modules.
+ */
+async function assertNotAnEmployee(db: Database, input: MemberInput): Promise<void> {
+  if (input.email) {
+    const match = await db.queryOne<{ id: string }>(
+      sql`SELECT id FROM employees WHERE lower(email) = lower(${input.email})`,
+    );
+    if (match) {
+      throw new MemberValidationError(`email ${input.email} already belongs to an employee -- members must be disjoint from employees.`);
+    }
+  }
+  if (input.phone) {
+    const match = await db.queryOne<{ id: string }>(sql`SELECT id FROM employees WHERE phone = ${input.phone}`);
+    if (match) {
+      throw new MemberValidationError(`phone ${input.phone} already belongs to an employee -- members must be disjoint from employees.`);
+    }
+  }
+}
+
+/**
  * `POST /members` -- new members always enter as `pending` with no
  * `joining_date` (Domain Model, "Member status lifecycle"): any
  * caller-supplied `member_status`/`joining_date` is ignored, since neither
@@ -125,6 +150,8 @@ export async function createMember(db: Database, input: MemberInput): Promise<Me
   if (typeof input.name !== 'string' || input.name.trim() === '') {
     throw new MemberValidationError('name is required.');
   }
+
+  await assertNotAnEmployee(db, input);
 
   const id = randomUUID();
   await db.execute(
@@ -167,6 +194,8 @@ export async function updateMember(db: Database, memberId: string, input: Member
 
   const existing = await getMember(db, memberId);
   if (!existing) return null;
+
+  await assertNotAnEmployee(db, input);
 
   await db.execute(
     sql`UPDATE members SET

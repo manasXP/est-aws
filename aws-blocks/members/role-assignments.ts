@@ -131,7 +131,7 @@ export async function assignRole(
           VALUES (${id}, ${memberId}, ${role}, ${effectiveFrom}, ${actingAdmin})`,
     );
   } catch (e: unknown) {
-    // role_assignments_open_unique (migrations/011) is the TOCTOU backstop
+    // role_assignments_open_unique (migrations/012) is the TOCTOU backstop
     // for the SELECT-then-INSERT race above: two concurrent assignments of
     // the same role to the same member can both pass the app-level checks
     // before either commits, so the second INSERT hits the partial unique

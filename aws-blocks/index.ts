@@ -1,5 +1,6 @@
-import { Scope, Database, FileBucket, RawRoute } from '@aws-blocks/blocks';
+import { Scope, Database, FileBucket, RawRoute, CronJob } from '@aws-blocks/blocks';
 import { SCOPE_ID, DB_BLOCK_ID, DOCUMENTS_BLOCK_ID } from './block-ids';
+import { runMaintenanceChargeRun } from './payments/charges';
 import { linkDocumentToEntry, DocumentLinkError } from './finance/documents';
 import { registerBookRoutes } from './finance/books-routes';
 import { registerMemberRoutes } from './members/members-routes';
@@ -100,3 +101,22 @@ registerAssetRoutes(scope, db);
 // STR-053: ownership allotment via asset_id -- creating an ownership is the
 // sole writer of an asset's status/current_ownership_id.
 registerOwnershipRoutes(scope, db);
+
+// STR-061: the scheduled maintenance charge run -- monthly, first-of-month
+// at 03:00 IST (this repo's established IST convention, aws-blocks/finance/
+// financial-year.ts). Raises one `maintenance` charge per accruing
+// (active/suspended) member's owned asset for the period the run fires in.
+new CronJob(scope, 'maintenance-charge-run', {
+  schedule: 'cron(0 3 1 * ? *)',
+  timezone: 'Asia/Kolkata',
+  description: 'Monthly maintenance charge run',
+  handler: async (event) => {
+    // Due the same IST calendar date the run executes -- no AC pins a
+    // different rule; an N-days-out grace period is a later story's call.
+    const scheduled = new Date(event.scheduledTime);
+    const ist = new Date(scheduled.getTime() + 5.5 * 60 * 60 * 1000);
+    const periodKey = `${ist.getUTCFullYear()}-${String(ist.getUTCMonth() + 1).padStart(2, '0')}`;
+    const dueDate = ist.toISOString().slice(0, 10);
+    await runMaintenanceChargeRun(db, periodKey, dueDate);
+  },
+});

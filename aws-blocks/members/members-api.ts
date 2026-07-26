@@ -11,6 +11,10 @@ import { ValidationError, ConflictError } from '../http/problem-response';
 
 export type MemberStatus = 'pending' | 'active' | 'suspended' | 'ceased';
 
+/** The Domain Model's decided cessation reason enum -- required exactly once, on cessation. */
+export type CessationReason = 'resigned' | 'expelled' | 'deceased' | 'transferred';
+const CESSATION_REASONS: readonly CessationReason[] = ['resigned', 'expelled', 'deceased', 'transferred'];
+
 /**
  * STR-032: the decided lifecycle edge set (Domain Model, "Member status
  * lifecycle") -- `pending -> active`, `active <-> suspended`, and both
@@ -39,6 +43,7 @@ export interface Member {
   name: string;
   member_status: MemberStatus;
   joining_date: string | null;
+  cessation_reason: CessationReason | null;
   email?: string;
   phone?: string;
   address?: string;
@@ -84,6 +89,7 @@ interface MemberRow {
   // YYYY-MM-DD date string.
   joining_date: string | Date | null;
   member_status: MemberStatus;
+  cessation_reason: CessationReason | null;
   // Who performed the last suspend/reinstate (STR-032) -- not part of the
   // public Member shape (the OpenAPI schema doesn't expose it), recorded
   // for audit only.
@@ -100,6 +106,7 @@ function toMember(row: MemberRow): Member {
     name: row.name,
     member_status: row.member_status,
     joining_date: row.joining_date instanceof Date ? row.joining_date.toISOString().slice(0, 10) : row.joining_date,
+    cessation_reason: row.cessation_reason,
   };
   if (row.email !== null) member.email = row.email;
   if (row.phone !== null) member.phone = row.phone;
@@ -175,6 +182,7 @@ export async function updateMember(db: Database, memberId: string, input: Member
 interface TransitionMemberStatusOptions {
   actor?: string;
   setJoiningDate?: boolean;
+  cessationReason?: CessationReason;
 }
 
 /**
@@ -238,9 +246,13 @@ async function transitionMemberStatus(
     ? await db.execute(
         sql`UPDATE members SET member_status = ${to}, status_actor = ${statusActor}, status_changed_at = ${statusChangedAt}, joining_date = (now() AT TIME ZONE 'Asia/Kolkata')::date WHERE id = ${memberId} AND member_status = ${from}`,
       )
-    : await db.execute(
-        sql`UPDATE members SET member_status = ${to}, status_actor = ${statusActor}, status_changed_at = ${statusChangedAt} WHERE id = ${memberId} AND member_status = ${from}`,
-      );
+    : opts.cessationReason
+      ? await db.execute(
+          sql`UPDATE members SET member_status = ${to}, status_actor = ${statusActor}, status_changed_at = ${statusChangedAt}, cessation_reason = ${opts.cessationReason} WHERE id = ${memberId} AND member_status = ${from}`,
+        )
+      : await db.execute(
+          sql`UPDATE members SET member_status = ${to}, status_actor = ${statusActor}, status_changed_at = ${statusChangedAt} WHERE id = ${memberId} AND member_status = ${from}`,
+        );
 
   if (rowCount === 0) {
     throw conflictError();
@@ -292,4 +304,53 @@ export async function suspendMember(db: Database, memberId: string, actor: unkno
 export async function reinstateMember(db: Database, memberId: string, actor: unknown): Promise<Member | null> {
   const validActor = requireActor(actor);
   return transitionMemberStatus(db, memberId, 'suspended', 'active', { actor: validActor });
+}
+
+function requireCessationReason(reason: unknown): CessationReason {
+  if (typeof reason !== 'string' || !(CESSATION_REASONS as readonly string[]).includes(reason)) {
+    throw new MemberValidationError('cessation_reason is required and must be one of resigned, expelled, deceased, transferred.');
+  }
+  return reason as CessationReason;
+}
+
+/**
+ * STR-033: reports whether a member currently holds any ownerships. A
+ * narrow lookup port rather than a direct table query -- E06 hasn't shipped
+ * the real ownership store yet, so ceaseMember below depends only on this
+ * signature.
+ */
+export type OwnershipLookupPort = (db: Database, memberId: string) => Promise<boolean>;
+
+/** Stub until E06: always reports no ownerships held, so cessation is never blocked by default. */
+export const stubMemberHoldsOwnerships: OwnershipLookupPort = async () => false;
+
+interface CeaseMemberOptions {
+  ownershipLookup?: OwnershipLookupPort;
+}
+
+/**
+ * `POST /members/{memberId}/cease` (not yet wired to an endpoint -- this
+ * story is business logic only) -- ends an active or suspended member's
+ * membership (Domain Model, "ceased ... terminal"). Requires a valid
+ * cessation_reason (AC1), validated before any DB read. Every reason except
+ * `deceased` is blocked while the ownership-lookup port reports ownerships
+ * held (AC2); `deceased` retains them pending succession. Returns `null` if
+ * the member doesn't exist; throws `MemberLifecycleConflictError` if the
+ * member isn't currently `active` or `suspended` -- including an
+ * already-`ceased` member, since `ceased -> ceased` isn't in the decided
+ * edge set (AC3).
+ */
+export async function ceaseMember(db: Database, memberId: string, reason: unknown, opts: CeaseMemberOptions = {}): Promise<Member | null> {
+  const cessationReason = requireCessationReason(reason);
+  const existing = await getMember(db, memberId);
+  if (!existing) return null;
+
+  if (cessationReason !== 'deceased') {
+    const holdsOwnerships = await (opts.ownershipLookup ?? stubMemberHoldsOwnerships)(db, memberId);
+    if (holdsOwnerships) {
+      throw new MemberLifecycleConflictError(`Member ${memberId} holds ownerships; transfer them before cessation.`);
+    }
+  }
+
+  return transitionMemberStatus(db, memberId, existing.member_status, 'ceased', { cessationReason });
 }

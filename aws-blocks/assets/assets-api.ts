@@ -152,9 +152,11 @@ export async function listAssets(db: Database, options: ListAssetsOptions = {}):
  * `PATCH /assets/{assetId}` -- edits label/attributes/status. `project_id`
  * and `type` are immutable (Admin OpenAPI's AssetInput description) and
  * rejected if the caller attempts to change them. `status` may only move
- * between `available` and `society_retained` -- `allotted` can't yet arise
- * (STR-053 not built), so the 409-while-allotted guard is deferred to that
- * story. Returns `null` if the asset doesn't exist.
+ * between `available` and `society_retained` -- an `allotted` asset's
+ * status can only change via transfer/cessation (STR-055, not built yet),
+ * never a raw PATCH; attempting to is rejected here (STR-053's fix for a
+ * gap left open by STR-051, which had no `allotted` asset to guard
+ * against yet). Returns `null` if the asset doesn't exist.
  */
 export async function updateAsset(db: Database, assetId: string, input: AssetInput): Promise<Asset | null> {
   const existing = await getAsset(db, assetId);
@@ -165,6 +167,9 @@ export async function updateAsset(db: Database, assetId: string, input: AssetInp
   }
   if (input.type !== undefined && input.type !== existing.type) {
     throw new AssetValidationError('type is immutable.');
+  }
+  if (existing.status === 'allotted' && input.status !== undefined && input.status !== existing.status) {
+    throw new AssetValidationError("an allotted asset's status can only change via transfer/cessation.");
   }
   if (input.status !== undefined && !WRITABLE_STATUSES.includes(input.status as AssetStatus)) {
     throw new AssetValidationError(`status must be one of ${WRITABLE_STATUSES.join(', ')}.`);

@@ -85,6 +85,34 @@ describe('STR-065 T-U1 — an overdue maintenance charge raises a separate late-
   });
 });
 
+describe('STR-065 — a single ownership with two simultaneous overdue maintenance charges', () => {
+  it('raises an independent late fee for each overdue charge, each keyed to its own source (regression guard for charges_source_charge_period_unique)', async () => {
+    const db = await freshMigratedDb();
+    await setMaintenanceFee(db, '2500.00');
+    const project = await createProject(db, { name: 'Green Meadows' });
+    const member = await createMember(db, { name: 'Asha Rao' });
+    await admitMember(db, member.member_id);
+    const asset = await createAsset(db, { project_id: project.project_id, type: 'flat', label: 'A-101' });
+    await createOwnership(db, member.member_id, { asset_id: asset.asset_id });
+
+    // Two separate overdue months on the same ownership.
+    const juneCharges = await runMaintenanceChargeRun(db, '2026-06', '2026-06-05');
+    const julyCharges = await runMaintenanceChargeRun(db, '2026-07', '2026-07-05');
+    expect(juneCharges).toHaveLength(1);
+    expect(julyCharges).toHaveLength(1);
+    expect(juneCharges[0].ownership_id).toBe(julyCharges[0].ownership_id);
+
+    await setLateFeeConfig(db, '150.00', 5); // both June and July due dates clear grace well before the sweep below
+
+    const lateFees = await runLateFeeSweep(db, '2026-08', '2026-08-15');
+
+    expect(lateFees).toHaveLength(2);
+    expect(lateFees.every(lf => lf.ownership_id === juneCharges[0].ownership_id)).toBe(true);
+    const sourceChargeIds = lateFees.map(lf => lf.source_charge_id).sort();
+    expect(sourceChargeIds).toEqual([juneCharges[0].charge_id, julyCharges[0].charge_id].sort());
+  });
+});
+
 describe('STR-065 T-U2 — no late-fee config, no late fees', () => {
   it('raises nothing however overdue the basis is when late_fee_amount is left NULL', async () => {
     const db = await freshMigratedDb();
@@ -130,6 +158,17 @@ describe('STR-065 T-U3 — not-yet-overdue and already-settled charges attract n
     const lateFees = await runLateFeeSweep(db, '2026-07', '2026-07-12'); // still within grace
 
     expect(lateFees).toHaveLength(0);
+  });
+
+  it('a charge whose grace period elapses exactly today already attracts a late fee', async () => {
+    const db = await freshMigratedDb();
+    const source = await seedSourceCharge(db, { maintenanceFee: '2500.00', periodKey: '2026-07', dueDate: '2026-07-10' });
+    await setLateFeeConfig(db, '150.00', 5); // due 2026-07-10 + 5 days grace = 2026-07-15, the exact boundary
+
+    const lateFees = await runLateFeeSweep(db, '2026-07', '2026-07-15'); // dueDate === due_date + gracePeriodDays exactly
+
+    expect(lateFees).toHaveLength(1);
+    expect(lateFees[0].source_charge_id).toBe(source.charge_id);
   });
 
   it('a paid charge attracts no late fee even long overdue', async () => {

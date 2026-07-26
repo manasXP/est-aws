@@ -54,6 +54,9 @@ export interface Charge {
   amount: string;
   due_date: string;
   status: ChargeStatus;
+  /** STR-065: only present on `late_fee` charges -- the overdue `maintenance`
+   * charge this one was raised from. */
+  source_charge_id?: string;
 }
 
 /** Thrown when the `charge_settings` singleton fee is still at its seeded
@@ -85,6 +88,28 @@ export async function getMaintenanceFee(db: Database): Promise<string> {
   return fee;
 }
 
+/** STR-065: the flat amount and grace period (in days past the source
+ * charge's due date) that `runLateFeeSweep` applies -- both per-society,
+ * alongside the maintenance fee (migrations/021_charges_late_fee.sql). */
+export interface LateFeeConfig {
+  amount: string;
+  gracePeriodDays: number;
+}
+
+/**
+ * Reads the same `charge_settings` singleton as `getMaintenanceFee`, but
+ * unlike it, an unconfigured late fee is a legitimate steady state (AC2: no
+ * config, no late fees), not an error -- `late_fee_amount IS NULL` returns
+ * `null` rather than throwing.
+ */
+export async function getLateFeeConfig(db: Database): Promise<LateFeeConfig | null> {
+  const row = await db.queryOne<{ late_fee_amount: string | null; late_fee_grace_period_days: number | null }>(
+    sql`SELECT late_fee_amount::text AS late_fee_amount, late_fee_grace_period_days FROM charge_settings WHERE id = 'default'`,
+  );
+  if (!row || row.late_fee_amount === null || row.late_fee_grace_period_days === null) return null;
+  return { amount: formatMoney(parseMoney(row.late_fee_amount)), gracePeriodDays: row.late_fee_grace_period_days };
+}
+
 /** Domain Model member lifecycle: `pending` accrues nothing; `active` and
  * `suspended` both accrue. `ceased` isn't named explicitly in this story's
  * ACs, but the Domain Model spec says "No new charges" for `ceased` --
@@ -102,6 +127,29 @@ export function isAccruingStatus(status: MemberStatus): boolean {
 export interface ChargeRunObservability {
   log?: Logger;
   metrics?: Metrics;
+}
+
+/** STR-065 Refactor: one insert-if-absent charge writer shared by
+ * `runMaintenanceChargeRun` and `runLateFeeSweep`, so future charge kinds
+ * inherit the same idempotency and no-mutation guarantees. A bare `ON
+ * CONFLICT DO NOTHING` (no arbiter column list) rather than naming a
+ * specific constraint -- that form catches a violation of *any* applicable
+ * unique/exclusion constraint on `charges`, so this one helper works
+ * correctly against both the STR-063 (ownership_id, period_key, kind)
+ * constraint (maintenance charges) and the STR-065 partial
+ * (source_charge_id, period_key) index (late-fee charges) without needing to
+ * know which one applies to a given insert. Returns whether a row was
+ * actually inserted. */
+async function insertChargeIfAbsent(
+  db: Database,
+  charge: { chargeId: string; memberId: string; ownershipId: string; kind: ChargeKind; periodKey: string; amount: string; dueDate: string; sourceChargeId?: string },
+): Promise<boolean> {
+  const result = await db.execute(
+    sql`INSERT INTO charges (id, member_id, ownership_id, kind, period_key, amount, due_date, status, source_charge_id)
+        VALUES (${charge.chargeId}, ${charge.memberId}, ${charge.ownershipId}, ${charge.kind}, ${charge.periodKey}, ${charge.amount}, ${charge.dueDate}, 'due', ${charge.sourceChargeId ?? null})
+        ON CONFLICT DO NOTHING`,
+  );
+  return result.rowCount > 0;
 }
 
 /**
@@ -137,12 +185,16 @@ export async function runMaintenanceChargeRun(
   let skipped = 0;
   for (const ownership of accruing) {
     const chargeId = randomUUID();
-    const result = await db.execute(
-      sql`INSERT INTO charges (id, member_id, ownership_id, kind, period_key, amount, due_date, status)
-          VALUES (${chargeId}, ${ownership.member_id}, ${ownership.ownership_id}, 'maintenance', ${periodKey}, ${fee}, ${dueDate}, 'due')
-          ON CONFLICT (ownership_id, period_key, kind) DO NOTHING`,
-    );
-    if (result.rowCount === 0) {
+    const inserted = await insertChargeIfAbsent(db, {
+      chargeId,
+      memberId: ownership.member_id,
+      ownershipId: ownership.ownership_id,
+      kind: 'maintenance',
+      periodKey,
+      amount: fee,
+      dueDate,
+    });
+    if (!inserted) {
       skipped++;
       continue;
     }
@@ -162,6 +214,76 @@ export async function runMaintenanceChargeRun(
   observability?.log?.info('maintenance charge run summary', { periodKey, raised: charges.length, skipped });
   observability?.metrics?.emit('ChargesRaised', charges.length, { unit: 'Count' });
   observability?.metrics?.emit('ChargesSkipped', skipped, { unit: 'Count' });
+
+  return charges;
+}
+
+/**
+ * STR-065: the overdue sweep -- for each `maintenance` charge still `due`
+ * and past its (per-society) grace period as of `dueDate` (the run's own
+ * IST as-of date, the same parameter `runMaintenanceChargeRun` already
+ * takes -- reused as "now" so this stays fully deterministic, never
+ * `Date.now()`/`new Date()`), raises one `late_fee` charge linked to it via
+ * `source_charge_id`. `kind = 'maintenance'` in the WHERE clause is what
+ * enforces the spec's "no compounding" decision structurally: a `late_fee`
+ * charge is never itself a candidate. Never updates the source charge row
+ * -- only ever inserts a new one (AC1). Returns `[]` immediately, with no
+ * charges and no error, when late fees aren't configured for this society
+ * (AC2).
+ */
+export async function runLateFeeSweep(
+  db: Database,
+  periodKey: string,
+  dueDate: string,
+  observability?: ChargeRunObservability,
+): Promise<Charge[]> {
+  const lateFeeConfig = await getLateFeeConfig(db);
+  if (!lateFeeConfig) return [];
+
+  const overdue = await db.query<{ id: string; member_id: string; ownership_id: string; asset_id: string }>(
+    sql`SELECT c.id, c.member_id, c.ownership_id, o.asset_id
+        FROM charges c
+        JOIN ownerships o ON o.id = c.ownership_id
+        WHERE c.kind = 'maintenance'
+          AND c.status = 'due'
+          AND c.due_date + (${lateFeeConfig.gracePeriodDays} * INTERVAL '1 day') <= ${dueDate}::date`,
+  );
+
+  const charges: Charge[] = [];
+  let skipped = 0;
+  for (const source of overdue) {
+    const chargeId = randomUUID();
+    const inserted = await insertChargeIfAbsent(db, {
+      chargeId,
+      memberId: source.member_id,
+      ownershipId: source.ownership_id,
+      kind: 'late_fee',
+      periodKey,
+      amount: lateFeeConfig.amount,
+      dueDate,
+      sourceChargeId: source.id,
+    });
+    if (!inserted) {
+      skipped++;
+      continue;
+    }
+    charges.push({
+      charge_id: chargeId,
+      member_id: source.member_id,
+      ownership_id: source.ownership_id,
+      asset_id: source.asset_id,
+      kind: 'late_fee',
+      period_key: periodKey,
+      amount: lateFeeConfig.amount,
+      due_date: dueDate,
+      status: 'due',
+      source_charge_id: source.id,
+    });
+  }
+
+  observability?.log?.info('late fee sweep summary', { periodKey, raised: charges.length, skipped });
+  observability?.metrics?.emit('LateFeesRaised', charges.length, { unit: 'Count' });
+  observability?.metrics?.emit('LateFeesSkipped', skipped, { unit: 'Count' });
 
   return charges;
 }

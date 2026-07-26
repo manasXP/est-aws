@@ -211,6 +211,7 @@ describe('STR-041 T-P1 — tenure history is append-only with non-overlapping in
   it('rejects a raw UPDATE that changes effective_from on an already-closed row', async () => {
     const db = await freshMigratedDb();
     const member = await activeMember(db, 'Trigger Probe Member');
+    await assignRole(db, member.member_id, 'management', '2026-01-01', 'ec-admin');
     await assignRole(db, member.member_id, 'treasurer', '2026-01-01', 'ec-admin');
     await vacateRole(db, member.member_id, 'treasurer', '2026-03-31', 'ec-admin');
 

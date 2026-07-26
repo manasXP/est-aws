@@ -43,6 +43,11 @@ describe('STR-034 T-U3 — defaulter standing is derived at read time, not store
     expect(otherMembersDebt).toBe(false);
   });
 
+  it('a charge due exactly today is not yet overdue (strict less-than)', () => {
+    const dueToday = isDefaulter('member-1', [{ memberId: 'member-1', dueDate: '2026-07-26' }], '2026-07-26');
+    expect(dueToday).toBe(false);
+  });
+
   it('defaulter standing never gates app access or payment access — a suspended defaulter still has app access', () => {
     const status: MemberStatus = 'suspended';
     const defaulter = isDefaulter('member-1', [{ memberId: 'member-1', dueDate: '2026-06-01' }], '2026-07-26');
@@ -54,7 +59,7 @@ describe('STR-034 T-U3 — defaulter standing is derived at read time, not store
   });
 });
 
-describe('STR-034 T-P1 — role eligibility and charge-accrual eligibility hold exactly per status, for all four statuses', () => {
+describe('STR-034 T-P1 — role eligibility, charge-accrual eligibility, and app access hold exactly per status, for all four statuses', () => {
   const statuses: MemberStatus[] = ['pending', 'active', 'suspended', 'ceased'];
 
   for (const status of statuses) {
@@ -64,6 +69,10 @@ describe('STR-034 T-P1 — role eligibility and charge-accrual eligibility hold 
 
     it(`canAccrueCharges('${status}') is ${status === 'active' || status === 'suspended'} (iff status in {active, suspended})`, () => {
       expect(canAccrueCharges(status)).toBe(status === 'active' || status === 'suspended');
+    });
+
+    it(`hasAppAccess('${status}') is ${status === 'active' || status === 'suspended'} (iff status in {active, suspended})`, () => {
+      expect(hasAppAccess(status)).toBe(status === 'active' || status === 'suspended');
     });
   }
 });

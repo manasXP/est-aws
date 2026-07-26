@@ -201,6 +201,35 @@ describe('STR-032 code review — concurrent suspend calls on the same active me
   });
 });
 
+// STR-041 code review Finding 3 — transitionMemberStatus now wraps its
+// UPDATE + listener dispatch in db.transaction(...) (STR-041 AC2). Any error
+// thrown inside that callback -- e.g. the TOCTOU conflictError() below, from
+// the same concurrent-suspend race as the STR-032 case above -- passes
+// through @aws-blocks/bb-data's transaction() wrapper, which rewrites the
+// thrown error's .name to 'TransactionFailedException' in place whenever
+// it isn't already one of DatabaseErrors' own values (node_modules/
+// @aws-blocks/bb-data/src/database.ts). instanceof still identifies it, but
+// the mangled .name would mask the real error in logs/telemetry. The loser
+// of the race should still surface a MemberLifecycleConflictError whose
+// .name is 'MemberLifecycleConflictError', not the transaction wrapper's
+// generic name.
+describe('STR-041 code review Finding 3 — a conflict thrown inside the transaction keeps its own error name', () => {
+  it('rejects the losing concurrent suspendMember call with .name still MemberLifecycleConflictError', async () => {
+    const db = await freshMigratedDb();
+    const member = await createMember(db, { name: 'Transaction Error Name Member' });
+    await admitMember(db, member.member_id);
+
+    const [first, second] = await Promise.allSettled([
+      suspendMember(db, member.member_id, 'ec-member-1'),
+      suspendMember(db, member.member_id, 'ec-member-2'),
+    ]);
+
+    const rejected = [first, second].find(o => o.status === 'rejected') as PromiseRejectedResult;
+    expect(rejected.reason).toBeInstanceOf(MemberLifecycleConflictError);
+    expect(rejected.reason.name).toBe('MemberLifecycleConflictError');
+  });
+});
+
 // STR-032 T-U3 (covers TC-MEM-009): invalid transitions are rejected and
 // leave the stored status unchanged.
 describe('STR-032 T-U3 — invalid transitions are rejected without side effects (covers TC-MEM-009)', () => {

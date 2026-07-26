@@ -294,27 +294,42 @@ async function transitionMemberStatus(
   // template for this shape) so a listener's own write (e.g. role vacation)
   // commits or rolls back atomically with the status change -- a throwing
   // listener rolls back the member UPDATE too.
-  await db.transaction(async tx => {
-    const { rowCount } = opts.setJoiningDate
-      ? await tx.execute(
-          sql`UPDATE members SET member_status = ${to}, status_actor = ${statusActor}, status_changed_at = ${statusChangedAt}, joining_date = (now() AT TIME ZONE 'Asia/Kolkata')::date WHERE id = ${memberId} AND member_status = ${from}`,
-        )
-      : opts.cessationReason
+  try {
+    await db.transaction(async tx => {
+      const { rowCount } = opts.setJoiningDate
         ? await tx.execute(
-            sql`UPDATE members SET member_status = ${to}, status_actor = ${statusActor}, status_changed_at = ${statusChangedAt}, cessation_reason = ${opts.cessationReason} WHERE id = ${memberId} AND member_status = ${from}`,
+            sql`UPDATE members SET member_status = ${to}, status_actor = ${statusActor}, status_changed_at = ${statusChangedAt}, joining_date = (now() AT TIME ZONE 'Asia/Kolkata')::date WHERE id = ${memberId} AND member_status = ${from}`,
           )
-        : await tx.execute(
-            sql`UPDATE members SET member_status = ${to}, status_actor = ${statusActor}, status_changed_at = ${statusChangedAt} WHERE id = ${memberId} AND member_status = ${from}`,
-          );
+        : opts.cessationReason
+          ? await tx.execute(
+              sql`UPDATE members SET member_status = ${to}, status_actor = ${statusActor}, status_changed_at = ${statusChangedAt}, cessation_reason = ${opts.cessationReason} WHERE id = ${memberId} AND member_status = ${from}`,
+            )
+          : await tx.execute(
+              sql`UPDATE members SET member_status = ${to}, status_actor = ${statusActor}, status_changed_at = ${statusChangedAt} WHERE id = ${memberId} AND member_status = ${from}`,
+            );
 
-    if (rowCount === 0) {
-      throw conflictError();
-    }
+      if (rowCount === 0) {
+        throw conflictError();
+      }
 
-    for (const listener of memberStatusTransitionListeners) {
-      await listener({ memberId, from, to, actor: opts.actor }, tx);
+      for (const listener of memberStatusTransitionListeners) {
+        await listener({ memberId, from, to, actor: opts.actor }, tx);
+      }
+    });
+  } catch (e) {
+    // @aws-blocks/bb-data's Database.transaction() catches whatever the
+    // callback throws and, if its .name isn't already one of DatabaseErrors'
+    // own values, overwrites .name to 'TransactionFailedException' in place
+    // before rethrowing the same object (node_modules/@aws-blocks/bb-data/
+    // src/database.ts). instanceof still identifies conflictError()/a
+    // listener's own domain error correctly, but the mangled .name masks
+    // the real error in logs/telemetry on this repo's audit-sensitive
+    // paths. Restore it from the error's actual class before it escapes.
+    if (e instanceof ConflictError || e instanceof ValidationError) {
+      e.name = e.constructor.name;
     }
-  });
+    throw e;
+  }
 
   return getMember(db, memberId);
 }

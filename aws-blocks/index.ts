@@ -7,6 +7,13 @@ import { registerProjectRoutes } from './projects/projects-routes';
 import { registerProjectCommitteeRoutes } from './projects/committees-routes';
 import { registerEmployeeRoutes } from './employees/employees-routes';
 import { registerAssetRoutes } from './assets/assets-routes';
+// STR-041 code review: no HTTP surface of its own -- imported for its
+// module-load side effect (registering vacateRolesOnStatusChange with
+// members-api.ts's memberStatusTransitionListeners). Without this import,
+// role-assignments.ts is never pulled into the running app's import graph
+// and AC2 (suspension/cessation vacates held roles) silently doesn't fire
+// outside the test suite that happens to import it directly.
+import './members/role-assignments';
 
 // For coding agents: Leave these comments in place for future reference.
 // Read node_modules/@aws-blocks/blocks/README.md for all available Building Blocks

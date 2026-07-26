@@ -1,6 +1,6 @@
 import { Scope, Database, FileBucket, RawRoute, CronJob, Logger, Metrics } from '@aws-blocks/blocks';
 import { SCOPE_ID, DB_BLOCK_ID, DOCUMENTS_BLOCK_ID } from './block-ids';
-import { runMaintenanceChargeRun, chargeRunPeriodFromScheduledTime } from './payments/charges';
+import { runMaintenanceChargeRun, runLateFeeSweep, chargeRunPeriodFromScheduledTime } from './payments/charges';
 import { dispatchDueDateReminders } from './payments/reminders';
 import type { PushAdapter } from './notifications/push-adapter';
 import { FakePushAdapter } from './notifications/push-adapter';
@@ -129,6 +129,9 @@ new CronJob(scope, 'maintenance-charge-run', {
   handler: async (event) => {
     const { periodKey, dueDate } = chargeRunPeriodFromScheduledTime(event.scheduledTime);
     const raisedCharges = await runMaintenanceChargeRun(db, periodKey, dueDate, { log: chargeRunLog, metrics: chargeRunMetrics });
+    // STR-065: the overdue sweep inside the same scheduled run -- raises
+    // per-society-configured late fees for charges past their grace period.
+    await runLateFeeSweep(db, periodKey, dueDate, { log: chargeRunLog, metrics: chargeRunMetrics });
     await dispatchDueDateReminders(db, dueDateReminderAdapter, raisedCharges);
   },
 });

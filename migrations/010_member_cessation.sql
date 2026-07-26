@@ -5,3 +5,4 @@
 -- aws-blocks/migrations-lint.ts).
 
 ALTER TABLE members ADD COLUMN cessation_reason TEXT CHECK (cessation_reason IN ('resigned', 'expelled', 'deceased', 'transferred'));
+ALTER TABLE members ADD CONSTRAINT cessation_reason_iff_ceased CHECK ((member_status = 'ceased') = (cessation_reason IS NOT NULL));

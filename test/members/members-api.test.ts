@@ -168,7 +168,7 @@ describe('STR-032 T-U3 — invalid transitions are rejected without side effects
   it('rejects ceased -> active (via reinstateMember, which requires suspended)', async () => {
     const db = await freshMigratedDb();
     const id = randomUUID();
-    await db.execute(sql`INSERT INTO members (id, name, member_status) VALUES (${id}, 'Ceased Member', 'ceased')`);
+    await db.execute(sql`INSERT INTO members (id, name, member_status, cessation_reason) VALUES (${id}, 'Ceased Member', 'ceased', 'resigned')`);
 
     await expect(reinstateMember(db, id, 'ec-member-1')).rejects.toThrow(MemberLifecycleConflictError);
 
@@ -299,7 +299,7 @@ describe('STR-033 T-U5 — ceased is terminal (covers TC-MEM-009)', () => {
   it('rejects admit, suspend, reinstate, and a second cessation on an already-ceased member', async () => {
     const db = await freshMigratedDb();
     const id = randomUUID();
-    await db.execute(sql`INSERT INTO members (id, name, member_status) VALUES (${id}, 'Ceased Member', 'ceased')`);
+    await db.execute(sql`INSERT INTO members (id, name, member_status, cessation_reason) VALUES (${id}, 'Ceased Member', 'ceased', 'resigned')`);
 
     await expect(admitMember(db, id)).rejects.toThrow(MemberLifecycleConflictError);
     await expect(suspendMember(db, id, 'ec-member-1')).rejects.toThrow(MemberLifecycleConflictError);
@@ -308,5 +308,46 @@ describe('STR-033 T-U5 — ceased is terminal (covers TC-MEM-009)', () => {
 
     const after = await getMember(db, id);
     expect(after!.member_status).toBe('ceased');
+  });
+});
+
+// STR-033 code review — ceaseMember's dynamically-read `from` (unlike
+// admit/suspend/reinstate's single fixed predecessor) meant an invalid
+// source status was passed straight through, producing a self-contradictory
+// message ("is pending ... expected pending"). CESSATION_SOURCES is now
+// checked up front, so the message names the real valid sources.
+describe('STR-033 code review — cessation from an invalid source names the real expected sources', () => {
+  it('rejects a pending member with a message naming active or suspended, not pending', async () => {
+    const db = await freshMigratedDb();
+    const member = await createMember(db, { name: 'Pending Member' });
+
+    await expect(ceaseMember(db, member.member_id, 'resigned')).rejects.toThrow(/expected active or suspended/);
+  });
+});
+
+// STR-033 code review — the migration's own comment claims cessation_reason
+// is required exactly when member_status is ceased, but only a CHECK on the
+// enum values was added, not one tying it to member_status. A DB-level
+// constraint now enforces it directly, independent of ceaseMember always
+// setting both together.
+describe('STR-033 code review — DB enforces cessation_reason iff member_status is ceased', () => {
+  it('rejects an INSERT that sets ceased without a cessation_reason', async () => {
+    const db = await freshMigratedDb();
+    const id = randomUUID();
+
+    await expect(
+      db.execute(sql`INSERT INTO members (id, name, member_status) VALUES (${id}, 'Bad Insert', 'ceased')`),
+    ).rejects.toThrow();
+  });
+
+  it('rejects an INSERT that sets a cessation_reason on a non-ceased member', async () => {
+    const db = await freshMigratedDb();
+    const id = randomUUID();
+
+    await expect(
+      db.execute(
+        sql`INSERT INTO members (id, name, member_status, cessation_reason) VALUES (${id}, 'Bad Insert', 'active', 'resigned')`,
+      ),
+    ).rejects.toThrow();
   });
 });

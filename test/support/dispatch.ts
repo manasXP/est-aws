@@ -12,13 +12,23 @@ import type { BlocksContext } from '@aws-blocks/blocks';
 // `body` parameter is sent through `request.json()` for POST/PUT/PATCH
 // tests; GET-only callers are unaffected (defaults to `{}`, the prior
 // always-empty behavior).
+//
+// STR-042: the same gap existed for request headers — no caller could
+// populate `Idempotency-Key`/`X-Capabilities` (or any other header) before
+// this story needed to. Adds an optional 4th `headers` parameter,
+// backward-compatible with every existing 3-arg call site.
 
 export interface DispatchResult {
   status: number;
   body: unknown;
 }
 
-export async function dispatchRequest(method: string, path: string, body: unknown = {}): Promise<DispatchResult> {
+export async function dispatchRequest(
+  method: string,
+  path: string,
+  body: unknown = {},
+  headers: Record<string, string> = {},
+): Promise<DispatchResult> {
   // matchRoute's compiled patterns are anchored to the path only (no query
   // string handling) — strip it before matching, but keep it in the URL
   // passed to the handler below so req.url.searchParams works.
@@ -30,7 +40,7 @@ export async function dispatchRequest(method: string, path: string, body: unknow
   let sentBody: unknown;
   const context: BlocksContext = {
     request: {
-      headers: new Headers(),
+      headers: new Headers(headers),
       body: null,
       json: async () => body,
       text: async () => '',

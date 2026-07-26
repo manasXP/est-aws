@@ -105,7 +105,7 @@ export async function createCommittee(db: Database, projectId: string): Promise<
   try {
     await db.execute(sql`INSERT INTO project_committees (id, project_id) VALUES (${id}, ${projectId})`);
   } catch (e: unknown) {
-    // project_committees_project_id_key (migrations/011) is the TOCTOU
+    // project_committees_project_id_key (migrations/012) is the TOCTOU
     // backstop for the SELECT-then-INSERT race in getOrCreateCommittee: two
     // concurrent get-or-creates for the same project can both pass its
     // SELECT before either commits, so the second INSERT hits the unique

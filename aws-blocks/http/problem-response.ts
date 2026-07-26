@@ -61,3 +61,14 @@ export function sendConflictError(ctx: BlocksContext, error: ConflictError): voi
   ctx.response.status = 409;
   ctx.response.send(problemResponse('conflict', error.message));
 }
+
+/**
+ * STR-042: 403 response for a caller lacking a required capability -- the
+ * Error schema's `Forbidden` case (code `capability_required`). An
+ * HTTP-layer stub check, not a thrown domain error -- see
+ * aws-blocks/employees/employees-routes.ts's capability-gate comment.
+ */
+export function sendCapabilityRequired(ctx: BlocksContext, capability: string): void {
+  ctx.response.status = 403;
+  ctx.response.send(problemResponse('capability_required', `Missing required capability: ${capability}`));
+}

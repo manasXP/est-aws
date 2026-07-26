@@ -83,6 +83,45 @@ describe('STR-031 code review — updateMember distinguishes omitted from explic
   });
 });
 
+describe('STR-042 code review — members are disjoint from employees too (symmetric to employees-api.ts T-U1)', () => {
+  it('rejects a member whose email matches an existing employee, writing nothing', async () => {
+    const db = await freshMigratedDb();
+    await db.execute(
+      sql`INSERT INTO employees (id, name, email) VALUES (${randomUUID()}, 'Existing Employee', 'shared@example.com')`,
+    );
+
+    await expect(
+      createMember(db, { name: 'Would-Be Member', email: 'Shared@Example.com' }),
+    ).rejects.toThrow(MemberValidationError);
+  });
+
+  it('rejects a member whose phone matches an existing employee, writing nothing', async () => {
+    const db = await freshMigratedDb();
+    await db.execute(
+      sql`INSERT INTO employees (id, name, phone) VALUES (${randomUUID()}, 'Existing Employee', '9876543210')`,
+    );
+
+    await expect(
+      createMember(db, { name: 'Would-Be Member', phone: '9876543210' }),
+    ).rejects.toThrow(MemberValidationError);
+  });
+
+  it('rejects a PATCH that sets a member email to match an existing employee, writing nothing', async () => {
+    const db = await freshMigratedDb();
+    await db.execute(
+      sql`INSERT INTO employees (id, name, email) VALUES (${randomUUID()}, 'Existing Employee', 'shared@example.com')`,
+    );
+    const member = await createMember(db, { name: 'Clean Member', email: 'clean@example.com' });
+
+    await expect(
+      updateMember(db, member.member_id, { email: 'Shared@Example.com' }),
+    ).rejects.toThrow(MemberValidationError);
+
+    const refetched = await getMember(db, member.member_id);
+    expect(refetched!.email).toBe('clean@example.com');
+  });
+});
+
 // STR-032 T-U1 (covers TC-MEM-001): admission is the pending -> active
 // transition and the only thing that sets joining_date.
 describe('STR-032 T-U1 — admitting a pending member (covers TC-MEM-001)', () => {

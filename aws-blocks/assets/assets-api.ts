@@ -28,6 +28,22 @@ export interface Asset {
   updated_at: string;
 }
 
+/** STR-055: the Admin OpenAPI's AssetDetail owner_history entry shape --
+ * one row per past-or-current ownership of the asset. */
+export interface AssetOwnerHistoryEntry {
+  ownership_id: string;
+  member_id: string;
+  member_name: string;
+  from: string;
+  to: string | null;
+}
+
+/** STR-055: the Admin OpenAPI's AssetDetail shape -- Asset plus the
+ * per-asset owner history close-and-create transfers preserve. */
+export interface AssetDetail extends Asset {
+  owner_history: AssetOwnerHistoryEntry[];
+}
+
 /** The Admin OpenAPI's AssetInput shape. */
 export interface AssetInput {
   project_id?: string;
@@ -140,6 +156,47 @@ export async function createAsset(db: Database, input: AssetInput): Promise<Asse
 export async function getAsset(db: Database, assetId: string): Promise<Asset | null> {
   const row = await db.queryOne<AssetRow>(sql`SELECT * FROM assets WHERE id = ${assetId}`);
   return row ? toAsset(row) : null;
+}
+
+interface OwnerHistoryRow {
+  id: string;
+  member_id: string;
+  member_name: string;
+  created_at: string | Date;
+  closed_at: string | Date | null;
+}
+
+/** Same DATE-column-as-JS-Date convention as members-api.ts's toMember
+ * formats joining_date -- `created_at`/`closed_at` here are date-only in
+ * the AssetDetail owner_history schema, not full timestamps. */
+function toDateOnly(value: string | Date): string {
+  return value instanceof Date ? value.toISOString().slice(0, 10) : value;
+}
+
+/**
+ * `GET /assets/{assetId}` -- the asset plus its full owner history across
+ * close-and-create transfers (STR-055, TC-AST-022), newest first (the
+ * AssetDetail schema's own description). `null` if the asset doesn't exist.
+ */
+export async function getAssetDetail(db: Database, assetId: string): Promise<AssetDetail | null> {
+  const asset = await getAsset(db, assetId);
+  if (!asset) return null;
+
+  const rows = await db.query<OwnerHistoryRow>(
+    sql`SELECT o.id, o.member_id, m.name AS member_name, o.created_at, o.closed_at
+        FROM ownerships o JOIN members m ON m.id = o.member_id
+        WHERE o.asset_id = ${assetId} ORDER BY o.created_at DESC, o.id DESC`,
+  );
+
+  const owner_history: AssetOwnerHistoryEntry[] = rows.map(row => ({
+    ownership_id: row.id,
+    member_id: row.member_id,
+    member_name: row.member_name,
+    from: toDateOnly(row.created_at),
+    to: row.closed_at === null ? null : toDateOnly(row.closed_at),
+  }));
+
+  return { ...asset, owner_history };
 }
 
 export interface ListAssetsOptions {

@@ -1,15 +1,15 @@
 // STR-053: the Admin API ownership allotment surface -- `POST`/`GET
 // /v1/members/{memberId}/ownerships` and `PATCH /v1/ownerships/{ownershipId}`,
-// served through RawRoute (the STR-003-decided mechanism). `POST
-// /v1/ownerships/{ownershipId}/transfer` is deliberately not built here --
-// it's STR-055. Thin HTTP adapter: parses path/body, then delegates to
-// ownerships-api.ts for everything else.
+// served through RawRoute (the STR-003-decided mechanism). STR-055 adds
+// `POST /v1/ownerships/{ownershipId}/transfer`. Thin HTTP adapter: parses
+// path/body, then delegates to ownerships-api.ts for everything else.
 import { RawRoute } from '@aws-blocks/blocks';
 import type { Database, Scope } from '@aws-blocks/blocks';
 import {
   createOwnership,
   listOwnershipsForMember,
   updateOwnership,
+  transferOwnership,
   OwnershipValidationError,
   OwnershipConflictError,
 } from './ownerships-api';
@@ -70,6 +70,34 @@ export function registerOwnershipRoutes(scope: Scope, db: Database): void {
         }
         ctx.response.send(ownership);
       } catch (e) {
+        if (e instanceof OwnershipValidationError) {
+          sendValidationError(ctx, e);
+          return;
+        }
+        throw e;
+      }
+    },
+  });
+
+  new RawRoute(scope, 'transfer-ownership', {
+    method: 'POST',
+    path: '/v1/ownerships/{ownershipId}/transfer',
+    handler: async ctx => {
+      const { ownershipId } = ctx.request.params;
+      const input = await ctx.request.json();
+      try {
+        const ownership = await transferOwnership(db, ownershipId, input);
+        if (!ownership) {
+          sendNotFound(ctx, `No ownership ${ownershipId}`);
+          return;
+        }
+        ctx.response.status = 201;
+        ctx.response.send(ownership);
+      } catch (e) {
+        if (e instanceof OwnershipConflictError) {
+          sendConflictError(ctx, e);
+          return;
+        }
         if (e instanceof OwnershipValidationError) {
           sendValidationError(ctx, e);
           return;

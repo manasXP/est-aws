@@ -94,6 +94,50 @@ describe('STR-053 code review — PATCH /v1/ownerships/{ownershipId} rejects a b
   });
 });
 
+describe('STR-055 T-C (contract) — POST /v1/ownerships/{ownershipId}/transfer', () => {
+  it('closes the old ownership and returns a schema-valid new Ownership (201)', async () => {
+    const projectId = await createTestProject();
+    const memberAId = await createTestMember();
+    const memberBId = await createTestMember();
+    await dispatchRequest('POST', `/v1/members/${memberBId}/admit`, {});
+    const assetId = await createTestAsset(projectId);
+    const createResponse = await dispatchRequest('POST', `/v1/members/${memberAId}/ownerships`, { asset_id: assetId });
+    const ownershipId = (createResponse.body as { ownership_id: string }).ownership_id;
+
+    const response = await dispatchRequest('POST', `/v1/ownerships/${ownershipId}/transfer`, { to_member_id: memberBId });
+    expect(response.status).toBe(201);
+    const op = await contractTest('admin', '/ownerships/{ownershipId}/transfer', 'post');
+    expect(() => op.expectValidResponse(201, response.body)).not.toThrow();
+
+    const body = response.body as { ownership_id: string; member_id: string; asset_id: string };
+    expect(body.ownership_id).not.toBe(ownershipId);
+    expect(body.member_id).toBe(memberBId);
+    expect(body.asset_id).toBe(assetId);
+  });
+
+  it('returns a schema-valid 422 when the receiving member is not active', async () => {
+    const projectId = await createTestProject();
+    const memberAId = await createTestMember();
+    const memberBId = await createTestMember(); // left pending -- not admitted
+    const assetId = await createTestAsset(projectId);
+    const createResponse = await dispatchRequest('POST', `/v1/members/${memberAId}/ownerships`, { asset_id: assetId });
+    const ownershipId = (createResponse.body as { ownership_id: string }).ownership_id;
+
+    const response = await dispatchRequest('POST', `/v1/ownerships/${ownershipId}/transfer`, { to_member_id: memberBId });
+    expect(response.status).toBe(422);
+    const op = await contractTest('admin', '/ownerships/{ownershipId}/transfer', 'post');
+    expect(() => op.expectValidResponse(422, response.body)).not.toThrow();
+  });
+
+  it('returns a schema-valid 404 for a nonexistent ownership', async () => {
+    const memberId = await createTestMember();
+    const response = await dispatchRequest('POST', '/v1/ownerships/no-such-ownership/transfer', { to_member_id: memberId });
+    expect(response.status).toBe(404);
+    const op = await contractTest('admin', '/ownerships/{ownershipId}/transfer', 'post');
+    expect(() => op.expectValidResponse(404, response.body)).not.toThrow();
+  });
+});
+
 describe('STR-053 (contract) — POST /v1/members/{memberId}/ownerships rejects double allotment', () => {
   it('returns a schema-valid 409 Conflict response', async () => {
     const projectId = await createTestProject();

@@ -1,5 +1,5 @@
 // STR-061: the maintenance charge run's business logic, sitting between the
-// `charges`/`charge_settings` tables (migrations/016_charges.sql) and the
+// `charges`/`charge_settings` tables (migrations/017_charges.sql) and the
 // CronJob handler (aws-blocks/index.ts) -- kept separate so it's testable
 // with a plain Database, no CronJob/event types touched at all (test/
 // payments/charge-run.test.ts). Mirrors aws-blocks/finance/journal.ts's
@@ -63,7 +63,7 @@ export class ChargeSettingsNotConfiguredError extends Error {
 }
 
 /**
- * Reads the singleton `charge_settings` row (migrations/016_charges.sql,
+ * Reads the singleton `charge_settings` row (migrations/017_charges.sql,
  * `id = 'default'`) -- single-society-per-deployment, so this is the one
  * maintenance fee, not a per-society config table. The `::text` cast avoids
  * the NUMERIC column round-tripping through a JS `number` (same pattern as

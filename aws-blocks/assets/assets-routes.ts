@@ -1,13 +1,11 @@
 // STR-051: the Admin API asset registry surface -- `POST`/`GET /v1/assets`
 // and `PATCH /v1/assets/{assetId}`, served through RawRoute (the
-// STR-003-decided mechanism). `GET /v1/assets/{assetId}` (the Admin
-// OpenAPI's `AssetDetail`, with `owner_history`) is deliberately not built
-// here -- it depends on STR-053's ownership tracking, which doesn't exist
-// yet. Thin HTTP adapter: parses path/body, then delegates to
-// assets-api.ts for everything else.
+// STR-003-decided mechanism). STR-055 adds `GET /v1/assets/{assetId}` (the
+// Admin OpenAPI's `AssetDetail`, with `owner_history`). Thin HTTP adapter:
+// parses path/body, then delegates to assets-api.ts for everything else.
 import { RawRoute } from '@aws-blocks/blocks';
 import type { Database, Scope } from '@aws-blocks/blocks';
-import { createAsset, listAssets, updateAsset, AssetValidationError, AssetConflictError, type AssetType, type AssetStatus } from './assets-api';
+import { createAsset, listAssets, updateAsset, getAssetDetail, AssetValidationError, AssetConflictError, type AssetType, type AssetStatus } from './assets-api';
 import { ASSET_TYPES, WRITABLE_STATUSES } from './asset-types';
 import { sendConflictError, sendNotFound, sendValidationError } from '../http/problem-response';
 
@@ -38,6 +36,20 @@ export function registerAssetRoutes(scope: Scope, db: Database): void {
         status: status !== 'all' && isAssetStatus(status) ? status : undefined,
       });
       ctx.response.send({ items, next_cursor: null });
+    },
+  });
+
+  new RawRoute(scope, 'get-asset', {
+    method: 'GET',
+    path: '/v1/assets/{assetId}',
+    handler: async ctx => {
+      const { assetId } = ctx.request.params;
+      const detail = await getAssetDetail(db, assetId);
+      if (!detail) {
+        sendNotFound(ctx, `No asset ${assetId}`);
+        return;
+      }
+      ctx.response.send(detail);
     },
   });
 

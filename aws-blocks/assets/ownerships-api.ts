@@ -9,6 +9,7 @@ import { DatabaseErrors, isBlocksError, sql } from '@aws-blocks/blocks';
 import type { Database } from '@aws-blocks/blocks';
 import { ConflictError, ValidationError } from '../http/problem-response';
 import type { AssetType } from './assets-api';
+import { reassignAsset } from './asset-state';
 
 /** The Admin OpenAPI's Ownership shape (components/schemas/Ownership).
  * `project_id` is derived at read time from a join against `assets` --
@@ -98,13 +99,9 @@ export async function createOwnership(db: Database, memberId: string, input: Own
 
   try {
     await db.transaction(async tx => {
-      const result = await tx.execute(
-        sql`UPDATE assets SET status = 'allotted', current_ownership_id = ${id}, updated_at = now()
-            WHERE id = ${assetId} AND status = 'available'`,
-      );
-      if (result.rowCount === 0) {
-        const asset = await tx.queryOne(sql`SELECT id FROM assets WHERE id = ${assetId}`);
-        if (!asset) {
+      const reassigned = await reassignAsset(tx, assetId, 'available', 'allotted', id);
+      if (!reassigned.ok) {
+        if (reassigned.reason === 'not_found') {
           throw new OwnershipValidationError(`No asset ${assetId}.`);
         }
         throw new OwnershipConflictError(`Asset ${assetId} is already allotted.`);

@@ -9,7 +9,7 @@
 import { randomUUID } from 'node:crypto';
 import { sql } from '@aws-blocks/blocks';
 import type { Database, Transaction } from '@aws-blocks/blocks';
-import { getInvoice, InvoiceConflictError, type Invoice } from './invoices';
+import { getInvoice, InvoiceConflictError, InvoiceForbiddenError, InvoiceValidationError, type Invoice } from './invoices';
 import { EC_OFFICES } from '../members/role-assignments';
 import { pgTextArray } from '../sql-array';
 
@@ -147,6 +147,150 @@ export async function recordApproval(
 
     if (approvedCount >= requiredCount) {
       await tx.execute(sql`UPDATE invoices SET status = 'approved' WHERE id = ${invoiceId} AND status = 'verified'`);
+      await tx.execute(
+        sql`INSERT INTO invoice_events (id, invoice_id, action, actor_id, actor_type, notes)
+            VALUES (${randomUUID()}, ${invoiceId}, 'approved', ${actorMemberId}, 'member', ${notes ?? null})`,
+      );
+    }
+  });
+
+  const invoice = await getInvoice(db, invoiceId);
+  return { invoice: invoice!, approvalProgress: { approvedCount, requiredCount } };
+}
+
+/**
+ * The live count of every member currently holding *any* EC office
+ * (EC_OFFICES) -- the entire EC, unlike designatedApproverCount's above,
+ * which is scoped to the narrower designated-approver subset joined against
+ * capability_approver_designations. STR-084's override path supersedes a
+ * rejection at a majority of this wider denominator (TC-VEN-025).
+ */
+export async function currentEcMemberCount(db: Database | Transaction): Promise<number> {
+  const row = await db.queryOne<{ count: number }>(
+    sql`SELECT COUNT(DISTINCT member_id)::int AS count
+        FROM role_assignments
+        WHERE effective_to IS NULL AND role = ANY(${pgTextArray(EC_OFFICES)}::text[])`,
+  );
+  return row!.count;
+}
+
+/** Whether `memberId` currently holds an open assignment for any EC office
+ * -- the any-EC-member authorization check STR-084's override path needs,
+ * distinct from the narrower designated-approver capability. */
+export async function isCurrentEcMember(db: Database | Transaction, memberId: string): Promise<boolean> {
+  const row = await db.queryOne(
+    sql`SELECT 1 FROM role_assignments
+        WHERE member_id = ${memberId} AND effective_to IS NULL AND role = ANY(${pgTextArray(EC_OFFICES)}::text[])
+        LIMIT 1`,
+  );
+  return row !== null;
+}
+
+/**
+ * `POST /invoices/{invoiceId}/reject` business logic (TC-VEN-024: only a
+ * `verified` invoice can be rejected, with a mandatory reason; the invoice
+ * moves to `rejected` immediately and its prior accumulated approvals stop
+ * counting toward any threshold the instant it leaves `verified` --
+ * `invoice_approvals` stays append-only, per STR-083's own idiom, rather
+ * than being deleted). Same row-lock discipline as verifyInvoice/
+ * recordApproval above: the status check and the guarded UPDATE run inside
+ * one transaction under a `SELECT ... FOR UPDATE` lock on the invoice row.
+ *
+ * No designated-approver capability check inside this function -- capability
+ * gating is purely an HTTP-layer concern (requireCapability), mirroring
+ * verifyInvoice/recordApproval's own precedent exactly.
+ */
+export async function rejectInvoice(
+  db: Database,
+  invoiceId: string,
+  actorMemberId: string,
+  reason: string,
+): Promise<Invoice> {
+  if (typeof reason !== 'string' || reason.trim() === '') {
+    throw new InvoiceValidationError('A reason is required to reject an invoice.');
+  }
+
+  await db.transaction(async tx => {
+    const locked = await tx.queryOne<{ status: string }>(sql`SELECT status FROM invoices WHERE id = ${invoiceId} FOR UPDATE`);
+    if (!locked) {
+      throw new InvoiceConflictError(`Invoice ${invoiceId} does not exist.`);
+    }
+    if (locked.status !== 'verified') {
+      throw new InvoiceConflictError(`Invoice ${invoiceId} is ${locked.status}; only a verified invoice can be rejected.`);
+    }
+
+    await tx.execute(sql`UPDATE invoices SET status = 'rejected' WHERE id = ${invoiceId} AND status = 'verified'`);
+    await tx.execute(
+      sql`INSERT INTO invoice_events (id, invoice_id, action, actor_id, actor_type, notes)
+          VALUES (${randomUUID()}, ${invoiceId}, 'rejected', ${actorMemberId}, 'member', ${reason})`,
+    );
+  });
+
+  return (await getInvoice(db, invoiceId))!;
+}
+
+/**
+ * `POST /invoices/{invoiceId}/approve` business logic -- the `rejected`-
+ * phase EC-override branch recordApproval above deliberately left for this
+ * story (TC-VEN-025/026: any current EC office holder, not just the
+ * designated-approver subset, votes to override a rejection; a majority of
+ * the *entire* EC -- currentEcMemberCount, not designatedApproverCount --
+ * supersedes the rejection and flips the invoice to `approved`).
+ *
+ * Guard order matters and must stay exactly as written: existence -> status/
+ * resubmitted_as conflict (409, TC-VEN-026: a resubmission-closed override
+ * window 409s even for a genuine EC member) -> EC-membership (403) -> insert
+ * -> recount -> maybe-flip. Same row-lock discipline as recordApproval
+ * above: the status check, the idempotent override-approval insert, the
+ * recount, and the maybe-flip-to-approved UPDATE all run inside one
+ * transaction under a `SELECT ... FOR UPDATE` lock on the invoice row.
+ */
+export async function recordOverrideApproval(
+  db: Database,
+  invoiceId: string,
+  actorMemberId: string,
+  notes?: string | null,
+): Promise<RecordApprovalResult> {
+  let approvedCount = 0;
+  let requiredCount = 0;
+
+  await db.transaction(async tx => {
+    const locked = await tx.queryOne<{ status: string; resubmitted_as: string | null }>(
+      sql`SELECT status, resubmitted_as FROM invoices WHERE id = ${invoiceId} FOR UPDATE`,
+    );
+    if (!locked) {
+      throw new InvoiceConflictError(`Invoice ${invoiceId} does not exist.`);
+    }
+    if (locked.status !== 'rejected' || locked.resubmitted_as !== null) {
+      throw new InvoiceConflictError(
+        `Invoice ${invoiceId} is not open for EC override (status ${locked.status}${locked.resubmitted_as ? ', already resubmitted' : ''}).`,
+      );
+    }
+    if (!(await isCurrentEcMember(tx, actorMemberId))) {
+      throw new InvoiceForbiddenError(`Member ${actorMemberId} does not currently hold an EC office.`);
+    }
+
+    await tx.execute(
+      sql`INSERT INTO invoice_approvals (id, invoice_id, member_id, is_override, notes)
+          VALUES (${randomUUID()}, ${invoiceId}, ${actorMemberId}, true, ${notes ?? null})
+          ON CONFLICT (invoice_id, member_id, is_override) DO NOTHING`,
+    );
+
+    // Same live-recount discipline as recordApproval above (STR-083 T-U8's
+    // fix): only currently-open EC members' override votes count, so a vote
+    // from a member who has since left the EC doesn't outlive their tenure.
+    const countRow = await tx.queryOne<{ count: number }>(
+      sql`SELECT COUNT(DISTINCT ia.member_id)::int AS count
+          FROM invoice_approvals ia
+          JOIN role_assignments ra ON ra.member_id = ia.member_id
+          WHERE ia.invoice_id = ${invoiceId} AND ia.is_override = true
+            AND ra.effective_to IS NULL AND ra.role = ANY(${pgTextArray(EC_OFFICES)}::text[])`,
+    );
+    approvedCount = countRow!.count;
+    requiredCount = majorityThreshold(await currentEcMemberCount(tx));
+
+    if (approvedCount >= requiredCount) {
+      await tx.execute(sql`UPDATE invoices SET status = 'approved' WHERE id = ${invoiceId} AND status = 'rejected'`);
       await tx.execute(
         sql`INSERT INTO invoice_events (id, invoice_id, action, actor_id, actor_type, notes)
             VALUES (${randomUUID()}, ${invoiceId}, 'approved', ${actorMemberId}, 'member', ${notes ?? null})`,

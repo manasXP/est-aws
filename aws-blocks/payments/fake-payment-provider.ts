@@ -31,13 +31,28 @@ export class FakePaymentProvider implements PaymentProvider {
     return createHmac('sha256', this.webhookSecret).update(rawBody).digest('hex');
   }
 
+  /** STR-094 test helper (not part of PaymentProvider) -- builds the raw JSON
+   * body for a fake webhook delivery carrying every WebhookEvent field, and
+   * signs it, so a test can construct a fully-formed signed delivery in one
+   * call rather than hand-rolling JSON + signWebhookPayload separately. */
+  buildSignedWebhook(event: WebhookEvent): { rawBody: string; signature: string } {
+    const rawBody = JSON.stringify(event);
+    return { rawBody, signature: this.signWebhookPayload(rawBody) };
+  }
+
   async verifyWebhookSignature(rawBody: string, signatureHeader: string): Promise<boolean> {
     return verifyHmacSignature(this.webhookSecret, rawBody, signatureHeader);
   }
 
   parseWebhookEvent(rawBody: string): WebhookEvent {
     const body = JSON.parse(rawBody);
-    return { type: body.type, providerIntentId: body.providerIntentId };
+    return {
+      type: body.type,
+      eventId: body.eventId,
+      providerIntentId: body.providerIntentId,
+      amount: body.amount,
+      failureReason: body.failureReason,
+    };
   }
 
   async getIntentStatus(_providerIntentId: string): Promise<ProviderIntentStatus> {

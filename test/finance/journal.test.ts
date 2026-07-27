@@ -109,6 +109,8 @@ describe('STR-021 posting writer — append-only double-entry journal', () => {
       { id: 'cash', kind: 'cash' },
       // STR-042: 011_employees.sql seeds a third ledger account, 'expense'.
       { id: 'expense', kind: 'expense' },
+      // STR-094: 033_webhook_settlement.sql seeds a fourth, 'member_dues'.
+      { id: 'member_dues', kind: 'income' },
     ]);
 
     await expect(
@@ -165,6 +167,7 @@ describe('STR-021 posting writer — append-only double-entry journal', () => {
       '031_payment_settings.sql',
       '032_documents.sql',
       '033_invoice_payments.sql',
+      '034_webhook_settlement.sql',
     ]);
 
     const second = await runLocalMigrations(db, MIGRATIONS_DIR);
@@ -218,6 +221,13 @@ describe('STR-021 posting writer — append-only double-entry journal', () => {
   // real-Aurora-only failure PGlite never surfaces locally. Asserted at the
   // query-text level since PGlite accepts the pgTextArray + ::text[] cast
   // as a no-op either way.
+  //
+  // STR-094: spies on the engine's `queryInTransaction` rather than `db.query`
+  // -- the account-existence check now runs inside postJournalEntryTx against
+  // the caller's own `tx` (not a bare `db.query`), so a single open
+  // transaction is composable with other atomic writes (aws-blocks/payments/
+  // webhook-settlement.ts). Same regression coverage (the cast survives),
+  // just observed at the point it now actually happens.
   it('the ledger_accounts existence check casts the referenced-account-ids array parameter', async () => {
     const db = await freshMigratedDb();
 
@@ -228,14 +238,15 @@ describe('STR-021 posting writer — append-only double-entry journal', () => {
       ]),
     ).resolves.toBeDefined();
 
-    const queryRawSpy = vi.spyOn(db, 'query');
+    const engine = await db.getEngine();
+    const queryInTxSpy = vi.spyOn(engine, 'queryInTransaction');
     await postJournalEntry(db, 'second posting', [
       { accountId: 'cash', direction: 'debit', amount: '5.00' },
       { accountId: 'bank', direction: 'credit', amount: '5.00' },
     ]);
 
-    const accountCheckCall = queryRawSpy.mock.calls.map(([query]) => query).find(query => query.sql.includes('ledger_accounts'));
+    const accountCheckCall = queryInTxSpy.mock.calls.find(([, sql]) => sql.includes('ledger_accounts'));
     expect(accountCheckCall).toBeDefined();
-    expect(accountCheckCall!.sql).toMatch(/ANY\(\$\d+::text\[\]\)/);
+    expect(accountCheckCall![1]).toMatch(/ANY\(\$\d+::text\[\]\)/);
   });
 });

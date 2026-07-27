@@ -5,7 +5,7 @@
 // reversing entries (STR-022, see finance/reversal.ts), never edits.
 import { randomUUID } from 'node:crypto';
 import { sql } from '@aws-blocks/blocks';
-import type { Database } from '@aws-blocks/blocks';
+import type { Database, Transaction } from '@aws-blocks/blocks';
 import { moneyEquals, parseMoney, sumMoney } from '../money';
 import { pgTextArray } from '../sql-array';
 
@@ -54,12 +54,19 @@ export class JournalError extends Error {
 
 /**
  * Write a balanced double-entry posting: a `journal_entries` header plus its
- * `journal_lines`, atomically. Rejects — writing nothing — if any referenced
- * ledger account doesn't exist (AC4), or if debits don't equal credits
- * exactly using decimal-string comparison (AC1, TC-FIN-002).
+ * `journal_lines`, atomically, against an already-open `tx` -- extracted
+ * (STR-094) so a caller that must compose this posting into a larger single
+ * atomic transaction (e.g. aws-blocks/payments/webhook-settlement.ts) can
+ * call this directly with its own open `tx`, rather than nesting a second,
+ * independent `db.transaction()` inside its own. Does not open a
+ * transaction itself -- every operation, including the pre-flight
+ * account-existence check, runs against the caller's `tx`. Rejects —
+ * writing nothing — if any referenced ledger account doesn't exist (AC4),
+ * or if debits don't equal credits exactly using decimal-string comparison
+ * (AC1, TC-FIN-002).
  */
-export async function postJournalEntry(
-  db: Database,
+export async function postJournalEntryTx(
+  tx: Transaction,
   description: string,
   lines: readonly PostingLine[],
   options: PostJournalEntryOptions = {},
@@ -74,7 +81,7 @@ export async function postJournalEntry(
   }
 
   const referencedAccountIds = [...new Set(lines.map(line => line.accountId))];
-  const accounts = await db.query<{ id: string }>(
+  const accounts = await tx.query<{ id: string }>(
     sql`SELECT id FROM ledger_accounts WHERE id = ANY(${pgTextArray(referencedAccountIds)}::text[])`,
   );
   const knownAccountIds = new Set(accounts.map(row => row.id));
@@ -90,21 +97,34 @@ export async function postJournalEntry(
   }
 
   const entryId = randomUUID();
-  await db.transaction(async tx => {
+  await tx.execute(
+    options.postedAt
+      ? sql`INSERT INTO journal_entries (id, description, reverses_entry_id, posted_at)
+            VALUES (${entryId}, ${description}, ${options.reversesEntryId ?? null}, ${options.postedAt}::timestamptz)`
+      : sql`INSERT INTO journal_entries (id, description, reverses_entry_id)
+            VALUES (${entryId}, ${description}, ${options.reversesEntryId ?? null})`,
+  );
+  for (const line of lines) {
     await tx.execute(
-      options.postedAt
-        ? sql`INSERT INTO journal_entries (id, description, reverses_entry_id, posted_at)
-              VALUES (${entryId}, ${description}, ${options.reversesEntryId ?? null}, ${options.postedAt}::timestamptz)`
-        : sql`INSERT INTO journal_entries (id, description, reverses_entry_id)
-              VALUES (${entryId}, ${description}, ${options.reversesEntryId ?? null})`,
+      sql`INSERT INTO journal_lines (id, entry_id, account_id, direction, amount, counterparty_type, counterparty_id)
+          VALUES (${randomUUID()}, ${entryId}, ${line.accountId}, ${line.direction}, ${line.amount}::numeric, ${line.counterpartyType ?? null}, ${line.counterpartyId ?? null})`,
     );
-    for (const line of lines) {
-      await tx.execute(
-        sql`INSERT INTO journal_lines (id, entry_id, account_id, direction, amount, counterparty_type, counterparty_id)
-            VALUES (${randomUUID()}, ${entryId}, ${line.accountId}, ${line.direction}, ${line.amount}::numeric, ${line.counterpartyType ?? null}, ${line.counterpartyId ?? null})`,
-      );
-    }
-  });
+  }
 
   return { entryId };
+}
+
+/**
+ * Write a balanced double-entry posting: a `journal_entries` header plus its
+ * `journal_lines`, atomically. Thin wrapper over `postJournalEntryTx` (STR-094)
+ * -- opens its own transaction and delegates everything to it, so existing
+ * callers keep their identical single-`Database`-argument call shape.
+ */
+export async function postJournalEntry(
+  db: Database,
+  description: string,
+  lines: readonly PostingLine[],
+  options: PostJournalEntryOptions = {},
+): Promise<PostJournalEntryResult> {
+  return db.transaction(tx => postJournalEntryTx(tx, description, lines, options));
 }

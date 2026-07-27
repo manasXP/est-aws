@@ -17,8 +17,20 @@ export interface CreateIntentResult {
 }
 
 export interface WebhookEvent {
+  // STR-094: 'payment.captured' (success) or 'payment.failed' (failure) --
+  // the same two Razorpay webhook event names razorpay-adapter.ts's
+  // parseWebhookEvent already reads off `body.event`.
   type: string;
+  // STR-094: the provider's own unique event/delivery id -- webhook_events.
+  // provider_event_id dedupes settlement on this (idempotent replay).
+  eventId: string;
   providerIntentId: string;
+  // STR-094: decimal string (aws-blocks/money.ts convention) -- what the
+  // webhook reports as settled, checked against the intent's own amount
+  // before posting anything (never a partial payment).
+  amount: string;
+  // STR-094: present only on a failure-type event.
+  failureReason?: string;
 }
 
 export interface ProviderIntentStatus {

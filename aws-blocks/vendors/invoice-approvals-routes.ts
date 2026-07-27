@@ -15,13 +15,19 @@ import { sendConflictError, sendCapabilityRequired } from '../http/problem-respo
 
 /**
  * Translates the service layer's camelCase Invoice to the Admin OpenAPI's
- * wire shape, plus `approval_progress` -- following
+ * wire shape, plus `approval_progress` when given -- following
  * test/vendors/invoices.test.ts's own T-C1 translation. `gst_amount`/
  * `invoice_number` are omitted (not sent as `null`) when absent: the
  * OpenAPI schema declares them as plain (non-nullable) Money/string, unlike
  * `resubmission_of`/`resubmitted_as`, which are explicitly `[string, "null"]`.
+ * `approval_progress` itself is optional on the schema -- STR-086's `paid`
+ * response reuses this same translator with none, since a paid invoice has
+ * no active approval threshold to report.
  */
-function toInvoiceResponse(invoice: Invoice, approvalProgress: { approved_count: number; required_count: number }): Record<string, unknown> {
+export function toInvoiceResponse(
+  invoice: Invoice,
+  approvalProgress?: { approved_count: number; required_count: number },
+): Record<string, unknown> {
   const body: Record<string, unknown> = {
     invoice_id: invoice.id,
     work_order_id: invoice.workOrderId,
@@ -32,8 +38,8 @@ function toInvoiceResponse(invoice: Invoice, approvalProgress: { approved_count:
     document_id: invoice.documentId,
     resubmission_of: invoice.resubmissionOf,
     resubmitted_as: invoice.resubmittedAs,
-    approval_progress: approvalProgress,
   };
+  if (approvalProgress) body.approval_progress = approvalProgress;
   if (invoice.gstAmount !== null) body.gst_amount = invoice.gstAmount;
   if (invoice.invoiceNumber !== null) body.invoice_number = invoice.invoiceNumber;
   return body;

@@ -34,6 +34,16 @@ export class InvoiceConflictError extends ConflictError {
   }
 }
 
+/** Domain rejection for an actor lacking the authority a write requires
+ * (e.g. a non-EC-member attempting an EC override approval). Nothing is
+ * written when this is thrown. */
+export class InvoiceForbiddenError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'InvoiceForbiddenError';
+  }
+}
+
 /** The Vendor Workflow spec's decided Invoice shape -- amount/gst_amount are
  * always decimal strings via formatMoney, never a raw DB numeric. */
 export interface Invoice {
@@ -161,12 +171,20 @@ export async function submitInvoice(
       throw new InvoiceValidationError(`No document found at: ${input.documentId}`);
     }
 
+    // STR-084: locked FOR UPDATE (same TOCTOU discipline as the work order
+    // read above), so a concurrent recordOverrideApproval on this same
+    // predecessor either fully commits before this read or blocks until this
+    // transaction commits/rolls back -- the race the epic's Risks section
+    // names (T-P1).
     if (input.resubmissionOf != null) {
-      const predecessor = await tx.queryOne(
-        sql`SELECT id FROM invoices WHERE id = ${input.resubmissionOf} AND work_order_id = ${workOrderId}`,
+      const predecessor = await tx.queryOne<{ status: string; resubmitted_as: string | null }>(
+        sql`SELECT status, resubmitted_as FROM invoices WHERE id = ${input.resubmissionOf} AND work_order_id = ${workOrderId} FOR UPDATE`,
       );
       if (!predecessor) {
         throw new InvoiceValidationError(`No invoice ${input.resubmissionOf} on work order ${workOrderId}.`);
+      }
+      if (predecessor.status !== 'rejected' || predecessor.resubmitted_as !== null) {
+        throw new InvoiceConflictError(`Invoice ${input.resubmissionOf} cannot be resubmitted: not rejected, or already resubmitted.`);
       }
     }
 
@@ -178,6 +196,13 @@ export async function submitInvoice(
       sql`INSERT INTO invoice_events (id, invoice_id, action, actor_id, notes)
           VALUES (${randomUUID()}, ${id}, 'submitted', ${input.actorId ?? null}, ${null})`,
     );
+
+    // Closes the override window and opens the resubmission atomically in
+    // one transaction (STR-084, TC-VEN-027) -- no interleaving of the two
+    // paths can ever let both succeed.
+    if (input.resubmissionOf != null) {
+      await tx.execute(sql`UPDATE invoices SET resubmitted_as = ${id} WHERE id = ${input.resubmissionOf}`);
+    }
 
     await advanceWorkOrderToInProgress(tx, workOrderId);
 

@@ -8,11 +8,10 @@
 // `/salary-payments` route (capability gate first, then business logic).
 import { RawRoute } from '@aws-blocks/blocks';
 import type { Database, Scope } from '@aws-blocks/blocks';
-import { verifyInvoice, recordApproval, designatedApproverCount, majorityThreshold } from './invoice-approvals';
-import type { Invoice } from './invoices';
-import { InvoiceConflictError } from './invoices';
+import { verifyInvoice, recordApproval, recordOverrideApproval, designatedApproverCount, majorityThreshold } from './invoice-approvals';
+import { getInvoice, InvoiceConflictError, InvoiceForbiddenError, type Invoice } from './invoices';
 import { requireCapability, resolveActor } from '../http/capability-gate';
-import { sendConflictError } from '../http/problem-response';
+import { sendConflictError, sendCapabilityRequired } from '../http/problem-response';
 
 /**
  * Translates the service layer's camelCase Invoice to the Admin OpenAPI's
@@ -76,6 +75,41 @@ export function registerInvoiceApprovalRoutes(scope: Scope, db: Database): void 
     method: 'POST',
     path: '/v1/invoices/{invoiceId}/approve',
     handler: async ctx => {
+      const { invoiceId } = ctx.request.params;
+      const { notes } = await ctx.request.json();
+
+      // STR-084: this one endpoint dispatches by the invoice's current
+      // status -- `rejected` runs the any-current-EC-member override branch
+      // (recordOverrideApproval), any other status (including not-found)
+      // falls through to STR-083's designated-approver majority branch
+      // (recordApproval) unchanged.
+      const invoice = await getInvoice(db, invoiceId);
+      if (invoice?.status === 'rejected') {
+        const actor = resolveActor(ctx);
+        if (!actor || !('memberId' in actor)) {
+          sendCapabilityRequired(ctx, 'ec-member');
+          return;
+        }
+
+        try {
+          const { invoice: updated, approvalProgress } = await recordOverrideApproval(db, invoiceId, actor.memberId, notes ?? null);
+          ctx.response.send(
+            toInvoiceResponse(updated, { approved_count: approvalProgress.approvedCount, required_count: approvalProgress.requiredCount }),
+          );
+        } catch (e) {
+          if (e instanceof InvoiceConflictError) {
+            sendConflictError(ctx, e);
+            return;
+          }
+          if (e instanceof InvoiceForbiddenError) {
+            sendCapabilityRequired(ctx, 'ec-member');
+            return;
+          }
+          throw e;
+        }
+        return;
+      }
+
       // Same reasoning as verify-invoice above, mirrored: designated-approver
       // is only ever granted via the memberId branch of buildClaims, so
       // resolveActor is guaranteed to be an { memberId } actor here.
@@ -83,14 +117,12 @@ export function registerInvoiceApprovalRoutes(scope: Scope, db: Database): void 
         return;
       }
 
-      const { invoiceId } = ctx.request.params;
-      const { notes } = await ctx.request.json();
       const actor = resolveActor(ctx) as { memberId: string };
 
       try {
-        const { invoice, approvalProgress } = await recordApproval(db, invoiceId, actor.memberId, notes ?? null);
+        const { invoice: updated, approvalProgress } = await recordApproval(db, invoiceId, actor.memberId, notes ?? null);
         ctx.response.send(
-          toInvoiceResponse(invoice, { approved_count: approvalProgress.approvedCount, required_count: approvalProgress.requiredCount }),
+          toInvoiceResponse(updated, { approved_count: approvalProgress.approvedCount, required_count: approvalProgress.requiredCount }),
         );
       } catch (e) {
         if (e instanceof InvoiceConflictError) {

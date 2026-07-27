@@ -7,6 +7,7 @@ import { contractTest } from './harness';
 import { dispatchRequest } from '../support/dispatch';
 import { createVendor, createWorkOrder } from '../../aws-blocks/vendors/work-orders';
 import { submitInvoice } from '../../aws-blocks/vendors/invoices';
+import { rejectInvoice } from '../../aws-blocks/vendors/invoice-approvals';
 import { createEmployee, setEmployeeCapabilities } from '../../aws-blocks/employees/employees-api';
 import { createMember, admitMember } from '../../aws-blocks/members/members-api';
 import { assignRole } from '../../aws-blocks/members/role-assignments';
@@ -103,6 +104,52 @@ describe('STR-083 T-C1 -- POST /v1/invoices/{invoiceId}/verify and /approve conf
     );
 
     expect(response.status).toBe(200);
+    const op = await contractTest('admin', '/invoices/{invoiceId}/approve', 'post');
+    expect(() => op.expectValidResponse(200, response.body)).not.toThrow();
+  });
+});
+
+describe("STR-084 (HTTP dispatch, not in the story's own Red list -- Green section explicitly requires /approve to dispatch by status) -- POST /v1/invoices/{invoiceId}/approve on a rejected invoice runs the EC override, not the designated-approver path", () => {
+  it('a non-designated EC member casts a valid override vote via the existing /approve route, 200', async () => {
+    const invoiceId = await submittedInvoiceId();
+    const employee = await createEmployee(db, { name: 'Contract Verifier 3' });
+    await setEmployeeCapabilities(db, employee.employee_id, ['designated-verifier']);
+    await dispatchRequest('POST', `/v1/invoices/${invoiceId}/verify`, {}, { 'X-Actor-Employee-Id': employee.employee_id });
+
+    // Reject directly against the service layer -- there's no /reject HTTP
+    // route in this story (deferred to STR-085 per the story's own
+    // Dependencies section).
+    const rejecter = await createMember(db, { name: 'Contract Rejecter' });
+    await admitMember(db, rejecter.member_id);
+    await assignRole(db, rejecter.member_id, 'management', '2026-01-01', 'ec-admin');
+    await assignRole(db, rejecter.member_id, 'executive_member', '2026-01-01', 'ec-admin');
+    await designateApprover(db, rejecter.member_id);
+    await rejectInvoice(db, invoiceId, rejecter.member_id, 'Amount mismatch');
+
+    // A plain EC member, not in the designated-approver subset.
+    const ecOne = await createMember(db, { name: 'Contract EC One' });
+    await admitMember(db, ecOne.member_id);
+    await assignRole(db, ecOne.member_id, 'management', '2026-01-01', 'ec-admin');
+    await assignRole(db, ecOne.member_id, 'executive_member', '2026-01-01', 'ec-admin');
+
+    const response = await dispatchRequest(
+      'POST',
+      `/v1/invoices/${invoiceId}/approve`,
+      { notes: 'Override vote' },
+      { 'X-Actor-Member-Id': ecOne.member_id },
+    );
+
+    expect(response.status).toBe(200);
+    // required_count depends on the *entire* EC's live membership, which
+    // this shared `db` singleton accumulates across every contract test in
+    // this file (and prior runs against the same persistent .bb-data store)
+    // -- so only approved_count (scoped to this one invoice) is asserted
+    // exactly; required_count is asserted structurally instead.
+    const body = response.body as { status: string; approval_progress: { approved_count: number; required_count: number } };
+    expect(body.status).toBe('rejected');
+    expect(body.approval_progress.approved_count).toBe(1);
+    expect(typeof body.approval_progress.required_count).toBe('number');
+
     const op = await contractTest('admin', '/invoices/{invoiceId}/approve', 'post');
     expect(() => op.expectValidResponse(200, response.body)).not.toThrow();
   });

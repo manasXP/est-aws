@@ -205,10 +205,8 @@ describe('STR-075 buildReceiptFormat', () => {
 
   // T-U3: the printed Treasurer name reflects whoever currently holds the
   // OPEN treasurer role assignment, not a hardcoded/separately configured
-  // name -- a role handover after a receipt was already "issued" (i.e.
-  // buildReceiptFormat already returned a resolved name) does not
-  // retroactively change that already-resolved value, and a subsequent call
-  // reads the new incumbent's name live rather than a cached one.
+  // name -- after a role handover, a fresh call reads the new incumbent's
+  // name live rather than a cached/stale one.
   it('resolves the Treasurer name live from the currently-open role assignment, not a cached/hardcoded value', async () => {
     const db = await freshMigratedDb();
     await seedGstin(db, '27AAAAA0000A1Z5');
@@ -220,11 +218,23 @@ describe('STR-075 buildReceiptFormat', () => {
     await vacateRole(db, first.member_id, 'treasurer', '2026-06-01', 'ec-admin');
     await seedTreasurer(db, 'Treasurer Two', '2026-06-01');
 
-    // The already-returned result from before the handover is unaffected.
-    expect(issuedBeforeHandover).toEqual({ kind: 'gst', gstin: '27AAAAA0000A1Z5', treasurerName: 'Treasurer One' });
-
-    // A fresh call after the handover reads the new incumbent live.
+    // A fresh call after the handover reads the new incumbent live, not the
+    // value already returned above.
     const issuedAfterHandover = await buildReceiptFormat(db);
     expect(issuedAfterHandover).toEqual({ kind: 'gst', gstin: '27AAAAA0000A1Z5', treasurerName: 'Treasurer Two' });
+  });
+
+  // Review finding: assignRole only guards a member double-holding a role,
+  // not two different members both holding an open treasurer assignment
+  // (e.g. an operator assigning a successor before vacating the
+  // predecessor) -- getCurrentTreasurerName must fail loudly rather than
+  // silently pick one, since this feeds a statutory GST receipt.
+  it('throws if two different members both hold an open treasurer assignment', async () => {
+    const db = await freshMigratedDb();
+    await seedGstin(db, '27AAAAA0000A1Z5');
+    await seedTreasurer(db, 'Treasurer One', '2026-01-01');
+    await seedTreasurer(db, 'Treasurer Two', '2026-01-01');
+
+    await expect(buildReceiptFormat(db)).rejects.toThrow('multiple open treasurer role assignments');
   });
 });

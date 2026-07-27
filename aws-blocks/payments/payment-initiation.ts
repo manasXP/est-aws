@@ -11,6 +11,7 @@ import type { Database, Transaction } from '@aws-blocks/blocks';
 import type { PaymentProvider } from './payment-provider';
 import { sumMoney, formatMoney, parseMoney } from '../money';
 import { pgTextArray } from '../sql-array';
+import { computeConvenienceFee, type PaymentMethod } from './convenience-fee';
 
 // The Mobile Public API's PaymentIntent.provider is a fixed gateway
 // identifier ("razorpay (decided 2026-07-20)"), not a per-call choice --
@@ -169,6 +170,7 @@ export async function initiatePayment(
   provider: PaymentProvider,
   memberId: string,
   chargeIds: string[],
+  paymentMethod: PaymentMethod,
   idempotencyKey: string,
 ): Promise<PaymentIntentResult> {
   const existing = await findExistingIntent(db, memberId, idempotencyKey);
@@ -186,17 +188,31 @@ export async function initiatePayment(
       throw e;
     }
 
-    const amount = sumMoney(lockedCharges.map(charge => charge.amount));
-    const { providerIntentId, providerParams } = await provider.createIntent({ amount });
+    const baseAmount = sumMoney(lockedCharges.map(charge => charge.amount));
+    // STR-093: itemizes the card/netbanking convenience fee (never charged on
+    // UPI) between locking the charges and calling the provider -- the
+    // fee-inclusive total is what the gateway is asked to charge, and what
+    // this row's `amount` column and the returned PaymentIntentResult.amount
+    // represent (the Mobile OpenAPI's PaymentIntent has no separate fee
+    // field; `convenience_fee` below is stored for audit/reconciliation only).
+    const { fee, totalAmount } = await computeConvenienceFee(tx, paymentMethod, baseAmount);
+    const { providerIntentId, providerParams } = await provider.createIntent({ amount: totalAmount });
 
     await tx.execute(
       sql`UPDATE charges SET status = 'in_payment', updated_at = now() WHERE id = ANY(${pgTextArray(chargeIds)}::text[])`,
     );
 
     const id = randomUUID();
+    // STR-093: written as 'pending', not STR-092's original 'initiated' --
+    // by the time this row exists at all, provider.createIntent above has
+    // already synchronously created a real provider intent, so there is no
+    // observable window in this flow where 'initiated' is the correct
+    // externally-visible state (T-U3: every poll before a webhook arrives
+    // must show 'pending'). 'initiated' stays a valid CHECK value for schema
+    // completeness/future use; this code path just never writes it.
     const insertedRow = await tx.queryOne<PaymentIntentRow>(
-      sql`INSERT INTO payment_intents (id, idempotency_key, member_id, charge_ids, amount, status, provider, provider_intent_id, provider_params)
-          VALUES (${id}, ${idempotencyKey}, ${memberId}, ${pgTextArray(chargeIds)}::text[], ${amount}::numeric, 'initiated', ${PROVIDER_NAME}, ${providerIntentId}, ${JSON.stringify(providerParams)})
+      sql`INSERT INTO payment_intents (id, idempotency_key, member_id, charge_ids, amount, status, provider, provider_intent_id, provider_params, payment_method, convenience_fee)
+          VALUES (${id}, ${idempotencyKey}, ${memberId}, ${pgTextArray(chargeIds)}::text[], ${totalAmount}::numeric, 'pending', ${PROVIDER_NAME}, ${providerIntentId}, ${JSON.stringify(providerParams)}, ${paymentMethod}, ${fee}::numeric)
           ON CONFLICT (member_id, idempotency_key) DO NOTHING
           RETURNING id, provider, provider_params, amount::text AS amount`,
     );
@@ -210,4 +226,42 @@ export async function initiatePayment(
     if (raced) return raced;
     throw new Error(`payment_intents insert conflicted, but no existing row was found for idempotency key ${idempotencyKey}.`);
   });
+}
+
+export interface PaymentStatusResult {
+  paymentId: string;
+  amount: string;
+  status: string;
+  chargeIds: string[];
+  createdAt: string;
+  completedAt: string | null;
+  failureReason: string | null;
+}
+
+/**
+ * `GET /v1/me/payments/{paymentId}` business logic -- a plain read scoped to
+ * the caller's own `member_id` (returns `null`, not a leak-prone distinction,
+ * for both "doesn't exist" and "exists but belongs to someone else", the
+ * same identical-rejection posture initiatePayment's ChargeNotPayableError
+ * established). `completed_at`/`failure_reason` don't exist as columns yet
+ * -- this story's initiatePayment only ever writes `status = 'pending'`, so
+ * they're always null; STR-094's webhook-settlement migration adds the real
+ * columns and this mapping will pick them up then.
+ */
+export async function getPaymentStatus(db: Database, memberId: string, paymentId: string): Promise<PaymentStatusResult | null> {
+  const row = await db.queryOne<{ id: string; amount: string; status: string; charge_ids: string[]; created_at: string }>(
+    sql`SELECT id, amount::text AS amount, status, charge_ids, created_at::text AS created_at
+        FROM payment_intents
+        WHERE id = ${paymentId} AND member_id = ${memberId}`,
+  );
+  if (!row) return null;
+  return {
+    paymentId: row.id,
+    amount: formatMoney(parseMoney(row.amount)),
+    status: row.status,
+    chargeIds: row.charge_ids,
+    createdAt: row.created_at,
+    completedAt: null,
+    failureReason: null,
+  };
 }

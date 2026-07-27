@@ -37,10 +37,12 @@ async function verifiedInvoiceId(): Promise<string> {
   });
   const documentId = `invoices/${randomUUID()}.pdf`;
   await documents.put(documentId, 'invoice scan');
+  const submitter = await createEmployee(db, { name: 'EC Contract Submitter' });
   const { invoice } = await submitInvoice(db, documents, workOrder.id, {
     amount: '3000.00',
     invoiceDate: '2026-07-05',
     documentId,
+    actorId: submitter.employee_id,
   });
   const employee = await createEmployee(db, { name: 'EC Contract Verifier' });
   await setEmployeeCapabilities(db, employee.employee_id, ['designated-verifier']);

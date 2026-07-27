@@ -20,6 +20,7 @@ import { registerMeOwnershipRoutes } from './assets/me-ownerships-routes';
 import { registerPcAssetRoutes } from './assets/pc-assets-routes';
 import { registerInvoiceApprovalRoutes } from './vendors/invoice-approvals-routes';
 import { registerInvoicePaymentRoutes } from './vendors/invoice-payments-routes';
+import { registerEcInvoiceRoutes } from './vendors/ec-invoices-routes';
 import { registerDocumentRoutes } from './documents/documents-routes';
 // STR-041 code review: no HTTP surface of its own -- imported for its
 // module-load side effect (registering vacateRolesOnStatusChange with
@@ -273,6 +274,11 @@ registerInvoiceApprovalRoutes(scope, db);
 // (finance-recorder), posting to the Expense Ledger + chosen Bank/Cash Book
 // and linking the invoice's scanned document to the posted entry.
 registerInvoicePaymentRoutes(scope, db, documents);
+
+// STR-085: the Mobile Public API's EC approval inbox -- thin route adapters
+// over the same invoice-approvals.ts functions the admin surface above uses,
+// so the two can never disagree on workflow state or audit trail.
+registerEcInvoiceRoutes(scope, db, documents);
 
 // STR-111: the document registry -- registration with a presigned upload
 // URL, and reads (metadata + presigned download) with lazy checksum/size

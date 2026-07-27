@@ -74,6 +74,14 @@ function toVendor(row: VendorRow): Vendor {
   };
 }
 
+/** A single vendor, or `null` if it doesn't exist -- STR-085's mobile
+ * `/ec/invoices` surface needs the vendor's display name (`vendor_name`),
+ * unlike the admin contract's own `vendor_id`. */
+export async function getVendor(db: Database, vendorId: string): Promise<Vendor | null> {
+  const row = await db.queryOne<VendorRow>(sql`SELECT * FROM vendors WHERE id = ${vendorId}`);
+  return row ? toVendor(row) : null;
+}
+
 /** Creates a vendor -- the minimal write createWorkOrder's `vendor_id` FK
  * needs. No update/list beyond what tests need; vendor management CRUD is
  * out of this story's scope. */

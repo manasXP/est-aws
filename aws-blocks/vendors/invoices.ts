@@ -103,6 +103,44 @@ export async function getInvoice(db: Database, invoiceId: string): Promise<Invoi
   return row ? toInvoice(row) : null;
 }
 
+/** Invoices in a given status, newest first -- the Admin `GET /v1/invoices`
+ * queue and STR-085's mobile `/ec/invoices` inbox share this same read. */
+export async function listInvoices(db: Database, status?: InvoiceStatus | 'all'): Promise<Invoice[]> {
+  const rows =
+    status && status !== 'all'
+      ? await db.query<InvoiceRow>(sql`SELECT * FROM invoices WHERE status = ${status} ORDER BY invoice_date DESC`)
+      : await db.query<InvoiceRow>(sql`SELECT * FROM invoices ORDER BY invoice_date DESC`);
+  return rows.map(toInvoice);
+}
+
+/** One audit-trail entry -- the Admin/Mobile OpenAPI's shared `actions` shape. */
+export interface InvoiceAction {
+  action: InvoiceStatus;
+  actorId: string | null;
+  at: string;
+  notes: string | null;
+}
+
+interface InvoiceEventRow {
+  action: InvoiceStatus;
+  actor_id: string | null;
+  at: string;
+  notes: string | null;
+}
+
+/**
+ * An invoice's full audit trail, oldest first (STR-085, TC-VEN-029: the
+ * admin and mobile surfaces must observe the identical trail for the same
+ * invoice -- this is the one read both build their `actions` response field
+ * from).
+ */
+export async function getInvoiceActions(db: Database, invoiceId: string): Promise<InvoiceAction[]> {
+  const rows = await db.query<InvoiceEventRow>(
+    sql`SELECT action, actor_id, at::text AS at, notes FROM invoice_events WHERE invoice_id = ${invoiceId} ORDER BY at ASC`,
+  );
+  return rows.map(row => ({ action: row.action, actorId: row.actor_id, at: row.at, notes: row.notes }));
+}
+
 /**
  * The derived-sum query (AC2, TC-VEN-003/004): the live sum of every
  * non-rejected invoice on a work order. No persisted counter anywhere --

@@ -9,7 +9,7 @@
 // is the archive-blocking guard it must consult once it does.
 import { randomUUID } from 'node:crypto';
 import { DatabaseErrors, isBlocksError, sql } from '@aws-blocks/blocks';
-import type { Database, FileBucket } from '@aws-blocks/blocks';
+import type { Database, FileBucket, Transaction } from '@aws-blocks/blocks';
 
 export interface DocumentLinkResult {
   documentId: string;
@@ -42,12 +42,12 @@ function fileNameFromPath(documentId: string): string {
  * (AC1, AC3, TC-FIN-060).
  */
 export async function linkDocumentToEntry(
-  db: Database,
+  tx: Transaction,
   bucket: FileBucket,
   entryId: string,
   documentId: string,
 ): Promise<DocumentLinkResult> {
-  const entry = await db.queryOne(sql`SELECT id FROM journal_entries WHERE id = ${entryId}`);
+  const entry = await tx.queryOne(sql`SELECT id FROM journal_entries WHERE id = ${entryId}`);
   if (!entry) {
     throw new DocumentLinkError(`No journal entry found with id: ${entryId}`, 'entry_not_found');
   }
@@ -58,7 +58,7 @@ export async function linkDocumentToEntry(
   }
 
   try {
-    const row = await db.queryOne<{ linked_at: string }>(
+    const row = await tx.queryOne<{ linked_at: string }>(
       sql`INSERT INTO journal_entry_documents (id, entry_id, document_path)
           VALUES (${randomUUID()}, ${entryId}, ${documentId})
           RETURNING linked_at::text AS linked_at`,

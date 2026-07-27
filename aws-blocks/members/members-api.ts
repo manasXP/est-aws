@@ -163,7 +163,7 @@ export async function createMember(db: Database, input: MemberInput): Promise<Me
 }
 
 /** `GET /members/{memberId}` -- a single member, or `null` if it doesn't exist. */
-export async function getMember(db: Database, memberId: string): Promise<Member | null> {
+export async function getMember(db: Transaction, memberId: string): Promise<Member | null> {
   const row = await db.queryOne<MemberRow>(sql`SELECT * FROM members WHERE id = ${memberId}`);
   return row ? toMember(row) : null;
 }

@@ -236,7 +236,7 @@ memberStatusTransitionListeners.push(vacateRolesOnStatusChange);
  * this codebase's precedent (STR-073's `receipt_prefix` guard) of refusing
  * to mint compliance documents from ambiguous state.
  */
-export async function getCurrentTreasurerName(db: Database): Promise<string | null> {
+export async function getCurrentTreasurerName(db: Transaction): Promise<string | null> {
   const openRows = await db.query<RoleAssignmentRow>(
     sql`SELECT * FROM role_assignments WHERE role = 'treasurer' AND effective_to IS NULL`,
   );

@@ -9,7 +9,7 @@ import { verifyInvoice, recordApproval, designatedApproverCount, majorityThresho
 import { createEmployee, setEmployeeCapabilities, type Employee } from '../../aws-blocks/employees/employees-api';
 import { createMember, admitMember } from '../../aws-blocks/members/members-api';
 import type { Member } from '../../aws-blocks/members/members-api';
-import { assignRole } from '../../aws-blocks/members/role-assignments';
+import { assignRole, vacateRole } from '../../aws-blocks/members/role-assignments';
 import { designateApprover } from '../../aws-blocks/members/capabilities';
 
 // STR-083 -- invoice verification and EC-subset majority approval, unit
@@ -162,6 +162,90 @@ describe('STR-083 T-U4 (TC-VEN-023) -- the same designated approver approves twi
     const second = await recordApproval(db, invoice.id, approver.member_id);
     expect(second.invoice.status).toBe('verified');
     expect(second.approvalProgress.approvedCount).toBe(1);
+  });
+});
+
+// T-U8/T-U9/T-U10: genuine gaps found in review, not in the story's own Red
+// plan -- recordApproval's live majority recomputation had two real bugs
+// (aws-blocks/vendors/invoice-approvals.ts) with no test coverage until
+// this addition.
+describe('STR-083 T-U8 -- a vote from a member who has since left the designated subset does not count', () => {
+  it('excludes the stale vote from approvedCount once its voter is no longer currently designated', async () => {
+    const db = await freshMigratedDb();
+    const bucket = freshBucket();
+    const invoice = await submittedInvoice(db, bucket);
+    const verifier = await verifierEmployee(db);
+    await verifyInvoice(db, invoice.id, verifier.employee_id);
+
+    const approvers: Member[] = [];
+    for (const name of ['Approver 1', 'Approver 2', 'Approver 3', 'Approver 4', 'Approver 5']) {
+      approvers.push(await designatedApproverMember(db, name));
+    }
+
+    const first = await recordApproval(db, invoice.id, approvers[0].member_id);
+    expect(first.approvalProgress).toEqual({ approvedCount: 1, requiredCount: 3 });
+    const second = await recordApproval(db, invoice.id, approvers[1].member_id);
+    expect(second.approvalProgress).toEqual({ approvedCount: 2, requiredCount: 3 });
+
+    // Approver 1, who already voted, now leaves the EC subset -- their
+    // earlier vote is stale and must stop counting. The remaining subset
+    // is 4 (approvers 2-5), majority(4) = 3.
+    await vacateRole(db, approvers[0].member_id, 'executive_member', '2026-07-10', 'ec-admin');
+    expect(await designatedApproverCount(db)).toBe(4);
+
+    // A genuinely new, currently-eligible vote (approver 3) must bring the
+    // *valid* count to 2 (approver 2 + approver 3), not 3 (which is what
+    // the unfixed code would compute by still counting approver 1's now-
+    // stale vote) -- so this must stay verified, not flip to approved on
+    // a majority that was never really reached by currently-eligible votes.
+    const third = await recordApproval(db, invoice.id, approvers[2].member_id);
+    expect(third.invoice.status).toBe('verified');
+    expect(third.approvalProgress).toEqual({ approvedCount: 2, requiredCount: 3 });
+
+    // A 4th currently-eligible vote genuinely crosses the majority.
+    const fourth = await recordApproval(db, invoice.id, approvers[3].member_id);
+    expect(fourth.invoice.status).toBe('approved');
+    expect(fourth.approvalProgress).toEqual({ approvedCount: 3, requiredCount: 3 });
+  });
+});
+
+describe('STR-083 T-U9 -- a member holding two concurrent EC offices counts once toward the majority denominator', () => {
+  it('designatedApproverCount is not inflated by a member double-holding office', async () => {
+    const db = await freshMigratedDb();
+    const single = await designatedApproverMember(db, 'Single Office');
+    const dual = await designatedApproverMember(db, 'Dual Office');
+    // designatedApproverMember already grants 'executive_member' -- add a
+    // second, distinct open EC office for the same member.
+    await assignRole(db, dual.member_id, 'treasurer', '2026-01-01', 'ec-admin');
+
+    expect(await designatedApproverCount(db)).toBe(2);
+    expect(majorityThreshold(await designatedApproverCount(db))).toBe(2);
+  });
+});
+
+describe('STR-083 T-U10 (AC3) -- an already-approved invoice cannot be approved again', () => {
+  it('a 4th distinct approver is refused 409, and no duplicate approved event is written', async () => {
+    const db = await freshMigratedDb();
+    const bucket = freshBucket();
+    const invoice = await submittedInvoice(db, bucket);
+    const verifier = await verifierEmployee(db);
+    await verifyInvoice(db, invoice.id, verifier.employee_id);
+
+    const approvers: Member[] = [];
+    for (const name of ['Approver 1', 'Approver 2', 'Approver 3', 'Approver 4']) {
+      approvers.push(await designatedApproverMember(db, name));
+    }
+    await recordApproval(db, invoice.id, approvers[0].member_id);
+    await recordApproval(db, invoice.id, approvers[1].member_id);
+    const third = await recordApproval(db, invoice.id, approvers[2].member_id);
+    expect(third.invoice.status).toBe('approved');
+
+    await expect(recordApproval(db, invoice.id, approvers[3].member_id)).rejects.toThrow(InvoiceConflictError);
+
+    const events = await db.query<{ action: string }>(
+      sql`SELECT action FROM invoice_events WHERE invoice_id = ${invoice.id} AND action = 'approved'`,
+    );
+    expect(events).toHaveLength(1);
   });
 });
 

@@ -22,8 +22,14 @@ import { pgTextArray } from '../sql-array';
  * configuration (Definition of Done).
  */
 export async function designatedApproverCount(db: Database | Transaction): Promise<number> {
+  // COUNT(DISTINCT cad.member_id), not COUNT(*): nothing stops a member
+  // from simultaneously holding two different open EC offices (only same-
+  // role double-holding is guarded, migrations/013's
+  // role_assignments_open_unique), which would otherwise double-count them
+  // against the join and inflate the majority threshold above a true
+  // majority of the real distinct subset.
   const row = await db.queryOne<{ count: number }>(
-    sql`SELECT COUNT(*)::int AS count
+    sql`SELECT COUNT(DISTINCT cad.member_id)::int AS count
         FROM capability_approver_designations cad
         JOIN role_assignments ra ON ra.member_id = cad.member_id
         WHERE ra.effective_to IS NULL AND ra.role = ANY(${pgTextArray(EC_OFFICES)}::text[])`,
@@ -120,8 +126,21 @@ export async function recordApproval(
           ON CONFLICT (invoice_id, member_id, is_override) DO NOTHING`,
     );
 
+    // Scoped to members who are STILL currently in the designated-approver
+    // subset (the same join designatedApproverCount uses below), not a raw
+    // historical count of every row ever inserted -- otherwise a member's
+    // old, idempotent-no-op duplicate approval could resurface as "new"
+    // consent purely because the live subset (and so the majority
+    // threshold) shrank in between, letting an invoice flip to approved
+    // with no new vote actually cast (a stale approval outliving the
+    // approver's own EC tenure).
     const countRow = await tx.queryOne<{ count: number }>(
-      sql`SELECT COUNT(DISTINCT member_id)::int AS count FROM invoice_approvals WHERE invoice_id = ${invoiceId} AND is_override = false`,
+      sql`SELECT COUNT(DISTINCT ia.member_id)::int AS count
+          FROM invoice_approvals ia
+          JOIN capability_approver_designations cad ON cad.member_id = ia.member_id
+          JOIN role_assignments ra ON ra.member_id = cad.member_id
+          WHERE ia.invoice_id = ${invoiceId} AND ia.is_override = false
+            AND ra.effective_to IS NULL AND ra.role = ANY(${pgTextArray(EC_OFFICES)}::text[])`,
     );
     approvedCount = countRow!.count;
     requiredCount = majorityThreshold(await designatedApproverCount(tx));

@@ -18,7 +18,8 @@ describe('STR-077 property: GST tax-line rounding invariants (TC-FIN-025)', () =
       1n, // smallest possible amount: 1 paisa
       118n, // divisible evenly by 118 -> no remainder
       119n, // remainder 1
-      59n, // boundary where r*2n === b (59*2 === 118)
+      13n, // smallest reachable nonzero remainder (2 of 118) -> rounds down
+      46n, // largest reachable remainder (116 of 118) -> rounds up
       100000000n, // a large realistic receipt total (10,00,000.00)
     ];
 

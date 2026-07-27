@@ -77,8 +77,9 @@ export async function formatReceiptNumber(tx: Transaction, issuedOnDate: string)
  * check. Unregistered societies (`gstin` NULL) get the plain shape;
  * GST-registered ones get the `gst` shape carrying the GSTIN and the
  * currently-open Treasurer's printed name (STR-041) -- no signature image
- * in v1. Does not compute GST tax-line amounts (STR-077) or persist a
- * receipt record (STR-079).
+ * in v1. The `gst` branch also carries the tax-line amounts computed by
+ * `computeGstTaxLines` (STR-077). Does not persist a receipt record
+ * (STR-079).
  */
 export type ReceiptFormat =
   | { kind: 'plain' }

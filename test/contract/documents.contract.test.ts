@@ -231,7 +231,7 @@ describe('STR-112 T-C1 — document metadata edit endpoint contract', () => {
 
     const op = await contractTest('admin', '/documents/{documentId}', 'patch');
     expect(response.status).toBe(422);
-    expect(response.body).toMatchObject({ code: 'unknown_category' });
+    expect(response.body).toMatchObject({ error: { code: 'unknown_category' } });
     expect(() => op.expectValidResponse(response.status, response.body)).not.toThrow();
   });
 

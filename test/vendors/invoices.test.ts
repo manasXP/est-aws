@@ -17,14 +17,14 @@ const cleanupDbs: Database[] = [];
 const cleanupBuckets: FileBucket[] = [];
 
 async function freshMigratedDb(): Promise<Database> {
-  const db = new Database(new Scope(`str-082-invoices-test-${randomUUID()}`), 'db');
+  const db = new Database(new Scope(`str-082-test-${randomUUID()}`), 'db');
   cleanupDbs.push(db);
   await runLocalMigrations(db, MIGRATIONS_DIR);
   return db;
 }
 
 function freshBucket(): FileBucket {
-  const bucket = new FileBucket(new Scope(`str-082-invoices-test-${randomUUID()}`), 'documents');
+  const bucket = new FileBucket(new Scope(`str-082-test-${randomUUID()}`), 'documents');
   cleanupBuckets.push(bucket);
   return bucket;
 }

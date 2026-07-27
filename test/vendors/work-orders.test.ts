@@ -78,7 +78,14 @@ describe('STR-081 T-U2 (TC-VEN-002) — amending a work order with a submitted i
       value: '5000.00',
       issuedOn: '2026-07-01',
     });
-    await db.execute(sql`INSERT INTO invoices (id, work_order_id) VALUES (${randomUUID()}, ${workOrder.id})`);
+    // STR-082 widened the invoices shell with NOT NULL vendor_id/amount/
+    // invoice_date/document_id columns (migrations/028_invoices.sql) -- this
+    // seed only needs an invoice to exist for amendWorkOrder's guard, but
+    // must now supply those columns to satisfy the constraint.
+    await db.execute(
+      sql`INSERT INTO invoices (id, work_order_id, vendor_id, amount, invoice_date, document_id)
+          VALUES (${randomUUID()}, ${workOrder.id}, ${vendor.id}, ${'100.00'}::numeric, ${'2026-07-01'}::date, ${'invoices/seed.pdf'})`,
+    );
 
     await expect(amendWorkOrder(db, workOrder.id, { scope: 'Different scope' })).rejects.toThrow(WorkOrderConflictError);
 

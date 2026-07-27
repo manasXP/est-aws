@@ -7,6 +7,7 @@ import { sql } from '@aws-blocks/blocks';
 import type { Database, Transaction } from '@aws-blocks/blocks';
 import { financialYearOf } from './financial-year';
 import { getCurrentTreasurerName } from '../members/role-assignments';
+import { parseMoney, formatMoney } from '../money';
 
 /**
  * Atomically allocate the next integer in `fyLabel`'s receipt series,
@@ -76,12 +77,15 @@ export async function formatReceiptNumber(tx: Transaction, issuedOnDate: string)
  * check. Unregistered societies (`gstin` NULL) get the plain shape;
  * GST-registered ones get the `gst` shape carrying the GSTIN and the
  * currently-open Treasurer's printed name (STR-041) -- no signature image
- * in v1. Does not compute GST tax-line amounts (STR-077) or persist a
- * receipt record (STR-079).
+ * in v1. The `gst` branch also carries the tax-line amounts computed by
+ * `computeGstTaxLines` (STR-077). Does not persist a receipt record
+ * (STR-079).
  */
-export type ReceiptFormat = { kind: 'plain' } | { kind: 'gst'; gstin: string; treasurerName: string | null };
+export type ReceiptFormat =
+  | { kind: 'plain' }
+  | { kind: 'gst'; gstin: string; treasurerName: string | null; taxableAmount: string; cgstAmount: string; sgstAmount: string };
 
-export async function buildReceiptFormat(db: Database): Promise<ReceiptFormat> {
+export async function buildReceiptFormat(db: Database, totalAmount: string): Promise<ReceiptFormat> {
   const settings = await db.queryOne<{ gstin: string | null }>(
     sql`SELECT gstin FROM society_settings WHERE id = 'default'`,
   );
@@ -91,5 +95,42 @@ export async function buildReceiptFormat(db: Database): Promise<ReceiptFormat> {
   }
 
   const treasurerName = await getCurrentTreasurerName(db);
-  return { kind: 'gst', gstin, treasurerName };
+  const { taxableAmount, cgstAmount, sgstAmount } = computeGstTaxLines(parseMoney(totalAmount));
+  return {
+    kind: 'gst',
+    gstin,
+    treasurerName,
+    taxableAmount: formatMoney(taxableAmount),
+    cgstAmount: formatMoney(cgstAmount),
+    sgstAmount: formatMoney(sgstAmount),
+  };
+}
+
+/**
+ * STR-077: back-calculates a GST-inclusive receipt total into its taxable
+ * value + CGST + SGST tax lines. This deployment is single-state,
+ * single-society (CLAUDE.md invariant), so every receipt is an intra-state
+ * supply: standard flat 18% GST, split evenly as 9% CGST + 9% SGST. Integer
+ * bigint-paise arithmetic only -- no float ever touches this computation.
+ *
+ * Any single leftover paisa from the rounding remainder is folded into
+ * `taxableAmount`, never into `cgstAmount`/`sgstAmount` -- so the tax split
+ * itself is always exactly even (AC2), and the three lines always sum to
+ * `totalPaise` exactly (AC1).
+ */
+export function computeGstTaxLines(totalPaise: bigint): { taxableAmount: bigint; cgstAmount: bigint; sgstAmount: bigint } {
+  const scaled = totalPaise * 100n;
+  const q = scaled / 118n;
+  const r = scaled % 118n;
+  let taxableAmount = r * 2n >= 118n ? q + 1n : q;
+
+  const taxTotal = totalPaise - taxableAmount;
+  const half = taxTotal / 2n;
+  const leftover = taxTotal - half * 2n;
+  const cgstAmount = half;
+  const sgstAmount = half;
+
+  taxableAmount = taxableAmount + leftover;
+
+  return { taxableAmount, cgstAmount, sgstAmount };
 }

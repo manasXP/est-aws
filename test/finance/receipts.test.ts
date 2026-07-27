@@ -180,11 +180,23 @@ describe('STR-075 buildReceiptFormat', () => {
   it('produces a plain-format result when no gstin is configured', async () => {
     const db = await freshMigratedDb();
 
-    const format = await buildReceiptFormat(db);
+    const format = await buildReceiptFormat(db, '1180.00');
 
     expect(format).toEqual({ kind: 'plain' });
     expect(format).not.toHaveProperty('gstin');
     expect(format).not.toHaveProperty('treasurerName');
+  });
+
+  // STR-077 T-U2: a plain-format result never carries tax-line fields,
+  // regardless of what totalAmount is passed in.
+  it('never carries tax-line fields for a plain-format result', async () => {
+    const db = await freshMigratedDb();
+
+    const format = await buildReceiptFormat(db, '1180.00');
+
+    expect(format).not.toHaveProperty('taxableAmount');
+    expect(format).not.toHaveProperty('cgstAmount');
+    expect(format).not.toHaveProperty('sgstAmount');
   });
 
   // T-U2 (covers TC-FIN-024): a society with a gstin configured produces a
@@ -195,10 +207,24 @@ describe('STR-075 buildReceiptFormat', () => {
     await seedGstin(db, '27AAAAA0000A1Z5');
     await seedTreasurer(db, 'Treasurer One');
 
-    const format = await buildReceiptFormat(db);
+    const format = await buildReceiptFormat(db, '1180.00');
 
-    expect(format).toEqual({ kind: 'gst', gstin: '27AAAAA0000A1Z5', treasurerName: 'Treasurer One' });
-    expect(Object.keys(format).sort()).toEqual(['gstin', 'kind', 'treasurerName']);
+    expect(format).toEqual({
+      kind: 'gst',
+      gstin: '27AAAAA0000A1Z5',
+      treasurerName: 'Treasurer One',
+      taxableAmount: '1000.00',
+      cgstAmount: '90.00',
+      sgstAmount: '90.00',
+    });
+    expect(Object.keys(format).sort()).toEqual([
+      'cgstAmount',
+      'gstin',
+      'kind',
+      'sgstAmount',
+      'taxableAmount',
+      'treasurerName',
+    ]);
     expect(format).not.toHaveProperty('signature');
     expect(format).not.toHaveProperty('signatureImage');
   });
@@ -212,16 +238,30 @@ describe('STR-075 buildReceiptFormat', () => {
     await seedGstin(db, '27AAAAA0000A1Z5');
     const first = await seedTreasurer(db, 'Treasurer One', '2026-01-01');
 
-    const issuedBeforeHandover = await buildReceiptFormat(db);
-    expect(issuedBeforeHandover).toEqual({ kind: 'gst', gstin: '27AAAAA0000A1Z5', treasurerName: 'Treasurer One' });
+    const issuedBeforeHandover = await buildReceiptFormat(db, '1180.00');
+    expect(issuedBeforeHandover).toEqual({
+      kind: 'gst',
+      gstin: '27AAAAA0000A1Z5',
+      treasurerName: 'Treasurer One',
+      taxableAmount: '1000.00',
+      cgstAmount: '90.00',
+      sgstAmount: '90.00',
+    });
 
     await vacateRole(db, first.member_id, 'treasurer', '2026-06-01', 'ec-admin');
     await seedTreasurer(db, 'Treasurer Two', '2026-06-01');
 
     // A fresh call after the handover reads the new incumbent live, not the
     // value already returned above.
-    const issuedAfterHandover = await buildReceiptFormat(db);
-    expect(issuedAfterHandover).toEqual({ kind: 'gst', gstin: '27AAAAA0000A1Z5', treasurerName: 'Treasurer Two' });
+    const issuedAfterHandover = await buildReceiptFormat(db, '1180.00');
+    expect(issuedAfterHandover).toEqual({
+      kind: 'gst',
+      gstin: '27AAAAA0000A1Z5',
+      treasurerName: 'Treasurer Two',
+      taxableAmount: '1000.00',
+      cgstAmount: '90.00',
+      sgstAmount: '90.00',
+    });
   });
 
   // Review finding: assignRole only guards a member double-holding a role,
@@ -235,6 +275,6 @@ describe('STR-075 buildReceiptFormat', () => {
     await seedTreasurer(db, 'Treasurer One', '2026-01-01');
     await seedTreasurer(db, 'Treasurer Two', '2026-01-01');
 
-    await expect(buildReceiptFormat(db)).rejects.toThrow('multiple open treasurer role assignments');
+    await expect(buildReceiptFormat(db, '1180.00')).rejects.toThrow('multiple open treasurer role assignments');
   });
 });

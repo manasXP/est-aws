@@ -127,3 +127,43 @@ describe('STR-092 review fix -- POST /v1/me/payments with an empty charge_ids ar
     expect(rows).toHaveLength(0);
   });
 });
+
+// STR-093 T-U3 (covers TC-PAY-043) -- GET /v1/me/payments/{paymentId} reflects
+// only webhook-confirmed status. This story never writes a webhook, so a
+// payment freshly initiated and polled repeatedly must show `pending` on
+// every poll -- there is no code path in this GET route by which a client
+// could transition it to `succeeded` (the route parses no request body at
+// all).
+describe('STR-093 T-U3 -- GET /v1/me/payments/{paymentId} polls pending with no webhook ever delivered (covers TC-PAY-043)', () => {
+  it('returns 200 status pending on every poll', async () => {
+    const projectId = await createTestProject();
+    const memberId = await createTestMember();
+    const assetId = await createTestAsset(projectId);
+    const ownershipResponse = await dispatchRequest('POST', `/v1/members/${memberId}/ownerships`, { asset_id: assetId });
+    const ownershipId = (ownershipResponse.body as { ownership_id: string }).ownership_id;
+    const chargeId = await seedDueCharge(memberId, ownershipId);
+
+    const initiateResponse = await dispatchRequest(
+      'POST',
+      '/v1/me/payments',
+      { charge_ids: [chargeId], payment_method: 'upi' },
+      { 'X-Actor-Member-Id': memberId, 'Idempotency-Key': randomUUID() },
+    );
+    expect(initiateResponse.status).toBe(201);
+    const paymentId = (initiateResponse.body as { payment_id: string }).payment_id;
+
+    const op = await contractTest('mobile', '/me/payments/{paymentId}', 'get');
+
+    for (let i = 0; i < 2; i++) {
+      const pollResponse = await dispatchRequest(
+        'GET',
+        `/v1/me/payments/${paymentId}`,
+        undefined,
+        { 'X-Actor-Member-Id': memberId },
+      );
+      expect(pollResponse.status).toBe(200);
+      expect((pollResponse.body as { status: string }).status).toBe('pending');
+      expect(() => op.expectValidResponse(200, pollResponse.body)).not.toThrow();
+    }
+  });
+});

@@ -18,6 +18,7 @@ import { registerAssetRoutes } from './assets/assets-routes';
 import { registerOwnershipRoutes } from './assets/ownerships-routes';
 import { registerMeOwnershipRoutes } from './assets/me-ownerships-routes';
 import { registerPcAssetRoutes } from './assets/pc-assets-routes';
+import { registerInvoiceApprovalRoutes } from './vendors/invoice-approvals-routes';
 // STR-041 code review: no HTTP surface of its own -- imported for its
 // module-load side effect (registering vacateRolesOnStatusChange with
 // members-api.ts's memberStatusTransitionListeners). Without this import,
@@ -211,3 +212,7 @@ new RawRoute(scope, 'initiate-payment', {
     }
   },
 });
+
+// STR-083: two-phase invoice sign-off -- verify (designated-verifier) then
+// EC-subset majority approve (designated-approver).
+registerInvoiceApprovalRoutes(scope, db);

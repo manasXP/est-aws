@@ -118,13 +118,16 @@ interface PaymentIntentRow {
  * all (T-U3) -- a false result throws `InvalidWebhookSignatureError`
  * immediately, genuinely before `db` is ever touched. Only then is the event
  * parsed and one `db.transaction()` opened: the delivery is recorded
- * idempotently (`webhook_events.provider_event_id` UNIQUE, same
+ * idempotently (`webhook_events.provider_event_id` UNIQUE, keyed on
+ * `type:eventId` -- see the review-fix comment below for why -- same
  * insert-if-absent idiom as aws-blocks/payments/charges.ts's
  * insertChargeIfAbsent) -- a duplicate delivery (T-U2) returns immediately,
  * nothing else runs -- then the named payment_intents row is locked `FOR
- * UPDATE` and settled via `settleSuccessfulPayment`/`settleFailedPayment`
- * above, both composed into this same open transaction so a failure
- * anywhere leaves nothing partially written.
+ * UPDATE` and dispatched three ways: `payment.captured` settles success,
+ * `payment.failed` settles failure, and any other event type is a no-op
+ * (nothing on payment_intents/charges changes) -- the settling branches
+ * composed into this same open transaction so a failure anywhere leaves
+ * nothing partially written.
  */
 export async function settleWebhookEvent(
   db: Database,
@@ -140,9 +143,24 @@ export async function settleWebhookEvent(
 
   const event = provider.parseWebhookEvent(rawBody);
 
+  // STR-094 review fix: Razorpay commonly delivers both a `payment.authorized`
+  // and a `payment.captured` webhook for the same underlying payment, and
+  // razorpay-adapter.ts's parseWebhookEvent derives `eventId` from the
+  // payment entity's own id -- the SAME id for both deliveries (there's no
+  // separate top-level delivery id to use instead). Deduping on `eventId`
+  // alone would make the harmless `payment.authorized` no-op "use up" the
+  // dedup slot the real `payment.captured` settlement later needs, silently
+  // dropping the actual success. Deduping on `type` alone would fail T-U2 (a
+  // truly replayed identical webhook must still be a no-op). Keying
+  // `provider_event_id` on `type:eventId` together satisfies both: a genuine
+  // replay (same type, same eventId) still collides and is dropped, while an
+  // authorized/captured pair for the same payment (same eventId, different
+  // type) gets two distinct rows and is processed independently.
+  const idempotencyKey = `${event.type}:${event.eventId}`;
+
   await db.transaction(async tx => {
     const inserted = await tx.execute(
-      sql`INSERT INTO webhook_events (id, provider, provider_event_id) VALUES (${randomUUID()}, 'razorpay', ${event.eventId})
+      sql`INSERT INTO webhook_events (id, provider, provider_event_id) VALUES (${randomUUID()}, 'razorpay', ${idempotencyKey})
           ON CONFLICT (provider_event_id) DO NOTHING`,
     );
     if (inserted.rowCount === 0) {
@@ -159,8 +177,12 @@ export async function settleWebhookEvent(
 
     if (event.type === 'payment.captured') {
       await settleSuccessfulPayment(tx, bucket, intent, event);
-    } else {
+    } else if (event.type === 'payment.failed') {
       await settleFailedPayment(tx, intent, event);
     }
+    // else: any other event type (e.g. `payment.authorized`, refund/dispute/
+    // order events) is a no-op settlement -- the webhook_events row above
+    // already recorded it for audit/idempotency, but nothing on
+    // payment_intents/charges changes.
   });
 }

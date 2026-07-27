@@ -264,4 +264,95 @@ describe('STR-094 settleWebhookEvent', () => {
     const receipts = await db.query(sql`SELECT id FROM receipts`);
     expect(receipts).toHaveLength(0);
   });
+
+  // Review fix regression: an event type that is neither `payment.captured`
+  // nor `payment.failed` (e.g. `payment.authorized`) must be a true no-op --
+  // not silently treated as a failure. Before the fix, the binary if/else
+  // dispatch fell into the failure branch for ANY non-`payment.captured`
+  // type, reverting charges and failing the intent for what is really just
+  // an informational event.
+  it('is a no-op for an unrecognized event type like payment.authorized, leaving the intent and charges untouched', async () => {
+    const db = await freshMigratedDb();
+    const bucket = freshBucket();
+    await seedReceiptPrefix(db, 'SOC');
+    const provider = new FakePaymentProvider();
+    const { chargeId, providerIntentId, amount } = await seedInPaymentIntent(db, provider);
+
+    const { rawBody, signature } = provider.buildSignedWebhook({
+      type: 'payment.authorized',
+      eventId: randomUUID(),
+      providerIntentId,
+      amount,
+    });
+
+    await settleWebhookEvent(db, bucket, provider, rawBody, signature);
+
+    const intent = await db.queryOne<{ status: string }>(
+      sql`SELECT status FROM payment_intents WHERE provider_intent_id = ${providerIntentId}`,
+    );
+    expect(intent!.status).toBe('pending');
+
+    const charge = await db.queryOne<{ status: string }>(sql`SELECT status FROM charges WHERE id = ${chargeId}`);
+    expect(charge!.status).toBe('in_payment');
+
+    const entries = await db.query(sql`SELECT id FROM journal_entries`);
+    expect(entries).toHaveLength(0);
+    const receipts = await db.query(sql`SELECT id FROM receipts`);
+    expect(receipts).toHaveLength(0);
+  });
+
+  // Review fix regression: the reviewer's exact traced scenario -- Razorpay
+  // delivers a `payment.authorized` webhook first, then a `payment.captured`
+  // webhook for the same underlying payment, both carrying the SAME eventId
+  // (razorpay-adapter.ts derives eventId from the payment entity's own id,
+  // which is identical across both deliveries for one payment). The
+  // authorized event must be a no-op (proven above) WITHOUT "using up" the
+  // idempotency slot the later captured event needs -- otherwise the
+  // dedup-by-eventId-alone check would wrongly treat the captured event as
+  // an already-processed duplicate and the payment would never actually
+  // settle. This is why the idempotency key is `type:eventId`, not just
+  // `eventId`.
+  it('settles a payment.captured webhook that follows a payment.authorized webhook sharing the same eventId', async () => {
+    const db = await freshMigratedDb();
+    const bucket = freshBucket();
+    await seedReceiptPrefix(db, 'SOC');
+    const provider = new FakePaymentProvider();
+    const { memberId, chargeId, providerIntentId, amount } = await seedInPaymentIntent(db, provider);
+    const sharedEventId = randomUUID();
+
+    const authorized = provider.buildSignedWebhook({
+      type: 'payment.authorized',
+      eventId: sharedEventId,
+      providerIntentId,
+      amount,
+    });
+    await settleWebhookEvent(db, bucket, provider, authorized.rawBody, authorized.signature);
+
+    const captured = provider.buildSignedWebhook({
+      type: 'payment.captured',
+      eventId: sharedEventId,
+      providerIntentId,
+      amount,
+    });
+    await settleWebhookEvent(db, bucket, provider, captured.rawBody, captured.signature);
+
+    const intent = await db.queryOne<{ status: string }>(
+      sql`SELECT status FROM payment_intents WHERE provider_intent_id = ${providerIntentId}`,
+    );
+    expect(intent!.status).toBe('succeeded');
+
+    const charge = await db.queryOne<{ status: string }>(sql`SELECT status FROM charges WHERE id = ${chargeId}`);
+    expect(charge!.status).toBe('paid');
+
+    const entries = await db.query<{ id: string }>(sql`SELECT id FROM journal_entries`);
+    expect(entries).toHaveLength(1);
+
+    const lines = await db.query<{ counterparty_id: string | null }>(
+      sql`SELECT counterparty_id FROM journal_lines WHERE entry_id = ${entries[0].id} AND direction = 'credit'`,
+    );
+    expect(lines[0].counterparty_id).toBe(memberId);
+
+    const receipts = await db.query(sql`SELECT id FROM receipts`);
+    expect(receipts).toHaveLength(1);
+  });
 });

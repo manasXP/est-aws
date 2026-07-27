@@ -68,8 +68,8 @@ describe('STR-092 T-U2 -- idempotent replay of the same Idempotency-Key (covers 
     const provider = new FakePaymentProvider();
     const idempotencyKey = randomUUID();
 
-    const first = await initiatePayment(db, provider, memberId, [chargeId], idempotencyKey);
-    const second = await initiatePayment(db, provider, memberId, [chargeId], idempotencyKey);
+    const first = await initiatePayment(db, provider, memberId, [chargeId], 'upi', idempotencyKey);
+    const second = await initiatePayment(db, provider, memberId, [chargeId], 'upi', idempotencyKey);
 
     expect(second.paymentId).toBe(first.paymentId);
     const rows = await db.query(sql`SELECT id FROM payment_intents WHERE idempotency_key = ${idempotencyKey}`);
@@ -100,7 +100,7 @@ describe('STR-092 T-U3 -- one due charge + one unpayable charge fails the whole 
     const provider = new FakePaymentProvider();
 
     await expect(
-      initiatePayment(db, provider, memberId, [dueChargeId, paidChargeId], randomUUID()),
+      initiatePayment(db, provider, memberId, [dueChargeId, paidChargeId], 'upi', randomUUID()),
     ).rejects.toThrow(ChargeAlreadyLockedError);
 
     const charge = await db.queryOne<{ status: string }>(sql`SELECT status FROM charges WHERE id = ${dueChargeId}`);
@@ -117,8 +117,8 @@ describe('STR-092 T-U4 -- a charge belonging to a different member is rejected i
     const foreignChargeId = await seedCharge(db, otherMemberId, otherOwnershipId, 'due');
     const provider = new FakePaymentProvider();
 
-    const foreignError = await initiatePayment(db, provider, callerId, [foreignChargeId], randomUUID()).catch(e => e);
-    const missingError = await initiatePayment(db, provider, callerId, [randomUUID()], randomUUID()).catch(e => e);
+    const foreignError = await initiatePayment(db, provider, callerId, [foreignChargeId], 'upi', randomUUID()).catch(e => e);
+    const missingError = await initiatePayment(db, provider, callerId, [randomUUID()], 'upi', randomUUID()).catch(e => e);
 
     expect(foreignError).toBeInstanceOf(ChargeNotPayableError);
     expect(missingError).toBeInstanceOf(ChargeNotPayableError);
@@ -136,8 +136,8 @@ describe('STR-092 T-U5 -- concurrent identical Idempotency-Key retry resolves to
     const idempotencyKey = randomUUID();
 
     const [a, b] = await Promise.all([
-      initiatePayment(db, provider, memberId, [chargeId], idempotencyKey),
-      initiatePayment(db, provider, memberId, [chargeId], idempotencyKey),
+      initiatePayment(db, provider, memberId, [chargeId], 'upi', idempotencyKey),
+      initiatePayment(db, provider, memberId, [chargeId], 'upi', idempotencyKey),
     ]);
 
     expect(a.paymentId).toBe(b.paymentId);

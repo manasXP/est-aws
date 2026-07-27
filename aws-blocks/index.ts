@@ -6,9 +6,9 @@ import type { PushAdapter } from './notifications/push-adapter';
 import { FakePushAdapter } from './notifications/push-adapter';
 import type { PaymentProvider } from './payments/payment-provider';
 import { FakePaymentProvider } from './payments/fake-payment-provider';
-import { initiatePayment, ChargeNotPayableError, ChargeAlreadyLockedError } from './payments/payment-initiation';
+import { initiatePayment, getPaymentStatus, ChargeNotPayableError, ChargeAlreadyLockedError } from './payments/payment-initiation';
 import { linkDocumentToEntry, DocumentLinkError } from './finance/documents';
-import { problemResponse, sendUnauthorized, sendValidationError, ValidationError } from './http/problem-response';
+import { problemResponse, sendUnauthorized, sendNotFound, sendValidationError, ValidationError } from './http/problem-response';
 import { registerBookRoutes } from './finance/books-routes';
 import { registerMemberRoutes } from './members/members-routes';
 import { registerProjectRoutes } from './projects/projects-routes';
@@ -185,8 +185,27 @@ new RawRoute(scope, 'initiate-payment', {
       sendValidationError(ctx, new ValidationError('charge_ids must contain at least one charge id.'));
       return;
     }
+    // STR-093: paymentMethod drives convenience-fee itemization inside
+    // initiatePayment (see aws-blocks/payments/convenience-fee.ts).
+    //
+    // FINDING (review, STR-093): the Mobile Public API's `/me/payments` POST
+    // request schema (EST-Spec/okf-bundle/api/mobile/openapi.yaml) only
+    // documents `charge_ids` -- there is no `payment_method` field a
+    // spec-compliant client can send at all, so the server has no contractual
+    // way to *learn* the real payment method. Validating it here (rather than
+    // defaulting an unset/garbage value into the fee-charging branch, which
+    // silently overcharges every UPI payment once a society configures a
+    // nonzero convenience-fee rate) closes the money-correctness hole, but it
+    // does not resolve the underlying spec gap -- EST-Spec needs a
+    // `payment_method` field added to this request schema (gate-G7,
+    // out of scope for this fix) before a real client can pass this check.
+    const paymentMethod = body?.payment_method;
+    if (paymentMethod !== 'upi' && paymentMethod !== 'card' && paymentMethod !== 'netbanking') {
+      sendValidationError(ctx, new ValidationError("payment_method is required and must be one of 'upi', 'card', 'netbanking'."));
+      return;
+    }
     try {
-      const result = await initiatePayment(db, paymentProvider, memberId, chargeIds, idempotencyKey);
+      const result = await initiatePayment(db, paymentProvider, memberId, chargeIds, paymentMethod, idempotencyKey);
       ctx.response.status = 201;
       ctx.response.send({
         payment_id: result.paymentId,
@@ -210,6 +229,37 @@ new RawRoute(scope, 'initiate-payment', {
       }
       throw e;
     }
+  },
+});
+
+// STR-093: the read-only status-poll surface -- success/failure is only ever
+// set server-side from the gateway webhook (STR-094), so this route has no
+// request body at all and no code path by which a client could transition
+// the stored status (T-U3).
+new RawRoute(scope, 'get-payment-status', {
+  method: 'GET',
+  path: '/v1/me/payments/{paymentId}',
+  handler: async ctx => {
+    const memberId = ctx.request.headers.get('X-Actor-Member-Id');
+    if (!memberId) {
+      sendUnauthorized(ctx, 'X-Actor-Member-Id header is required.');
+      return;
+    }
+    const { paymentId } = ctx.request.params;
+    const result = await getPaymentStatus(db, memberId, paymentId);
+    if (!result) {
+      sendNotFound(ctx, 'Payment not found.');
+      return;
+    }
+    ctx.response.send({
+      payment_id: result.paymentId,
+      amount: result.amount,
+      status: result.status,
+      charge_ids: result.chargeIds,
+      created_at: result.createdAt,
+      completed_at: result.completedAt,
+      failure_reason: result.failureReason,
+    });
   },
 });
 

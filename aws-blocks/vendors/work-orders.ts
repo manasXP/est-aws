@@ -196,29 +196,52 @@ export interface AmendWorkOrderPatch {
 /**
  * `PATCH /work-orders/{id}` business logic (Vendor Workflow spec: scope/
  * value/validity may be amended only until the first invoice is submitted;
- * 409 after). A single atomic guarded UPDATE, not a separate SELECT-then-
- * UPDATE -- the same TOCTOU-avoidance idiom members-api.ts's
- * transitionMemberStatus uses: a concurrent invoice submission landing
- * between a check and a write is the same race class this repo guards
- * against elsewhere. `rowCount === 0` covers both "an invoice already
- * exists" (the tested AC2/TC-VEN-002 case) and an unknown work order id
- * (untested) -- both surface the same WorkOrderConflictError, since telling
- * them apart isn't exercised by any test.
+ * 409 after). Unlike cancelWorkOrder's self-referential guard below (whose
+ * `WHERE status IN (...)` condition is on the very row the UPDATE locks --
+ * genuinely race-free via ordinary Postgres row-lock semantics), the guard
+ * here is a CROSS-TABLE check: "no invoice exists for this work order yet."
+ * A plain `UPDATE ... WHERE id = ... AND NOT EXISTS (SELECT 1 FROM invoices
+ * ...)` does NOT close this race -- an ordinary UPDATE only takes a `FOR NO
+ * KEY UPDATE` lock on the work_orders row, which does not conflict with the
+ * `FOR KEY SHARE` lock a concurrent `INSERT INTO invoices` takes to satisfy
+ * its FK reference (Postgres added FOR KEY SHARE specifically so
+ * FK-referencing inserts don't block ordinary updates to the parent row).
+ * So a concurrent first-invoice submission could commit invisibly between
+ * this function's guard check and its own commit, letting an amendment
+ * through after an invoice already exists -- violating AC2/TC-VEN-002.
+ *
+ * Fixed by taking an explicit `SELECT ... FOR UPDATE` lock on the work_orders
+ * row FIRST: FOR UPDATE *does* conflict with FOR KEY SHARE, so a concurrent
+ * invoice insert's FK check blocks until this transaction commits or rolls
+ * back, and vice versa -- whichever transaction started first is the one
+ * whose view of "does an invoice exist" is authoritative. Once the lock is
+ * held, the invoice-existence check and the UPDATE are safe to do as two
+ * separate statements (no other transaction can interleave). This repo's
+ * local test suite runs against `@aws-blocks/bb-data`'s single-connection
+ * PGlite mock, which -- like STR-071's own documented gap for
+ * allocateReceiptSeriesNumber -- can't exercise true concurrent blocking, so
+ * this fix is unverified by any test here; it is a production (real
+ * Postgres/Aurora) correctness fix, not a locally-provable one.
  */
 export async function amendWorkOrder(db: Database, workOrderId: string, patch: AmendWorkOrderPatch, actorId?: string | null): Promise<WorkOrder> {
   await db.transaction(async tx => {
-    const { rowCount } = await tx.execute(
+    const locked = await tx.queryOne<{ id: string }>(sql`SELECT id FROM work_orders WHERE id = ${workOrderId} FOR UPDATE`);
+    if (!locked) {
+      throw new WorkOrderConflictError(`Work order ${workOrderId} does not exist.`);
+    }
+    const invoiceExists = await tx.queryOne(sql`SELECT 1 FROM invoices WHERE work_order_id = ${workOrderId}`);
+    if (invoiceExists) {
+      throw new WorkOrderConflictError(`Work order ${workOrderId} cannot be amended: an invoice has already been submitted against it.`);
+    }
+    await tx.execute(
       sql`UPDATE work_orders SET
             scope = COALESCE(${patch.scope ?? null}, scope),
             value = COALESCE(${patch.value ? formatMoney(parseMoney(patch.value)) : null}::numeric, value),
             valid_until = COALESCE(${patch.validUntil ?? null}::date, valid_until),
             notes = COALESCE(${patch.notes ?? null}, notes),
             updated_at = now()
-          WHERE id = ${workOrderId} AND NOT EXISTS (SELECT 1 FROM invoices WHERE work_order_id = work_orders.id)`,
+          WHERE id = ${workOrderId}`,
     );
-    if (rowCount === 0) {
-      throw new WorkOrderConflictError(`Work order ${workOrderId} cannot be amended (unknown, or an invoice has already been submitted against it).`);
-    }
     await tx.execute(
       sql`INSERT INTO work_order_events (id, work_order_id, action, actor_id, notes)
           VALUES (${randomUUID()}, ${workOrderId}, 'amended', ${actorId ?? null}, ${null})`,

@@ -159,6 +159,13 @@ describe('STR-081 T-U4 (TC cancel) — cancelling a work order', () => {
     await cancelWorkOrder(db, workOrder.id);
 
     await expect(cancelWorkOrder(db, workOrder.id)).rejects.toThrow(WorkOrderConflictError);
+
+    // The rejected second cancel wrote nothing -- still exactly the 2 events
+    // (issued, cancelled) from the first, successful cancellation.
+    const events = await db.query<{ action: string }>(
+      sql`SELECT action FROM work_order_events WHERE work_order_id = ${workOrder.id} ORDER BY at`,
+    );
+    expect(events.map(e => e.action)).toEqual(['issued', 'cancelled']);
   });
 });
 

@@ -7,7 +7,7 @@ import { contractTest } from './harness';
 import { dispatchRequest } from '../support/dispatch';
 import { createVendor, createWorkOrder } from '../../aws-blocks/vendors/work-orders';
 import { submitInvoice, getInvoice, getInvoiceActions } from '../../aws-blocks/vendors/invoices';
-import { rejectInvoice } from '../../aws-blocks/vendors/invoice-approvals';
+import { rejectInvoice, currentEcMemberCount, majorityThreshold } from '../../aws-blocks/vendors/invoice-approvals';
 import { createEmployee, setEmployeeCapabilities } from '../../aws-blocks/employees/employees-api';
 import { createMember, admitMember } from '../../aws-blocks/members/members-api';
 import { assignRole } from '../../aws-blocks/members/role-assignments';
@@ -180,6 +180,55 @@ describe('STR-085 T-C2 -- mobile /ec routes conform to the Mobile OpenAPI', () =
     expect(response.status).toBe(403);
     const op = await contractTest('mobile', '/ec/invoices/{invoiceId}', 'get');
     expect(() => op.expectValidResponse(403, response.body)).not.toThrow();
+  });
+});
+
+describe('STR-085 code review fix -- an override-approved invoice keeps reporting the override count/threshold', () => {
+  it('reports the correct approval_progress in the approve response itself, and on a later GET, once the override reaches approved', async () => {
+    const invoiceId = await verifiedInvoiceId();
+    const rejecterId = await designatedApproverMember('EC Rejecter For Full Override');
+    await rejectInvoice(db, invoiceId, rejecterId, 'Needs full EC review');
+
+    // The shared `db` singleton accumulates EC members across the whole
+    // suite, so the majority threshold can't be hardcoded (same constraint
+    // documented in invoice-approvals.contract.test.ts) -- AND creating the
+    // voting members below itself grows the EC, moving the threshold. Fix
+    // the target by creating `baseCount + 1` fresh EC members BEFORE reading
+    // the threshold: that many votes are, by construction, a majority of the
+    // resulting total (baseCount + (baseCount + 1) = 2*baseCount + 1, whose
+    // majority is exactly baseCount + 1) regardless of what `baseCount` was.
+    const baseCount = await currentEcMemberCount(db);
+    const votersNeeded = baseCount + 1;
+    const voterIds: string[] = [];
+    for (let i = 0; i < votersNeeded; i++) {
+      voterIds.push(await ecMemberOnly(`EC Override Voter ${i} ${randomUUID()}`));
+    }
+    const required = majorityThreshold(await currentEcMemberCount(db));
+    expect(required).toBe(votersNeeded);
+
+    let lastResponse;
+    for (const voterId of voterIds) {
+      lastResponse = await dispatchRequest(
+        'POST',
+        `/v1/ec/invoices/${invoiceId}/approve`,
+        { notes: 'Override vote' },
+        { 'X-Actor-Member-Id': voterId },
+      );
+    }
+
+    const body = lastResponse!.body as {
+      status: string;
+      approval_progress: { approved_count: number; required_count: number };
+    };
+    expect(body.status).toBe('approved');
+    expect(body.approval_progress.approved_count).toBe(required);
+    expect(body.approval_progress.required_count).toBe(required);
+
+    const getResponse = await dispatchRequest('GET', `/v1/ec/invoices/${invoiceId}`, {}, { 'X-Actor-Member-Id': rejecterId });
+    expect(getResponse.status).toBe(200);
+    const getBody = getResponse.body as { status: string; approval_progress: { approved_count: number; required_count: number } };
+    expect(getBody.status).toBe('approved');
+    expect(getBody.approval_progress.approved_count).toBe(required);
   });
 });
 

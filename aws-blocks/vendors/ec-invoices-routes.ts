@@ -31,6 +31,7 @@ import {
   currentEcMemberCount,
   normalApprovalCount,
   overrideApprovalCount,
+  invoiceHasOverrideVotes,
   majorityThreshold,
 } from './invoice-approvals';
 import { toActionsResponse } from './invoice-approvals-routes';
@@ -39,14 +40,19 @@ import { sendNotFound, sendConflictError, sendCapabilityRequired, sendValidation
 import { DOWNLOAD_URL_EXPIRES_IN_SECONDS } from '../documents/documents-api';
 
 /**
- * Live `approval_progress` for a read (STR-085): a `rejected` invoice reports
- * the EC-override count/threshold, everything else reports the normal
- * designated-approver count/threshold -- the same status-based split
- * recordApproval/recordOverrideApproval already apply on write, and
- * `/v1/invoices/{id}/approve`'s own dispatch applies on the admin surface.
+ * Live `approval_progress` for a read with no write of its own to report it
+ * from (STR-085 code review fix): a `rejected` invoice is always mid-override,
+ * so it reports the EC-override count/threshold. Any other status could have
+ * been resolved either way -- `invoiceHasOverrideVotes` (a raw existence
+ * check, not scoped to currently-open EC members) tells them apart: once any
+ * override vote was ever cast, the invoice can only have left `rejected` via
+ * the override branch (recordApproval never runs against a `rejected`
+ * invoice), so it keeps reporting the override count/threshold even after
+ * flipping to `approved`. Everything else (never rejected) reports the
+ * normal designated-approver count/threshold.
  */
 async function approvalProgressFor(db: Database, invoice: Invoice): Promise<{ approved_count: number; required_count: number }> {
-  if (invoice.status === 'rejected') {
+  if (invoice.status === 'rejected' || (await invoiceHasOverrideVotes(db, invoice.id))) {
     const approvedCount = await overrideApprovalCount(db, invoice.id);
     const requiredCount = majorityThreshold(await currentEcMemberCount(db));
     return { approved_count: approvedCount, required_count: requiredCount };
@@ -61,15 +67,25 @@ async function approvalProgressFor(db: Database, invoice: Invoice): Promise<{ ap
  * Unlike the admin contract, mobile carries `vendor_name`/`work_order_scope`
  * for display (no `document_id` -- the scanned document is its own
  * `.../document` endpoint) but shares the same `approval_progress`/`actions`
- * fields, built from the identical `getInvoiceActions`/`approvalProgressFor`
- * reads the admin surface uses (TC-VEN-029).
+ * fields (TC-VEN-029). `approvalProgress` is optional: the approve/override
+ * routes below already have it from the write itself (recordApproval/
+ * recordOverrideApproval's own return value) and must forward that exact
+ * value rather than re-derive it -- re-deriving immediately after an
+ * override-approval would still see the pre-write EC-membership snapshot
+ * consistently, but re-running the query at all here was the code-review-
+ * caught bug's root cause, so write call sites now always pass their own
+ * result through instead of leaving it to chance.
  */
-async function toMobileInvoiceResponse(db: Database, invoice: Invoice): Promise<Record<string, unknown>> {
-  const [workOrder, vendor, actions, approvalProgress] = await Promise.all([
+async function toMobileInvoiceResponse(
+  db: Database,
+  invoice: Invoice,
+  approvalProgress?: { approved_count: number; required_count: number },
+): Promise<Record<string, unknown>> {
+  const [workOrder, vendor, actions, progress] = await Promise.all([
     getWorkOrder(db, invoice.workOrderId),
     getVendor(db, invoice.vendorId),
     getInvoiceActions(db, invoice.id),
-    approvalProgressFor(db, invoice),
+    approvalProgress ?? approvalProgressFor(db, invoice),
   ]);
   const body: Record<string, unknown> = {
     invoice_id: invoice.id,
@@ -81,7 +97,7 @@ async function toMobileInvoiceResponse(db: Database, invoice: Invoice): Promise<
     invoice_date: invoice.invoiceDate,
     resubmission_of: invoice.resubmissionOf,
     resubmitted_as: invoice.resubmittedAs,
-    approval_progress: approvalProgress,
+    approval_progress: progress,
     actions: toActionsResponse(actions),
   };
   if (invoice.gstAmount !== null) body.gst_amount = invoice.gstAmount;
@@ -89,7 +105,12 @@ async function toMobileInvoiceResponse(db: Database, invoice: Invoice): Promise<
   return body;
 }
 
-const LIST_STATUSES: readonly (InvoiceStatus | 'all')[] = ['submitted', 'verified', 'approved', 'rejected', 'paid', 'all'];
+// Code review fix: the Mobile OpenAPI's own `status` enum for this endpoint
+// is `[verified, approved, rejected, all]` -- deliberately narrower than the
+// Admin `/invoices` enum (which also allows `submitted`/`paid`) this list
+// had been copied from. `submitted` invoices haven't reached the EC yet and
+// aren't part of this inbox's contract.
+const LIST_STATUSES: readonly (InvoiceStatus | 'all')[] = ['verified', 'approved', 'rejected', 'all'];
 
 export function registerEcInvoiceRoutes(scope: Scope, db: Database, bucket: FileBucket): void {
   new RawRoute(scope, 'list-ec-invoices', {
@@ -167,8 +188,13 @@ export function registerEcInvoiceRoutes(scope: Scope, db: Database, bucket: File
         }
 
         try {
-          const { invoice: updated } = await recordOverrideApproval(db, invoiceId, actor.memberId, notes ?? null);
-          ctx.response.send(await toMobileInvoiceResponse(db, updated));
+          const { invoice: updated, approvalProgress } = await recordOverrideApproval(db, invoiceId, actor.memberId, notes ?? null);
+          ctx.response.send(
+            await toMobileInvoiceResponse(db, updated, {
+              approved_count: approvalProgress.approvedCount,
+              required_count: approvalProgress.requiredCount,
+            }),
+          );
         } catch (e) {
           if (e instanceof InvoiceConflictError) {
             sendConflictError(ctx, e);
@@ -190,8 +216,13 @@ export function registerEcInvoiceRoutes(scope: Scope, db: Database, bucket: File
       const actor = resolveActor(ctx) as { memberId: string };
 
       try {
-        const { invoice: updated } = await recordApproval(db, invoiceId, actor.memberId, notes ?? null);
-        ctx.response.send(await toMobileInvoiceResponse(db, updated));
+        const { invoice: updated, approvalProgress } = await recordApproval(db, invoiceId, actor.memberId, notes ?? null);
+        ctx.response.send(
+          await toMobileInvoiceResponse(db, updated, {
+            approved_count: approvalProgress.approvedCount,
+            required_count: approvalProgress.requiredCount,
+          }),
+        );
       } catch (e) {
         if (e instanceof InvoiceConflictError) {
           sendConflictError(ctx, e);

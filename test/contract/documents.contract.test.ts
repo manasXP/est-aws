@@ -96,7 +96,7 @@ describe('STR-111 T-C1 — document registration and read endpoints contract', (
       category: 'Bye-laws',
       filename: 'byelaws.pdf',
       content_type: 'application/pdf',
-    });
+    }, { 'X-Actor-Employee-Id': 'emp-1' });
 
     const op = await contractTest('admin', '/documents', 'post');
     expect(response.status).toBe(201);
@@ -112,7 +112,7 @@ describe('STR-111 T-C1 — document registration and read endpoints contract', (
       category: 'Not A Real Category',
       filename: 'f.pdf',
       content_type: 'application/pdf',
-    });
+    }, { 'X-Actor-Employee-Id': 'emp-1' });
 
     const op = await contractTest('admin', '/documents', 'post');
     expect(response.status).toBe(422);
@@ -128,7 +128,7 @@ describe('STR-111 T-C1 — document registration and read endpoints contract', (
       category: 'Bye-laws',
       filename: 'byelaws.pdf',
       content_type: 'application/pdf',
-    });
+    }, { 'X-Actor-Employee-Id': 'emp-1' });
     const documentId = (registerResponse.body as { document_id: string }).document_id;
 
     const response = await dispatchRequest('GET', `/v1/documents/${documentId}`);
@@ -149,7 +149,7 @@ describe('STR-111 T-C1 — document registration and read endpoints contract', (
       category: 'Bye-laws',
       filename: 'byelaws.pdf',
       content_type: 'application/pdf',
-    });
+    }, { 'X-Actor-Employee-Id': 'emp-1' });
     const documentId = (registerResponse.body as { document_id: string }).document_id;
 
     const op = await contractTest('admin', '/documents/{documentId}/download', 'get');
@@ -166,5 +166,58 @@ describe('STR-111 T-C1 — document registration and read endpoints contract', (
     const after200 = await dispatchRequest('GET', `/v1/documents/${documentId}/download`);
     expect(after200.status).toBe(200);
     expect(() => op.expectValidResponse(after200.status, after200.body)).not.toThrow();
+  });
+});
+
+// STR-111 review fix (Bug 1) — uploaded_by must come from the resolved
+// caller actor (X-Actor-Employee-Id/X-Actor-Member-Id), never the literal
+// 'unknown' the OpenAPI DocumentInput schema has no field for.
+describe('STR-111 review fix (Bug 1) — POST /v1/documents resolves uploaded_by from the caller actor', () => {
+  it('rejects with 401 when no X-Actor-* header is present', async () => {
+    await runLocalMigrations(db, MIGRATIONS_DIR);
+
+    const response = await dispatchRequest('POST', '/v1/documents', {
+      level: 'society',
+      title: 'Society Bye-laws',
+      category: 'Bye-laws',
+      filename: 'byelaws.pdf',
+      content_type: 'application/pdf',
+    });
+
+    expect(response.status).toBe(401);
+  });
+
+  it('persists the resolved employee actor as uploaded_by, not "unknown"', async () => {
+    await runLocalMigrations(db, MIGRATIONS_DIR);
+
+    const response = await dispatchRequest('POST', '/v1/documents', {
+      level: 'society',
+      title: 'Society Bye-laws',
+      category: 'Bye-laws',
+      filename: 'byelaws.pdf',
+      content_type: 'application/pdf',
+    }, { 'X-Actor-Employee-Id': 'emp-42' });
+    expect(response.status).toBe(201);
+    const documentId = (response.body as { document_id: string }).document_id;
+
+    const row = await db.queryOne<{ uploaded_by: string }>(sql`SELECT uploaded_by FROM documents WHERE id = ${documentId}`);
+    expect(row!.uploaded_by).toBe('emp-42');
+  });
+
+  it('persists the resolved member actor as uploaded_by when only X-Actor-Member-Id is present', async () => {
+    await runLocalMigrations(db, MIGRATIONS_DIR);
+
+    const response = await dispatchRequest('POST', '/v1/documents', {
+      level: 'society',
+      title: 'Society Bye-laws',
+      category: 'Bye-laws',
+      filename: 'byelaws.pdf',
+      content_type: 'application/pdf',
+    }, { 'X-Actor-Member-Id': 'mem-7' });
+    expect(response.status).toBe(201);
+    const documentId = (response.body as { document_id: string }).document_id;
+
+    const row = await db.queryOne<{ uploaded_by: string }>(sql`SELECT uploaded_by FROM documents WHERE id = ${documentId}`);
+    expect(row!.uploaded_by).toBe('mem-7');
   });
 });

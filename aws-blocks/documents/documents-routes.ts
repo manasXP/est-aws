@@ -7,7 +7,8 @@ import { RawRoute } from '@aws-blocks/blocks';
 import type { Database, FileBucket, Scope } from '@aws-blocks/blocks';
 import { registerDocument, getDocument, getDownloadUrl, DocumentValidationError, DOWNLOAD_URL_EXPIRES_IN_SECONDS } from './documents-api';
 import type { DocumentRecord } from './documents-api';
-import { sendNotFound, sendValidationError, problemResponse } from '../http/problem-response';
+import { sendNotFound, sendValidationError, sendUnauthorized, problemResponse } from '../http/problem-response';
+import { resolveActor } from '../http/capability-gate';
 
 // The Admin OpenAPI's Document schema types `size_bytes` as a plain
 // non-nullable integer, absent from `required` -- so when it's still `null`
@@ -44,6 +45,13 @@ export function registerDocumentRoutes(scope: Scope, db: Database, bucket: FileB
     method: 'POST',
     path: '/v1/documents',
     handler: async ctx => {
+      const actor = resolveActor(ctx);
+      if (!actor) {
+        sendUnauthorized(ctx, 'X-Actor-Employee-Id or X-Actor-Member-Id header is required.');
+        return;
+      }
+      const uploadedBy = 'employeeId' in actor ? actor.employeeId : actor.memberId;
+
       const body = await ctx.request.json();
       try {
         const result = await registerDocument(db, bucket, {
@@ -57,7 +65,7 @@ export function registerDocumentRoutes(scope: Scope, db: Database, bucket: FileB
           memberVisible: body?.member_visible,
           filename: body?.filename,
           contentType: body?.content_type,
-          uploadedBy: body?.uploaded_by ?? 'unknown',
+          uploadedBy,
         });
         ctx.response.status = 201;
         ctx.response.send({

@@ -139,6 +139,19 @@ export async function registerDocument(
   bucket: FileBucket,
   input: RegisterDocumentInput,
 ): Promise<RegisterDocumentResult> {
+  if (input.level !== 'society' && input.level !== 'project' && input.level !== 'member') {
+    throw new DocumentValidationError('level must be one of society, project, member.');
+  }
+  if (!input.title) {
+    throw new DocumentValidationError('title is required.');
+  }
+  if (!input.filename) {
+    throw new DocumentValidationError('filename is required.');
+  }
+  if (!input.contentType) {
+    throw new DocumentValidationError('content_type is required.');
+  }
+
   if (input.level === 'society') {
     if (input.projectId != null || input.memberId != null) {
       throw new DocumentValidationError('level=society must not carry a project_id or member_id.');
@@ -147,6 +160,9 @@ export async function registerDocument(
     if (!input.projectId) {
       throw new DocumentValidationError('project_id is required when level=project.');
     }
+    if (input.memberId != null) {
+      throw new DocumentValidationError('level=project must not carry a member_id.');
+    }
     const project = await getProject(db, input.projectId);
     if (!project) {
       throw new DocumentValidationError(`No project ${input.projectId}.`);
@@ -154,6 +170,9 @@ export async function registerDocument(
   } else if (input.level === 'member') {
     if (!input.memberId) {
       throw new DocumentValidationError('member_id is required when level=member.');
+    }
+    if (input.projectId != null) {
+      throw new DocumentValidationError('level=member must not carry a project_id.');
     }
     const member = await getMember(db, input.memberId);
     if (!member) {

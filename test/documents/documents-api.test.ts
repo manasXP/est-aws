@@ -216,6 +216,130 @@ describe('STR-111 T-U2 — level/entity mismatch is rejected 422', () => {
   });
 });
 
+describe('STR-111 review fix (Bug 2) — missing/invalid required fields are rejected 422, not an uncaught DB error', () => {
+  it('rejects a missing level', async () => {
+    const db = await freshMigratedDb();
+    const bucket = freshBucket();
+
+    await expect(
+      registerDocument(db, bucket, {
+        level: undefined as unknown as 'society',
+        title: 'Bad',
+        category: 'Bye-laws',
+        filename: 'f.pdf',
+        contentType: 'application/pdf',
+        uploadedBy: 'admin-1',
+      }),
+    ).rejects.toThrow(DocumentValidationError);
+  });
+
+  it('rejects an invalid level value', async () => {
+    const db = await freshMigratedDb();
+    const bucket = freshBucket();
+
+    await expect(
+      registerDocument(db, bucket, {
+        level: 'garbage' as unknown as 'society',
+        title: 'Bad',
+        category: 'Bye-laws',
+        filename: 'f.pdf',
+        contentType: 'application/pdf',
+        uploadedBy: 'admin-1',
+      }),
+    ).rejects.toThrow(DocumentValidationError);
+  });
+
+  it('rejects a missing title', async () => {
+    const db = await freshMigratedDb();
+    const bucket = freshBucket();
+
+    await expect(
+      registerDocument(db, bucket, {
+        level: 'society',
+        title: undefined as unknown as string,
+        category: 'Bye-laws',
+        filename: 'f.pdf',
+        contentType: 'application/pdf',
+        uploadedBy: 'admin-1',
+      }),
+    ).rejects.toThrow(DocumentValidationError);
+  });
+
+  it('rejects a missing filename', async () => {
+    const db = await freshMigratedDb();
+    const bucket = freshBucket();
+
+    await expect(
+      registerDocument(db, bucket, {
+        level: 'society',
+        title: 'Bye-laws',
+        category: 'Bye-laws',
+        filename: undefined as unknown as string,
+        contentType: 'application/pdf',
+        uploadedBy: 'admin-1',
+      }),
+    ).rejects.toThrow(DocumentValidationError);
+  });
+
+  it('rejects a missing content_type', async () => {
+    const db = await freshMigratedDb();
+    const bucket = freshBucket();
+
+    await expect(
+      registerDocument(db, bucket, {
+        level: 'society',
+        title: 'Bye-laws',
+        category: 'Bye-laws',
+        filename: 'f.pdf',
+        contentType: undefined as unknown as string,
+        uploadedBy: 'admin-1',
+      }),
+    ).rejects.toThrow(DocumentValidationError);
+  });
+});
+
+describe('STR-111 review fix (Bug 3) — level=project/member must not carry the other entity field', () => {
+  it('rejects level=project carrying a member_id too', async () => {
+    const db = await freshMigratedDb();
+    const bucket = freshBucket();
+    const project = await createProject(db, { name: 'Wing A' });
+    const member = await createMember(db, { name: 'Asha Rao' });
+
+    await expect(
+      registerDocument(db, bucket, {
+        level: 'project',
+        projectId: project.project_id,
+        memberId: member.member_id,
+        title: 'Bad',
+        category: 'Sanctioned Plans',
+        filename: 'f.pdf',
+        contentType: 'application/pdf',
+        uploadedBy: 'admin-1',
+      }),
+    ).rejects.toThrow(DocumentValidationError);
+  });
+
+  it('rejects level=member carrying a project_id too', async () => {
+    const db = await freshMigratedDb();
+    const bucket = freshBucket();
+    const project = await createProject(db, { name: 'Wing A' });
+    const member = await createMember(db, { name: 'Asha Rao' });
+
+    await expect(
+      registerDocument(db, bucket, {
+        level: 'member',
+        memberId: member.member_id,
+        projectId: project.project_id,
+        title: 'Bad',
+        category: 'KYC',
+        filename: 'f.pdf',
+        contentType: 'application/pdf',
+        uploadedBy: 'admin-1',
+      }),
+    ).rejects.toThrow(DocumentValidationError);
+  });
+});
+
 describe('STR-111 T-U3 — unknown category is rejected 422 unknown_category', () => {
   it('rejects a category not in document_categories', async () => {
     const db = await freshMigratedDb();
@@ -304,5 +428,54 @@ describe('STR-111 T-U5 (epic Risk gap) — an abandoned upload', () => {
     });
 
     await expect(getDownloadUrl(db, bucket, documentId)).resolves.toBeNull();
+  });
+});
+
+describe('STR-111 review fix (Bug 4) — documents_identity_immutable trigger, database-level guard', () => {
+  // Mirrors the migrations/002_journal_immutability.sql assertion style
+  // (test/finance/reversal.test.ts) -- the trigger's success side is proven
+  // incidentally by T-U4's lazy checksum test, but nothing in the diff
+  // exercises its rejection side directly.
+  it('rejects a direct UPDATE of file_key, leaving it unchanged', async () => {
+    const db = await freshMigratedDb();
+    const bucket = freshBucket();
+
+    const { documentId } = await registerDocument(db, bucket, {
+      level: 'society',
+      title: 'Bye-laws',
+      category: 'Bye-laws',
+      filename: 'byelaws.pdf',
+      contentType: 'application/pdf',
+      uploadedBy: 'admin-1',
+    });
+    const before = await db.queryOne<{ file_key: string }>(sql`SELECT file_key FROM documents WHERE id = ${documentId}`);
+
+    await expect(
+      db.execute(sql`UPDATE documents SET file_key = 'tampered/key.pdf' WHERE id = ${documentId}`),
+    ).rejects.toThrow();
+
+    const after = await db.queryOne<{ file_key: string }>(sql`SELECT file_key FROM documents WHERE id = ${documentId}`);
+    expect(after!.file_key).toBe(before!.file_key);
+  });
+
+  it('rejects a direct UPDATE of level, leaving it unchanged', async () => {
+    const db = await freshMigratedDb();
+    const bucket = freshBucket();
+
+    const { documentId } = await registerDocument(db, bucket, {
+      level: 'society',
+      title: 'Bye-laws',
+      category: 'Bye-laws',
+      filename: 'byelaws.pdf',
+      contentType: 'application/pdf',
+      uploadedBy: 'admin-1',
+    });
+
+    await expect(
+      db.execute(sql`UPDATE documents SET level = 'project' WHERE id = ${documentId}`),
+    ).rejects.toThrow();
+
+    const after = await db.queryOne<{ level: string }>(sql`SELECT level FROM documents WHERE id = ${documentId}`);
+    expect(after!.level).toBe('society');
   });
 });

@@ -8,7 +8,7 @@ import { createMember, admitMember } from '../../aws-blocks/members/members-api'
 import { assignRole, vacateRole } from '../../aws-blocks/members/role-assignments';
 import { postJournalEntry } from '../../aws-blocks/finance/journal';
 import { getDocumentLinksForEntry, isDocumentLinkedToLedger } from '../../aws-blocks/finance/documents';
-import { parseMoney } from '../../aws-blocks/money';
+import { parseMoney, formatMoney } from '../../aws-blocks/money';
 
 // STR-071 -- the raw gapless per-FY receipt number allocator. Follows the
 // STR-021 test pattern (test/finance/journal.test.ts): fresh Database +
@@ -333,19 +333,38 @@ describe('STR-079 issueReceipt', () => {
     await seedReceiptPrefix(db, 'SOC');
     const entryId = await postSamplePosting(db);
 
-    const result = await issueReceipt(db, bucket, entryId, '1180.00');
+    // Fixed, obviously-not-coincidental issuedOnDate -- avoids wall-clock
+    // coupling to today's FY (this test would otherwise start failing after
+    // the FY rolls over on 2027-04-01).
+    const result = await issueReceipt(db, bucket, entryId, '1180.00', { issuedOnDate: '2031-06-15T10:00:00Z' });
 
-    expect(result.receiptNumber).toBe('SOC/2026-27/000001');
-    expect(result.fyLabel).toBe('2026-27');
+    expect(result.receiptNumber).toBe('SOC/2031-32/000001');
+    expect(result.fyLabel).toBe('2031-32');
     expect(result.amount).toBe('1180.00');
     expect(result.gstin).toBeNull();
 
     const row = await db.queryOne<{ receipt_number: string; fy_label: string; amount: string }>(
       sql`SELECT receipt_number, fy_label, amount FROM receipts WHERE entry_id = ${entryId}`,
     );
-    expect(row!.receipt_number).toBe('SOC/2026-27/000001');
-    expect(row!.fy_label).toBe('2026-27');
+    expect(row!.receipt_number).toBe('SOC/2031-32/000001');
+    expect(row!.fy_label).toBe('2031-32');
     expect(row!.amount).toBe('1180.00');
+  });
+
+  // Review finding: buildReceiptFormat only calls parseMoney inside its GST
+  // branch, so a plain (non-GST) society never validated totalAmount at all
+  // -- issueReceipt must reject a malformed amount up front, before writing
+  // anything, regardless of GST status.
+  it('rejects a malformed amount for a plain (non-GST) society, writing nothing', async () => {
+    const db = await freshMigratedDb();
+    const bucket = freshBucket();
+    await seedReceiptPrefix(db, 'SOC');
+    const entryId = await postSamplePosting(db);
+
+    await expect(issueReceipt(db, bucket, entryId, 'not-a-valid-amount')).rejects.toThrow();
+
+    const row = await db.queryOne(sql`SELECT * FROM receipts WHERE entry_id = ${entryId}`);
+    expect(row).toBeNull();
   });
 
   it('persists the GST tax-line fields, matching computeGstTaxLines independently, for a GST-registered society', async () => {
@@ -357,12 +376,15 @@ describe('STR-079 issueReceipt', () => {
     const entryId = await postSamplePosting(db);
     const amount = '1180.00';
 
-    const result = await issueReceipt(db, bucket, entryId, amount);
+    // Fixed, obviously-not-coincidental issuedOnDate -- avoids wall-clock
+    // coupling to today's FY (this test would otherwise start failing after
+    // the FY rolls over on 2027-04-01).
+    const result = await issueReceipt(db, bucket, entryId, amount, { issuedOnDate: '2031-06-15T10:00:00Z' });
 
     const expected = computeGstTaxLines(parseMoney(amount));
-    expect(result.taxableAmount).toBe(`${expected.taxableAmount / 100n}.${(expected.taxableAmount % 100n).toString().padStart(2, '0')}`);
-    expect(result.cgstAmount).toBe(`${expected.cgstAmount / 100n}.${(expected.cgstAmount % 100n).toString().padStart(2, '0')}`);
-    expect(result.sgstAmount).toBe(`${expected.sgstAmount / 100n}.${(expected.sgstAmount % 100n).toString().padStart(2, '0')}`);
+    expect(result.taxableAmount).toBe(formatMoney(expected.taxableAmount));
+    expect(result.cgstAmount).toBe(formatMoney(expected.cgstAmount));
+    expect(result.sgstAmount).toBe(formatMoney(expected.sgstAmount));
     expect(result.gstin).toBe('27AAAAA0000A1Z5');
     expect(result.treasurerName).toBe('Treasurer One');
 
@@ -405,5 +427,15 @@ describe('STR-079 issueReceipt', () => {
 
     const counter = await db.queryOne(sql`SELECT * FROM receipt_series_counters WHERE fy_label = '2026-27'`);
     expect(counter).toBeNull();
+
+    // Review finding: the SQL-side assertions above pass even under a real
+    // reordering regression that writes the document to the bucket before
+    // the entry-existence check, because the whole DB transaction rolls back
+    // on any throw -- but a FileBucket `put` is not part of that transaction
+    // and is NOT rolled back. Assert directly on the bucket to prove no
+    // document was ever written.
+    const files: unknown[] = [];
+    for await (const f of bucket.scan({})) files.push(f);
+    expect(files).toHaveLength(0);
   });
 });

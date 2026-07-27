@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { sql } from '@aws-blocks/blocks';
 import type { Database, FileBucket, Transaction } from '@aws-blocks/blocks';
 import { financialYearOf } from './financial-year';
+import type { FinancialYear } from './financial-year';
 import { getCurrentTreasurerName } from '../members/role-assignments';
 import { parseMoney, formatMoney } from '../money';
 import { linkDocumentToEntry, DocumentLinkError } from './documents';
@@ -38,12 +39,25 @@ export async function allocateReceiptSeriesNumber(tx: Transaction, fyLabel: stri
 }
 
 /**
+ * Resolves `issuedOnDate` to its **IST calendar date** via
+ * `AT TIME ZONE 'Asia/Kolkata'` before feeding it to `financialYearOf` --
+ * the same idiom STR-024 established for FY bucketing (aws-blocks/finance/books.ts,
+ * aws-blocks/members/members-api.ts) -- so a receipt issued in the UTC
+ * evening of Mar 31 that is already IST Apr 1 lands in the new FY, not the
+ * old one. Runs against the caller's own `tx`.
+ */
+async function resolveFinancialYear(tx: Transaction, issuedOnDate: string): Promise<FinancialYear> {
+  const dateRow = await tx.queryOne<{ ist_date: string }>(
+    sql`SELECT (${issuedOnDate}::timestamptz AT TIME ZONE 'Asia/Kolkata')::date::text AS ist_date`,
+  );
+  return financialYearOf(dateRow!.ist_date);
+}
+
+/**
  * STR-073: formats a receipt number as `<prefix>/<fy-label>/<counter>`, e.g.
  * `SOC/2026-27/000001`. `issuedOnDate` is resolved to its **IST calendar
- * date** via `AT TIME ZONE 'Asia/Kolkata'` before being fed to
- * `financialYearOf` -- the same idiom STR-024 established for FY bucketing
- * (aws-blocks/finance/books.ts, aws-blocks/members/members-api.ts) -- so a
- * receipt issued in the UTC evening of Mar 31 that is already IST Apr 1
+ * date** via `resolveFinancialYear` before being fed to `financialYearOf` --
+ * so a receipt issued in the UTC evening of Mar 31 that is already IST Apr 1
  * lands in the new FY, not the old one.
  *
  * All reads run against the caller's own `tx` -- the date resolution has no
@@ -56,10 +70,7 @@ export async function allocateReceiptSeriesNumber(tx: Transaction, fyLabel: stri
  * failing loudly before anything is written.
  */
 export async function formatReceiptNumber(tx: Transaction, issuedOnDate: string): Promise<string> {
-  const dateRow = await tx.queryOne<{ ist_date: string }>(
-    sql`SELECT (${issuedOnDate}::timestamptz AT TIME ZONE 'Asia/Kolkata')::date::text AS ist_date`,
-  );
-  const fy = financialYearOf(dateRow!.ist_date);
+  const fy = await resolveFinancialYear(tx, issuedOnDate);
 
   const allocated = await allocateReceiptSeriesNumber(tx, fy.label);
 
@@ -168,16 +179,25 @@ export async function issueReceipt(
   bucket: FileBucket,
   entryId: string,
   amount: string,
+  options: { issuedOnDate?: string } = {},
 ): Promise<IssueReceiptResult> {
+  parseMoney(amount);
+  const issuedOnDate = options.issuedOnDate ?? new Date().toISOString();
+
   return db.transaction(async tx => {
     const entry = await tx.queryOne(sql`SELECT id FROM journal_entries WHERE id = ${entryId}`);
     if (!entry) {
       throw new DocumentLinkError(`No journal entry found with id: ${entryId}`, 'entry_not_found');
     }
 
-    const receiptNumber = await formatReceiptNumber(tx, new Date().toISOString());
-    // formatReceiptNumber's own contract (see its docstring above): "<prefix>/<fy-label>/<counter>".
-    const [, fyLabel, counter] = receiptNumber.split('/');
+    const fy = await resolveFinancialYear(tx, issuedOnDate);
+    const fyLabel = fy.label;
+    const receiptNumber = await formatReceiptNumber(tx, issuedOnDate);
+    // The 6-digit zero-padded counter is always the last "/"-separated
+    // segment of receiptNumber, regardless of whether receipt_prefix itself
+    // contains a "/" (see resolveFinancialYear above for fyLabel instead of
+    // parsing it back out of this string).
+    const counter = receiptNumber.split('/').pop()!;
     const format = await buildReceiptFormat(tx, amount);
 
     const documentPath = `receipts/${fyLabel}/${counter}.txt`;
@@ -208,7 +228,7 @@ export async function issueReceipt(
 
     const row = await tx.queryOne<{ id: string; issued_at: string }>(
       sql`INSERT INTO receipts (id, receipt_number, fy_label, entry_id, amount, gstin, taxable_amount, cgst_amount, sgst_amount, treasurer_name, document_path)
-          VALUES (${randomUUID()}, ${receiptNumber}, ${fyLabel}, ${entryId}, ${amount}, ${gstin}, ${taxableAmount}, ${cgstAmount}, ${sgstAmount}, ${treasurerName}, ${documentPath})
+          VALUES (${randomUUID()}, ${receiptNumber}, ${fyLabel}, ${entryId}, ${amount}::numeric, ${gstin}, ${taxableAmount}::numeric, ${cgstAmount}::numeric, ${sgstAmount}::numeric, ${treasurerName}, ${documentPath})
           RETURNING id, issued_at::text AS issued_at`,
     );
 

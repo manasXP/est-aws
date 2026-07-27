@@ -5,7 +5,7 @@ import { Scope, Database, FileBucket, sql } from '@aws-blocks/blocks';
 import { runLocalMigrations, MIGRATIONS_DIR } from '../../aws-blocks/migrations-runner';
 import { createMember } from '../../aws-blocks/members/members-api';
 import { createProject } from '../../aws-blocks/projects/projects-api';
-import { registerDocument, updateDocument } from '../../aws-blocks/documents/documents-api';
+import { registerDocument, updateDocument, DocumentValidationError } from '../../aws-blocks/documents/documents-api';
 
 // STR-112 — file immutability and audited metadata edits, unit cases.
 // Follows the STR-111 test pattern (test/documents/documents-api.test.ts):
@@ -257,6 +257,24 @@ describe('STR-112 T-U3 (AC3) — every successful edit inserts exactly one audit
       before_title: 'First correction',
       after_title: 'Second correction',
     });
+  });
+});
+
+describe('STR-112 review fix — an empty title is rejected 422, matching registerDocument', () => {
+  it('rejects title: "" with DocumentValidationError, leaving the document row and audit table unchanged', async () => {
+    const db = await freshMigratedDb();
+    const documentId = await registeredDocumentId(db, freshBucket());
+    const before = await db.queryOne<Record<string, unknown>>(sql`SELECT * FROM documents WHERE id = ${documentId}`);
+
+    await expect(
+      updateDocument(db, documentId, { title: '' }, { employeeId: 'emp-1' }),
+    ).rejects.toThrow(DocumentValidationError);
+
+    const after = await db.queryOne<Record<string, unknown>>(sql`SELECT * FROM documents WHERE id = ${documentId}`);
+    expect(after).toStrictEqual(before);
+
+    const audits = await db.query(sql`SELECT id FROM document_metadata_audits WHERE document_id = ${documentId}`);
+    expect(audits).toHaveLength(0);
   });
 });
 

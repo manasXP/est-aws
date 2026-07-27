@@ -257,9 +257,22 @@ export async function updateDocument(
   actor: Actor,
 ): Promise<DocumentRecord | null> {
   return db.transaction(async tx => {
-    const row = await tx.queryOne<DocumentRow>(sql`SELECT * FROM documents WHERE id = ${documentId}`);
+    // FOR UPDATE so two concurrent PATCHes serialize on the row and can't
+    // both audit the same before-values (the STR-081 precedent,
+    // work-orders.ts's amendWorkOrder). Like there, the single-connection
+    // PGlite local mock can't exercise true concurrent blocking, so this is
+    // a production (real Postgres/Aurora) correctness fix, not a
+    // locally-provable one.
+    const row = await tx.queryOne<DocumentRow>(sql`SELECT * FROM documents WHERE id = ${documentId} FOR UPDATE`);
     if (!row) return null;
 
+    // Parity with registerDocument's `if (!input.title)` rejection -- an
+    // edit can't blank out the title registration would never have
+    // accepted. `!patch.title` also catches a `null` smuggled past the
+    // route's `!== undefined` pass-through.
+    if (patch.title !== undefined && !patch.title) {
+      throw new DocumentValidationError('title must not be empty.');
+    }
     if (patch.category !== undefined && !(await isValidCategory(tx, patch.category))) {
       throw new DocumentValidationError(`Unknown category: ${patch.category}`, 'unknown_category');
     }

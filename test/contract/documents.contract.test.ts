@@ -235,6 +235,19 @@ describe('STR-112 T-C1 — document metadata edit endpoint contract', () => {
     expect(() => op.expectValidResponse(response.status, response.body)).not.toThrow();
   });
 
+  it('PATCH with an empty title conforms to the declared 422 response shape — parity with registration', async () => {
+    await runLocalMigrations(db, MIGRATIONS_DIR);
+    const documentId = await registeredDocumentId();
+
+    const response = await dispatchRequest('PATCH', `/v1/documents/${documentId}`, {
+      title: '',
+    }, { 'X-Actor-Employee-Id': 'emp-1' });
+
+    const op = await contractTest('admin', '/documents/{documentId}', 'patch');
+    expect(response.status).toBe(422);
+    expect(() => op.expectValidResponse(response.status, response.body)).not.toThrow();
+  });
+
   it('PATCH attempting member_visible leaves the flag unchanged — not writable until STR-115', async () => {
     await runLocalMigrations(db, MIGRATIONS_DIR);
     const documentId = await registeredDocumentId();

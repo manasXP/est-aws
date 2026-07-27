@@ -217,3 +217,18 @@ async function vacateRolesOnStatusChange(event: MemberStatusTransitionEvent, tx:
 }
 
 memberStatusTransitionListeners.push(vacateRolesOnStatusChange);
+
+/**
+ * STR-075: the printed name for the currently-open `treasurer` role
+ * assignment -- receipts attribute to whoever holds the office live, not a
+ * separately configured name. Returns `null` if the office is currently
+ * vacant (no open assignment).
+ */
+export async function getCurrentTreasurerName(db: Database): Promise<string | null> {
+  const assignments = await listRoleAssignments(db, { role: 'treasurer' });
+  const open = assignments.find(assignment => assignment.effectiveTo === null);
+  if (!open) return null;
+
+  const member = await getMember(db, open.memberId);
+  return member ? member.name : null;
+}

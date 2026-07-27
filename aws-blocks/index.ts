@@ -6,7 +6,7 @@ import type { PushAdapter } from './notifications/push-adapter';
 import { FakePushAdapter } from './notifications/push-adapter';
 import type { PaymentProvider } from './payments/payment-provider';
 import { FakePaymentProvider } from './payments/fake-payment-provider';
-import { initiatePayment, ChargeNotPayableError } from './payments/payment-initiation';
+import { initiatePayment, ChargeNotPayableError, ChargeAlreadyLockedError } from './payments/payment-initiation';
 import { linkDocumentToEntry, DocumentLinkError } from './finance/documents';
 import { problemResponse, sendUnauthorized, sendValidationError, ValidationError } from './http/problem-response';
 import { registerBookRoutes } from './finance/books-routes';
@@ -176,6 +176,14 @@ new RawRoute(scope, 'initiate-payment', {
     }
     const body = await ctx.request.json();
     const chargeIds: string[] = body?.charge_ids ?? [];
+    // charge_ids presence/non-empty check (422) -- the OpenAPI spec requires
+    // `minItems: 1`; without this, an empty array vacuously passes
+    // lockChargesForPayment's checks and creates a zero-charge, zero-amount
+    // payment_intents row.
+    if (chargeIds.length === 0) {
+      sendValidationError(ctx, new ValidationError('charge_ids must contain at least one charge id.'));
+      return;
+    }
     try {
       const result = await initiatePayment(db, paymentProvider, memberId, chargeIds, idempotencyKey);
       ctx.response.status = 201;
@@ -189,6 +197,14 @@ new RawRoute(scope, 'initiate-payment', {
       if (e instanceof ChargeNotPayableError) {
         ctx.response.status = 422;
         ctx.response.send(problemResponse('charge_not_payable', e.message));
+        return;
+      }
+      if (e instanceof ChargeAlreadyLockedError) {
+        // 409, not sendConflictError -- that helper hardcodes the generic
+        // `conflict` code, but the Mobile API's Error schema for this case
+        // uses `charge_already_locked`.
+        ctx.response.status = 409;
+        ctx.response.send(problemResponse('charge_already_locked', e.message));
         return;
       }
       throw e;

@@ -19,14 +19,29 @@ import { pgTextArray } from '../sql-array';
 const PROVIDER_NAME = 'razorpay';
 
 /** Domain rejection for a payment initiation naming a charge that doesn't
- * exist, isn't owned by the caller, or isn't `due` -- nothing is written
- * when this is thrown (T-U3/T-U4). Deliberately the same message regardless
- * of which of those three reasons applies, so no response ever leaks
- * whether a charge_id exists or who owns it (T-U4). */
+ * exist or isn't owned by the caller -- nothing is written when this is
+ * thrown (T-U4). Deliberately the same message regardless of which of those
+ * two reasons applies, so no response ever leaks whether a charge_id exists
+ * or who owns it (T-U4). Maps to the Mobile API's 422 "Unknown charge id, or
+ * charge not owned by this member." */
 export class ChargeNotPayableError extends Error {
   constructor(message = 'One or more of the specified charges is not payable.') {
     super(message);
     this.name = 'ChargeNotPayableError';
+  }
+}
+
+/** Domain rejection for a payment initiation naming a charge that exists and
+ * is owned by the caller, but isn't `due` (already `paid`, or `in_payment`
+ * under another payment) -- nothing is written when this is thrown (T-U3).
+ * Maps to the Mobile API's 409 "A charge is not payable (already paid, or
+ * in-flight under another payment)." -- distinct from ChargeNotPayableError's
+ * 422, per the OpenAPI spec's two separate error responses for this
+ * endpoint. */
+export class ChargeAlreadyLockedError extends Error {
+  constructor(message = 'One or more of the specified charges is already paid or in-flight under another payment.') {
+    super(message);
+    this.name = 'ChargeAlreadyLockedError';
   }
 }
 
@@ -75,9 +90,18 @@ async function findExistingIntent(
  * that every named charge exists, belongs to the caller, and is `due` --
  * extracted as its own step (STR-092's Refactor note) so STR-093 can insert
  * fee computation between locking and calling `provider.createIntent`
- * without touching the locking logic itself. Throws `ChargeNotPayableError`
- * (writing nothing) if the validation fails; the caller is responsible for
- * the T-U5 race re-check before treating that as a genuine conflict.
+ * without touching the locking logic itself. Distinguishes two failure
+ * buckets (T-U3/T-U4, matching the OpenAPI spec's two distinct error
+ * responses for this endpoint):
+ *   - any named chargeId missing from `locked` entirely (doesn't exist, or
+ *     isn't owned by memberId) -> `ChargeNotPayableError` (422); checked
+ *     first, so a request naming both an unknown/foreign charge and an
+ *     already-locked one is treated as malformed (422) rather than a state
+ *     conflict (409).
+ *   - every named chargeId present in `locked`, but at least one isn't
+ *     `due` -> `ChargeAlreadyLockedError` (409).
+ * Writes nothing in either case; the caller is responsible for the T-U5
+ * race re-check before treating either as a genuine conflict.
  */
 async function lockChargesForPayment(
   tx: Transaction,
@@ -91,9 +115,12 @@ async function lockChargesForPayment(
         FOR UPDATE`,
   );
 
-  const allDue = locked.length === chargeIds.length && locked.every(charge => charge.status === 'due');
-  if (!allDue) {
+  const lockedIds = new Set(locked.map(charge => charge.id));
+  if (chargeIds.some(id => !lockedIds.has(id))) {
     throw new ChargeNotPayableError();
+  }
+  if (locked.some(charge => charge.status !== 'due')) {
+    throw new ChargeAlreadyLockedError();
   }
 
   return locked.map(charge => ({ id: charge.id, amount: charge.amount }));
@@ -112,11 +139,13 @@ async function lockChargesForPayment(
  * T-U5: two concurrent requests carrying the *same* idempotency key both try
  * to `FOR UPDATE` lock the same charge rows -- the second blocks until the
  * first commits, and by the time it's unblocked the charges already show
- * `status = 'in_payment'` (flipped by the winning request). That's not a
- * real conflict, it's this request's own twin having already won the race,
- * so lockChargesForPayment's failure is re-checked here against
- * `payment_intents` before being treated as `ChargeNotPayableError` -- if a
- * matching row now exists, it's returned instead.
+ * `status = 'in_payment'` (flipped by the winning request), so
+ * lockChargesForPayment throws `ChargeAlreadyLockedError`. That's not a real
+ * conflict, it's this request's own twin having already won the race, so
+ * lockChargesForPayment's failure -- whether `ChargeNotPayableError` or
+ * `ChargeAlreadyLockedError` -- is re-checked here against `payment_intents`
+ * before being treated as a genuine failure -- if a matching row now exists,
+ * it's returned instead.
  *
  * The INSERT itself uses `ON CONFLICT (member_id, idempotency_key) DO
  * NOTHING ... RETURNING` rather than a plain INSERT wrapped in a try/catch
@@ -150,14 +179,14 @@ export async function initiatePayment(
     try {
       lockedCharges = await lockChargesForPayment(tx, memberId, chargeIds);
     } catch (e) {
-      if (e instanceof ChargeNotPayableError) {
+      if (e instanceof ChargeNotPayableError || e instanceof ChargeAlreadyLockedError) {
         const raced = await findExistingIntent(tx, memberId, idempotencyKey);
         if (raced) return raced;
       }
       throw e;
     }
 
-    const amount = sumMoney(lockedCharges.map(charge => formatMoney(parseMoney(charge.amount))));
+    const amount = sumMoney(lockedCharges.map(charge => charge.amount));
     const { providerIntentId, providerParams } = await provider.createIntent({ amount });
 
     await tx.execute(

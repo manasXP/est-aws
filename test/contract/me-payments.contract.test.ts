@@ -34,10 +34,14 @@ async function createTestAsset(projectId: string): Promise<string> {
 /** Seeded directly via SQL -- there is no charge-creation HTTP endpoint (the
  * charge run is the only writer), same as the payment-initiation unit tests. */
 async function seedDueCharge(memberId: string, ownershipId: string): Promise<string> {
+  return seedCharge(memberId, ownershipId, 'due');
+}
+
+async function seedCharge(memberId: string, ownershipId: string, status: 'due' | 'paid' | 'in_payment'): Promise<string> {
   const chargeId = randomUUID();
   await db.execute(
     sql`INSERT INTO charges (id, member_id, ownership_id, amount, due_date, status)
-        VALUES (${chargeId}, ${memberId}, ${ownershipId}, '1250.00', '2026-08-01', 'due')`,
+        VALUES (${chargeId}, ${memberId}, ${ownershipId}, '1250.00', '2026-08-01', ${status})`,
   );
   return chargeId;
 }
@@ -69,5 +73,57 @@ describe('STR-092 T-U1 -- POST /v1/me/payments (covers TC-PAY-020)', () => {
 
     const charge = await db.queryOne<{ status: string }>(sql`SELECT status FROM charges WHERE id = ${chargeId}`);
     expect(charge!.status).toBe('in_payment');
+  });
+});
+
+// Review-fix -- the OpenAPI spec declares a 409 ("A charge is not payable
+// (already paid, or in-flight under another payment).") distinct from the
+// 422 ("Unknown charge id, or charge not owned by this member.") for this
+// endpoint. This exercises the 409 case end-to-end through the route.
+describe('STR-092 review fix -- POST /v1/me/payments against an already-paid charge', () => {
+  it('returns 409 charge_already_locked, validating against the OpenAPI schema', async () => {
+    const projectId = await createTestProject();
+    const memberId = await createTestMember();
+    const assetId = await createTestAsset(projectId);
+    const ownershipResponse = await dispatchRequest('POST', `/v1/members/${memberId}/ownerships`, { asset_id: assetId });
+    const ownershipId = (ownershipResponse.body as { ownership_id: string }).ownership_id;
+    const chargeId = await seedCharge(memberId, ownershipId, 'paid');
+
+    const response = await dispatchRequest(
+      'POST',
+      '/v1/me/payments',
+      { charge_ids: [chargeId] },
+      { 'X-Actor-Member-Id': memberId, 'Idempotency-Key': randomUUID() },
+    );
+
+    expect(response.status).toBe(409);
+    expect((response.body as { error: { code: string } }).error.code).toBe('charge_already_locked');
+    const op = await contractTest('mobile', '/me/payments', 'post');
+    expect(() => op.expectValidResponse(409, response.body)).not.toThrow();
+  });
+});
+
+// Review-fix -- the OpenAPI spec requires `minItems: 1` on `charge_ids`; an
+// empty array must be rejected before initiatePayment ever runs (it
+// previously passed vacuously and created a zero-charge, zero-amount
+// payment_intents row).
+describe('STR-092 review fix -- POST /v1/me/payments with an empty charge_ids array', () => {
+  it('returns 422 without creating a payment_intents row', async () => {
+    const memberId = await createTestMember();
+    const idempotencyKey = randomUUID();
+
+    const response = await dispatchRequest(
+      'POST',
+      '/v1/me/payments',
+      { charge_ids: [] },
+      { 'X-Actor-Member-Id': memberId, 'Idempotency-Key': idempotencyKey },
+    );
+
+    expect(response.status).toBe(422);
+    const op = await contractTest('mobile', '/me/payments', 'post');
+    expect(() => op.expectValidResponse(422, response.body)).not.toThrow();
+
+    const rows = await db.query(sql`SELECT id FROM payment_intents WHERE idempotency_key = ${idempotencyKey}`);
+    expect(rows).toHaveLength(0);
   });
 });

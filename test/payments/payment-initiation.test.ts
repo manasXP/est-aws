@@ -3,7 +3,7 @@ import { rmSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { Scope, Database, sql } from '@aws-blocks/blocks';
 import { runLocalMigrations, MIGRATIONS_DIR } from '../../aws-blocks/migrations-runner';
-import { initiatePayment, ChargeNotPayableError } from '../../aws-blocks/payments/payment-initiation';
+import { initiatePayment, ChargeNotPayableError, ChargeAlreadyLockedError } from '../../aws-blocks/payments/payment-initiation';
 import { FakePaymentProvider } from '../../aws-blocks/payments/fake-payment-provider';
 import { createMember } from '../../aws-blocks/members/members-api';
 import { createProject } from '../../aws-blocks/projects/projects-api';
@@ -81,8 +81,18 @@ describe('STR-092 T-U2 -- idempotent replay of the same Idempotency-Key (covers 
   });
 });
 
+// Covers TC-PAY-022's "already paid or in_payment" case. Note: TC-PAY-022's
+// own wording says code `charge_not_payable`, but the Mobile API's OpenAPI
+// spec (mobile/openapi.yaml POST /me/payments) declares this specific case
+// -- a named charge that exists and is owned by the caller but isn't `due`
+// -- as its own 409 response ("A charge is not payable (already paid, or
+// in-flight under another payment)"), distinct from the 422 "unknown charge
+// id, or charge not owned by this member" case. The OpenAPI contract is the
+// source of truth here, so this test (and the route) asserts 409/
+// charge_already_locked, not 422/charge_not_payable -- see T-U4 below for
+// the 422 case this endpoint still has.
 describe('STR-092 T-U3 -- one due charge + one unpayable charge fails the whole request atomically (covers TC-PAY-022)', () => {
-  it('rejects with ChargeNotPayableError and leaves the due charge unlocked', async () => {
+  it('rejects with ChargeAlreadyLockedError and leaves the due charge unlocked', async () => {
     const db = await freshMigratedDb();
     const { memberId, ownershipId } = await seedMemberWithOwnership(db);
     const dueChargeId = await seedCharge(db, memberId, ownershipId, 'due');
@@ -91,7 +101,7 @@ describe('STR-092 T-U3 -- one due charge + one unpayable charge fails the whole 
 
     await expect(
       initiatePayment(db, provider, memberId, [dueChargeId, paidChargeId], randomUUID()),
-    ).rejects.toThrow(ChargeNotPayableError);
+    ).rejects.toThrow(ChargeAlreadyLockedError);
 
     const charge = await db.queryOne<{ status: string }>(sql`SELECT status FROM charges WHERE id = ${dueChargeId}`);
     expect(charge!.status).toBe('due');

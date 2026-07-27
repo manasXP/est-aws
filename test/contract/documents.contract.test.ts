@@ -169,6 +169,100 @@ describe('STR-111 T-C1 — document registration and read endpoints contract', (
   });
 });
 
+// STR-112 T-C1 (BE-C) — PATCH /v1/documents/{documentId} against the Admin
+// OpenAPI's DocumentPatch/Document schemas, following the same real-handler
+// dispatchRequest template as the STR-111 suite above. `member_visible` is
+// in DocumentPatch but mutating it is STR-115's deliverable — this story
+// must silently drop it (Definition of Done: no PATCH field beyond
+// title/category/tags/notes is writable).
+describe('STR-112 T-C1 — document metadata edit endpoint contract', () => {
+  async function registeredDocumentId(): Promise<string> {
+    const registerResponse = await dispatchRequest('POST', '/v1/documents', {
+      level: 'society',
+      title: 'Society Bye-laws',
+      category: 'Bye-laws',
+      filename: 'byelaws.pdf',
+      content_type: 'application/pdf',
+    }, { 'X-Actor-Employee-Id': 'emp-1' });
+    return (registerResponse.body as { document_id: string }).document_id;
+  }
+
+  it('PATCH /v1/documents/{documentId} conforms to the declared 200 Document response shape', async () => {
+    await runLocalMigrations(db, MIGRATIONS_DIR);
+    const documentId = await registeredDocumentId();
+
+    const response = await dispatchRequest('PATCH', `/v1/documents/${documentId}`, {
+      title: 'Society Bye-laws (2026 revision)',
+      category: 'Circulars',
+      tags: ['statutory', 'revised'],
+      notes: 'corrected after AGM',
+    }, { 'X-Actor-Employee-Id': 'emp-1' });
+
+    const op = await contractTest('admin', '/documents/{documentId}', 'patch');
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({
+      title: 'Society Bye-laws (2026 revision)',
+      category: 'Circulars',
+      tags: ['statutory', 'revised'],
+      notes: 'corrected after AGM',
+    });
+    expect(() => op.expectValidResponse(response.status, response.body)).not.toThrow();
+  });
+
+  it('PATCH on a nonexistent documentId conforms to the declared 404 response shape', async () => {
+    await runLocalMigrations(db, MIGRATIONS_DIR);
+
+    const response = await dispatchRequest('PATCH', '/v1/documents/no-such-document', {
+      title: 'Anything',
+    }, { 'X-Actor-Employee-Id': 'emp-1' });
+
+    const op = await contractTest('admin', '/documents/{documentId}', 'patch');
+    expect(response.status).toBe(404);
+    expect(() => op.expectValidResponse(response.status, response.body)).not.toThrow();
+  });
+
+  it('PATCH with an unknown category conforms to the declared 422 unknown_category response shape', async () => {
+    await runLocalMigrations(db, MIGRATIONS_DIR);
+    const documentId = await registeredDocumentId();
+
+    const response = await dispatchRequest('PATCH', `/v1/documents/${documentId}`, {
+      category: 'Not A Real Category',
+    }, { 'X-Actor-Employee-Id': 'emp-1' });
+
+    const op = await contractTest('admin', '/documents/{documentId}', 'patch');
+    expect(response.status).toBe(422);
+    expect(response.body).toMatchObject({ code: 'unknown_category' });
+    expect(() => op.expectValidResponse(response.status, response.body)).not.toThrow();
+  });
+
+  it('PATCH attempting member_visible leaves the flag unchanged — not writable until STR-115', async () => {
+    await runLocalMigrations(db, MIGRATIONS_DIR);
+    const documentId = await registeredDocumentId();
+
+    const response = await dispatchRequest('PATCH', `/v1/documents/${documentId}`, {
+      title: 'Still just a metadata edit',
+      member_visible: true,
+    }, { 'X-Actor-Employee-Id': 'emp-1' });
+
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({ member_visible: false });
+
+    const row = await db.queryOne<{ member_visible: boolean }>(
+      sql`SELECT member_visible FROM documents WHERE id = ${documentId}`,
+    );
+    expect(row!.member_visible).toBe(false);
+  });
+
+  it('rejects with 401 when no X-Actor-* header is present', async () => {
+    await runLocalMigrations(db, MIGRATIONS_DIR);
+    const documentId = await registeredDocumentId();
+
+    const response = await dispatchRequest('PATCH', `/v1/documents/${documentId}`, { title: 'Anything' });
+
+    expect(response.status).toBe(401);
+  });
+});
+
 // STR-111 review fix (Bug 1) — uploaded_by must come from the resolved
 // caller actor (X-Actor-Employee-Id/X-Actor-Member-Id), never the literal
 // 'unknown' the OpenAPI DocumentInput schema has no field for.

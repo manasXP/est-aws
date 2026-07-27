@@ -3,7 +3,9 @@ import { rmSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { sql, Scope, Database } from '@aws-blocks/blocks';
 import { runLocalMigrations, MIGRATIONS_DIR } from '../../aws-blocks/migrations-runner';
-import { allocateReceiptSeriesNumber, formatReceiptNumber } from '../../aws-blocks/finance/receipts';
+import { allocateReceiptSeriesNumber, formatReceiptNumber, buildReceiptFormat } from '../../aws-blocks/finance/receipts';
+import { createMember, admitMember } from '../../aws-blocks/members/members-api';
+import { assignRole, vacateRole } from '../../aws-blocks/members/role-assignments';
 
 // STR-071 -- the raw gapless per-FY receipt number allocator. Follows the
 // STR-021 test pattern (test/finance/journal.test.ts): fresh Database +
@@ -148,5 +150,91 @@ describe('STR-073 formatReceiptNumber', () => {
     await expect(db.transaction(tx => formatReceiptNumber(tx, '2026-04-01T10:00:00Z'))).rejects.toThrow(
       'society_settings.receipt_prefix is not configured',
     );
+  });
+});
+
+// STR-075: GSTIN-driven receipt format switching with Treasurer attribution
+// -- buildReceiptFormat decides the receipt's shape (plain vs GST) from
+// society_settings.gstin and, for the GST shape, resolves the currently-open
+// treasurer role assignment's member name (STR-041). No HTTP endpoint --
+// gstin is set directly by SQL, same precedent as receipt_prefix above.
+async function seedGstin(db: Database, gstin: string): Promise<void> {
+  await db.execute(sql`UPDATE society_settings SET gstin = ${gstin} WHERE id = 'default'`);
+}
+
+/** Creates an active member holding an open `treasurer` assignment --
+ * mirrors test/members/role-assignments.test.ts's activeMember helper plus
+ * the management-prerequisite assignment the subset-chain requires before
+ * treasurer can be assigned (STR-041). */
+async function seedTreasurer(db: Database, name: string, effectiveFrom = '2026-01-01') {
+  const member = await createMember(db, { name });
+  await admitMember(db, member.member_id);
+  await assignRole(db, member.member_id, 'management', effectiveFrom, 'ec-admin');
+  await assignRole(db, member.member_id, 'treasurer', effectiveFrom, 'ec-admin');
+  return member;
+}
+
+describe('STR-075 buildReceiptFormat', () => {
+  // T-U1 (covers TC-FIN-023): a society with no gstin configured produces a
+  // plain-format result -- no gstin field, no GST fields present.
+  it('produces a plain-format result when no gstin is configured', async () => {
+    const db = await freshMigratedDb();
+
+    const format = await buildReceiptFormat(db);
+
+    expect(format).toEqual({ kind: 'plain' });
+    expect(format).not.toHaveProperty('gstin');
+    expect(format).not.toHaveProperty('treasurerName');
+  });
+
+  // T-U2 (covers TC-FIN-024): a society with a gstin configured produces a
+  // GST-format result carrying that gstin and the current Treasurer's
+  // printed name; no signature-image field exists anywhere in the shape.
+  it('produces a GST-format result carrying the gstin and the current Treasurer name', async () => {
+    const db = await freshMigratedDb();
+    await seedGstin(db, '27AAAAA0000A1Z5');
+    await seedTreasurer(db, 'Treasurer One');
+
+    const format = await buildReceiptFormat(db);
+
+    expect(format).toEqual({ kind: 'gst', gstin: '27AAAAA0000A1Z5', treasurerName: 'Treasurer One' });
+    expect(Object.keys(format).sort()).toEqual(['gstin', 'kind', 'treasurerName']);
+    expect(format).not.toHaveProperty('signature');
+    expect(format).not.toHaveProperty('signatureImage');
+  });
+
+  // T-U3: the printed Treasurer name reflects whoever currently holds the
+  // OPEN treasurer role assignment, not a hardcoded/separately configured
+  // name -- after a role handover, a fresh call reads the new incumbent's
+  // name live rather than a cached/stale one.
+  it('resolves the Treasurer name live from the currently-open role assignment, not a cached/hardcoded value', async () => {
+    const db = await freshMigratedDb();
+    await seedGstin(db, '27AAAAA0000A1Z5');
+    const first = await seedTreasurer(db, 'Treasurer One', '2026-01-01');
+
+    const issuedBeforeHandover = await buildReceiptFormat(db);
+    expect(issuedBeforeHandover).toEqual({ kind: 'gst', gstin: '27AAAAA0000A1Z5', treasurerName: 'Treasurer One' });
+
+    await vacateRole(db, first.member_id, 'treasurer', '2026-06-01', 'ec-admin');
+    await seedTreasurer(db, 'Treasurer Two', '2026-06-01');
+
+    // A fresh call after the handover reads the new incumbent live, not the
+    // value already returned above.
+    const issuedAfterHandover = await buildReceiptFormat(db);
+    expect(issuedAfterHandover).toEqual({ kind: 'gst', gstin: '27AAAAA0000A1Z5', treasurerName: 'Treasurer Two' });
+  });
+
+  // Review finding: assignRole only guards a member double-holding a role,
+  // not two different members both holding an open treasurer assignment
+  // (e.g. an operator assigning a successor before vacating the
+  // predecessor) -- getCurrentTreasurerName must fail loudly rather than
+  // silently pick one, since this feeds a statutory GST receipt.
+  it('throws if two different members both hold an open treasurer assignment', async () => {
+    const db = await freshMigratedDb();
+    await seedGstin(db, '27AAAAA0000A1Z5');
+    await seedTreasurer(db, 'Treasurer One', '2026-01-01');
+    await seedTreasurer(db, 'Treasurer Two', '2026-01-01');
+
+    await expect(buildReceiptFormat(db)).rejects.toThrow('multiple open treasurer role assignments');
   });
 });

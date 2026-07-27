@@ -217,3 +217,35 @@ async function vacateRolesOnStatusChange(event: MemberStatusTransitionEvent, tx:
 }
 
 memberStatusTransitionListeners.push(vacateRolesOnStatusChange);
+
+/**
+ * STR-075: the printed name for the currently-open `treasurer` role
+ * assignment -- receipts attribute to whoever holds the office live, not a
+ * separately configured name. Returns `null` if the office is currently
+ * vacant (no open assignment).
+ *
+ * Filters to open rows (`effective_to IS NULL`) directly in SQL rather than
+ * via `listRoleAssignments` + client-side filtering, both to avoid pulling
+ * full tenure history to throw most of it away, and because that lets this
+ * function detect and reject >1 open row: `assignRole` only guards against
+ * the *same* member double-holding a role (`role_assignments_open_unique`),
+ * not against two different members both having an open `treasurer`
+ * assignment (e.g. an operator assigning a successor before vacating the
+ * predecessor). Silently picking one via ordering would risk printing the
+ * wrong name on a statutory GST receipt -- fail loudly instead, matching
+ * this codebase's precedent (STR-073's `receipt_prefix` guard) of refusing
+ * to mint compliance documents from ambiguous state.
+ */
+export async function getCurrentTreasurerName(db: Database): Promise<string | null> {
+  const openRows = await db.query<RoleAssignmentRow>(
+    sql`SELECT * FROM role_assignments WHERE role = 'treasurer' AND effective_to IS NULL`,
+  );
+  if (openRows.length > 1) {
+    throw new Error('Data integrity violation: multiple open treasurer role assignments exist.');
+  }
+  const open = openRows[0];
+  if (!open) return null;
+
+  const member = await getMember(db, open.member_id);
+  return member ? member.name : null;
+}

@@ -4,8 +4,9 @@
 // format the final receipt string (STR-073), decide GST/plain shape
 // (STR-075), or persist a receipt record (STR-079).
 import { sql } from '@aws-blocks/blocks';
-import type { Transaction } from '@aws-blocks/blocks';
+import type { Database, Transaction } from '@aws-blocks/blocks';
 import { financialYearOf } from './financial-year';
+import { getCurrentTreasurerName } from '../members/role-assignments';
 
 /**
  * Atomically allocate the next integer in `fyLabel`'s receipt series,
@@ -67,4 +68,28 @@ export async function formatReceiptNumber(tx: Transaction, issuedOnDate: string)
   }
 
   return `${settings!.receipt_prefix}/${fy.label}/${String(allocated).padStart(6, '0')}`;
+}
+
+/**
+ * STR-075: the shape of receipt fields to print, driven solely by whether
+ * `society_settings.gstin` is configured -- no per-transaction threshold
+ * check. Unregistered societies (`gstin` NULL) get the plain shape;
+ * GST-registered ones get the `gst` shape carrying the GSTIN and the
+ * currently-open Treasurer's printed name (STR-041) -- no signature image
+ * in v1. Does not compute GST tax-line amounts (STR-077) or persist a
+ * receipt record (STR-079).
+ */
+export type ReceiptFormat = { kind: 'plain' } | { kind: 'gst'; gstin: string; treasurerName: string | null };
+
+export async function buildReceiptFormat(db: Database): Promise<ReceiptFormat> {
+  const settings = await db.queryOne<{ gstin: string | null }>(
+    sql`SELECT gstin FROM society_settings WHERE id = 'default'`,
+  );
+  const gstin = settings?.gstin;
+  if (!gstin) {
+    return { kind: 'plain' };
+  }
+
+  const treasurerName = await getCurrentTreasurerName(db);
+  return { kind: 'gst', gstin, treasurerName };
 }

@@ -4,7 +4,11 @@ import { runMaintenanceChargeRun, runLateFeeSweep, chargeRunPeriodFromScheduledT
 import { dispatchDueDateReminders } from './payments/reminders';
 import type { PushAdapter } from './notifications/push-adapter';
 import { FakePushAdapter } from './notifications/push-adapter';
+import type { PaymentProvider } from './payments/payment-provider';
+import { FakePaymentProvider } from './payments/fake-payment-provider';
+import { initiatePayment, ChargeNotPayableError } from './payments/payment-initiation';
 import { linkDocumentToEntry, DocumentLinkError } from './finance/documents';
+import { problemResponse, sendUnauthorized, sendValidationError, ValidationError } from './http/problem-response';
 import { registerBookRoutes } from './finance/books-routes';
 import { registerMemberRoutes } from './members/members-routes';
 import { registerProjectRoutes } from './projects/projects-routes';
@@ -118,6 +122,12 @@ const chargeRunMetrics = new Metrics(scope, 'charge-run-metrics');
 // one-line change here, no run-logic edit needed (AC4).
 const dueDateReminderAdapter: PushAdapter = new FakePushAdapter();
 
+// STR-092: the payment initiation provider -- the real RazorpayTestModeAdapter
+// needs AppSetting-sourced credentials no story has wired yet (STR-091's own
+// precedent note), so this stays the fake test double until a later story
+// wires the real adapter in. Swapping it in is a one-line change here.
+const paymentProvider: PaymentProvider = new FakePaymentProvider();
+
 // STR-061: the scheduled maintenance charge run -- monthly, first-of-month
 // at 03:00 IST (this repo's established IST convention, aws-blocks/finance/
 // financial-year.ts). Raises one `maintenance` charge per accruing
@@ -141,3 +151,47 @@ new CronJob(scope, 'maintenance-charge-run', {
 // registry read.
 registerMeOwnershipRoutes(scope, db);
 registerPcAssetRoutes(scope, db);
+
+// STR-092: the mobile self-service payment-initiation surface -- locks the
+// named due charges and returns a provider-neutral payment intent for the
+// gateway SDK. Caller identity comes from the same X-Actor-Member-Id stub
+// header registerMeOwnershipRoutes established; Idempotency-Key is required
+// by the Mobile Public API's conventions table for this endpoint specifically.
+new RawRoute(scope, 'initiate-payment', {
+  method: 'POST',
+  path: '/v1/me/payments',
+  handler: async ctx => {
+    const memberId = ctx.request.headers.get('X-Actor-Member-Id');
+    if (!memberId) {
+      sendUnauthorized(ctx, 'X-Actor-Member-Id header is required.');
+      return;
+    }
+    // Idempotency-Key presence check (422) -- presence-only, same as
+    // employees-routes.ts's record-salary-payment; the dedupe/replay logic
+    // itself lives in initiatePayment.
+    const idempotencyKey = ctx.request.headers.get('Idempotency-Key');
+    if (!idempotencyKey) {
+      sendValidationError(ctx, new ValidationError('Idempotency-Key header is required.'));
+      return;
+    }
+    const body = await ctx.request.json();
+    const chargeIds: string[] = body?.charge_ids ?? [];
+    try {
+      const result = await initiatePayment(db, paymentProvider, memberId, chargeIds, idempotencyKey);
+      ctx.response.status = 201;
+      ctx.response.send({
+        payment_id: result.paymentId,
+        amount: result.amount,
+        provider: result.provider,
+        provider_params: result.providerParams,
+      });
+    } catch (e: unknown) {
+      if (e instanceof ChargeNotPayableError) {
+        ctx.response.status = 422;
+        ctx.response.send(problemResponse('charge_not_payable', e.message));
+        return;
+      }
+      throw e;
+    }
+  },
+});

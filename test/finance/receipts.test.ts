@@ -1,17 +1,21 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { rmSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { sql, Scope, Database } from '@aws-blocks/blocks';
+import { sql, Scope, Database, FileBucket } from '@aws-blocks/blocks';
 import { runLocalMigrations, MIGRATIONS_DIR } from '../../aws-blocks/migrations-runner';
-import { allocateReceiptSeriesNumber, formatReceiptNumber, buildReceiptFormat } from '../../aws-blocks/finance/receipts';
+import { allocateReceiptSeriesNumber, formatReceiptNumber, buildReceiptFormat, computeGstTaxLines, issueReceipt } from '../../aws-blocks/finance/receipts';
 import { createMember, admitMember } from '../../aws-blocks/members/members-api';
 import { assignRole, vacateRole } from '../../aws-blocks/members/role-assignments';
+import { postJournalEntry } from '../../aws-blocks/finance/journal';
+import { getDocumentLinksForEntry, isDocumentLinkedToLedger } from '../../aws-blocks/finance/documents';
+import { parseMoney } from '../../aws-blocks/money';
 
 // STR-071 -- the raw gapless per-FY receipt number allocator. Follows the
 // STR-021 test pattern (test/finance/journal.test.ts): fresh Database +
 // Scope per test, migrations applied via MIGRATIONS_DIR.
 
 const cleanupDbs: Database[] = [];
+const cleanupBuckets: FileBucket[] = [];
 
 async function freshMigratedDb(): Promise<Database> {
   const db = new Database(new Scope(`str-071-test-${randomUUID()}`), 'db');
@@ -20,11 +24,29 @@ async function freshMigratedDb(): Promise<Database> {
   return db;
 }
 
+function freshBucket(): FileBucket {
+  const bucket = new FileBucket(new Scope(`str-079-test-${randomUUID()}`), 'documents');
+  cleanupBuckets.push(bucket);
+  return bucket;
+}
+
+async function postSamplePosting(db: Database): Promise<string> {
+  const { entryId } = await postJournalEntry(db, 'sample posting', [
+    { accountId: 'cash', direction: 'debit', amount: '100.00' },
+    { accountId: 'bank', direction: 'credit', amount: '100.00' },
+  ]);
+  return entryId;
+}
+
 afterEach(async () => {
   while (cleanupDbs.length) {
     const db = cleanupDbs.pop()!;
     await (await db.getEngine()).destroy();
     rmSync(`.bb-data/${db.fullId}`, { recursive: true, force: true });
+  }
+  while (cleanupBuckets.length) {
+    const bucket = cleanupBuckets.pop()!;
+    rmSync(`.bb-data/${bucket.fullId}`, { recursive: true, force: true });
   }
 });
 
@@ -276,5 +298,112 @@ describe('STR-075 buildReceiptFormat', () => {
     await seedTreasurer(db, 'Treasurer Two', '2026-01-01');
 
     await expect(buildReceiptFormat(db, '1180.00')).rejects.toThrow('multiple open treasurer role assignments');
+  });
+});
+
+// STR-079: E08's capstone -- issueReceipt assembles STR-071/073's number,
+// STR-075/077's format, and STR-025's document link into one persisted,
+// ledger-linked receipt.
+describe('STR-079 issueReceipt', () => {
+  // T-U1 (covers TC-FIN-060): issuing a receipt against a real journal entry
+  // stores a document and links it to that entry; the link resolves to a
+  // presigned download.
+  it('stores a document and links it to the journal entry, resolving to a presigned download', async () => {
+    const db = await freshMigratedDb();
+    const bucket = freshBucket();
+    await seedReceiptPrefix(db, 'SOC');
+    const entryId = await postSamplePosting(db);
+
+    const result = await issueReceipt(db, bucket, entryId, '1180.00');
+
+    const links = await getDocumentLinksForEntry(db, bucket, entryId);
+    expect(links).toHaveLength(1);
+    expect(links[0].documentId).toBe(result.documentPath);
+    expect(links[0].downloadUrl).toEqual(expect.any(String));
+    expect(links[0].downloadUrl.length).toBeGreaterThan(0);
+  });
+
+  // T-U2: the returned IssueReceiptResult and the persisted receipts row
+  // carry the right receiptNumber/fyLabel/amount for a plain society, and
+  // the GST fields (round-tripped, not silently re-derived) for a
+  // GST-registered society.
+  it('persists the receipt number, FY label, and amount for a plain (non-GST) society', async () => {
+    const db = await freshMigratedDb();
+    const bucket = freshBucket();
+    await seedReceiptPrefix(db, 'SOC');
+    const entryId = await postSamplePosting(db);
+
+    const result = await issueReceipt(db, bucket, entryId, '1180.00');
+
+    expect(result.receiptNumber).toBe('SOC/2026-27/000001');
+    expect(result.fyLabel).toBe('2026-27');
+    expect(result.amount).toBe('1180.00');
+    expect(result.gstin).toBeNull();
+
+    const row = await db.queryOne<{ receipt_number: string; fy_label: string; amount: string }>(
+      sql`SELECT receipt_number, fy_label, amount FROM receipts WHERE entry_id = ${entryId}`,
+    );
+    expect(row!.receipt_number).toBe('SOC/2026-27/000001');
+    expect(row!.fy_label).toBe('2026-27');
+    expect(row!.amount).toBe('1180.00');
+  });
+
+  it('persists the GST tax-line fields, matching computeGstTaxLines independently, for a GST-registered society', async () => {
+    const db = await freshMigratedDb();
+    const bucket = freshBucket();
+    await seedReceiptPrefix(db, 'SOC');
+    await seedGstin(db, '27AAAAA0000A1Z5');
+    await seedTreasurer(db, 'Treasurer One');
+    const entryId = await postSamplePosting(db);
+    const amount = '1180.00';
+
+    const result = await issueReceipt(db, bucket, entryId, amount);
+
+    const expected = computeGstTaxLines(parseMoney(amount));
+    expect(result.taxableAmount).toBe(`${expected.taxableAmount / 100n}.${(expected.taxableAmount % 100n).toString().padStart(2, '0')}`);
+    expect(result.cgstAmount).toBe(`${expected.cgstAmount / 100n}.${(expected.cgstAmount % 100n).toString().padStart(2, '0')}`);
+    expect(result.sgstAmount).toBe(`${expected.sgstAmount / 100n}.${(expected.sgstAmount % 100n).toString().padStart(2, '0')}`);
+    expect(result.gstin).toBe('27AAAAA0000A1Z5');
+    expect(result.treasurerName).toBe('Treasurer One');
+
+    const row = await db.queryOne<{ taxable_amount: string; cgst_amount: string; sgst_amount: string; gstin: string; treasurer_name: string }>(
+      sql`SELECT taxable_amount, cgst_amount, sgst_amount, gstin, treasurer_name FROM receipts WHERE entry_id = ${entryId}`,
+    );
+    expect(row!.taxable_amount).toBe(result.taxableAmount);
+    expect(row!.cgst_amount).toBe(result.cgstAmount);
+    expect(row!.sgst_amount).toBe(result.sgstAmount);
+    expect(row!.gstin).toBe('27AAAAA0000A1Z5');
+    expect(row!.treasurer_name).toBe('Treasurer One');
+  });
+
+  // T-U3 (covers TC-FIN-061): after issueReceipt, the generated document
+  // fails the same archive-blocking guard any other ledger-linked document
+  // does.
+  it('reports the generated receipt document as ledger-linked, blocking archival', async () => {
+    const db = await freshMigratedDb();
+    const bucket = freshBucket();
+    await seedReceiptPrefix(db, 'SOC');
+    const entryId = await postSamplePosting(db);
+
+    const result = await issueReceipt(db, bucket, entryId, '1180.00');
+
+    await expect(isDocumentLinkedToLedger(db, result.documentPath)).resolves.toBe(true);
+  });
+
+  // T-U4: issuing a receipt for a nonexistent journal entry fails and writes
+  // nothing -- no orphaned counter allocation, no orphaned row.
+  it('rejects a nonexistent entryId, writing no receipt row and allocating no counter', async () => {
+    const db = await freshMigratedDb();
+    const bucket = freshBucket();
+    await seedReceiptPrefix(db, 'SOC');
+    const badEntryId = randomUUID();
+
+    await expect(issueReceipt(db, bucket, badEntryId, '1180.00')).rejects.toThrow();
+
+    const row = await db.queryOne(sql`SELECT * FROM receipts WHERE entry_id = ${badEntryId}`);
+    expect(row).toBeNull();
+
+    const counter = await db.queryOne(sql`SELECT * FROM receipt_series_counters WHERE fy_label = '2026-27'`);
+    expect(counter).toBeNull();
   });
 });

@@ -363,6 +363,73 @@ describe('STR-084 T-U2 (TC-VEN-025) -- override supersedes rejection at a majori
   });
 });
 
+// Review-found gaps, not in the story's own Red list -- both a security
+// review and a code review of the STR-084 diff independently flagged that
+// isCurrentEcMember's authorization boundary (the whole reason this story
+// adds a check STR-083 didn't have) shipped with no negative-path test.
+// Same convention as STR-083's own T-U8/T-U9 additions.
+describe('STR-084 -- recordOverrideApproval rejects a non-EC-member actor', () => {
+  it('a plain member who has never held any EC office gets InvoiceForbiddenError, writing no approval row', async () => {
+    const db = await freshMigratedDb();
+    const bucket = freshBucket();
+    const invoice = await submittedInvoice(db, bucket);
+    const verifier = await verifierEmployee(db);
+    await verifyInvoice(db, invoice.id, verifier.employee_id);
+    const rejecter = await designatedApproverMember(db, 'Designated Rejecter');
+    await rejectInvoice(db, invoice.id, rejecter.member_id, 'Missing GST breakup');
+
+    const plainMember = await createMember(db, { name: 'Never On The EC' });
+    await admitMember(db, plainMember.member_id);
+
+    await expect(recordOverrideApproval(db, invoice.id, plainMember.member_id)).rejects.toThrow(InvoiceForbiddenError);
+
+    const approvals = await db.query(sql`SELECT id FROM invoice_approvals WHERE invoice_id = ${invoice.id} AND is_override = true`);
+    expect(approvals).toHaveLength(0);
+  });
+
+  it('a member whose EC office assignment has since closed (effective_to set) gets InvoiceForbiddenError', async () => {
+    const db = await freshMigratedDb();
+    const bucket = freshBucket();
+    const invoice = await submittedInvoice(db, bucket);
+    const verifier = await verifierEmployee(db);
+    await verifyInvoice(db, invoice.id, verifier.employee_id);
+    const rejecter = await designatedApproverMember(db, 'Designated Rejecter');
+    await rejectInvoice(db, invoice.id, rejecter.member_id, 'Missing GST breakup');
+
+    const lapsedEc = await ecMember(db, 'Former EC Member');
+    await vacateRole(db, lapsedEc.member_id, 'executive_member', '2026-07-10', 'ec-admin');
+
+    await expect(recordOverrideApproval(db, invoice.id, lapsedEc.member_id)).rejects.toThrow(InvoiceForbiddenError);
+  });
+});
+
+describe('STR-084 -- isCurrentEcMember reflects only a currently-open EC office assignment', () => {
+  it('is true for an open EC office holder, false for a plain member and a lapsed one', async () => {
+    const db = await freshMigratedDb();
+    const currentEc = await ecMember(db, 'Current EC Member');
+    const plainMember = await createMember(db, { name: 'Never On The EC' });
+    await admitMember(db, plainMember.member_id);
+    const lapsedEc = await ecMember(db, 'Former EC Member');
+    await vacateRole(db, lapsedEc.member_id, 'executive_member', '2026-07-10', 'ec-admin');
+
+    expect(await isCurrentEcMember(db, currentEc.member_id)).toBe(true);
+    expect(await isCurrentEcMember(db, plainMember.member_id)).toBe(false);
+    expect(await isCurrentEcMember(db, lapsedEc.member_id)).toBe(false);
+  });
+});
+
+describe('STR-084 -- currentEcMemberCount is not inflated by a member holding two EC offices', () => {
+  it('counts a dual-office EC member once toward the override majority denominator', async () => {
+    const db = await freshMigratedDb();
+    const single = await ecMember(db, 'Single Office');
+    const dual = await ecMember(db, 'Dual Office');
+    await assignRole(db, dual.member_id, 'treasurer', '2026-01-01', 'ec-admin');
+
+    expect(await currentEcMemberCount(db)).toBe(2);
+    expect(majorityThreshold(await currentEcMemberCount(db))).toBe(2);
+  });
+});
+
 describe('STR-084 T-U3 (TC-VEN-026) -- override attempt after resubmission closes the window', () => {
   it('fails with InvoiceConflictError, even for a genuine EC member, and writes no new invoice_approvals row', async () => {
     const db = await freshMigratedDb();

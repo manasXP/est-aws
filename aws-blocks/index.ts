@@ -19,6 +19,7 @@ import { registerOwnershipRoutes } from './assets/ownerships-routes';
 import { registerMeOwnershipRoutes } from './assets/me-ownerships-routes';
 import { registerPcAssetRoutes } from './assets/pc-assets-routes';
 import { registerInvoiceApprovalRoutes } from './vendors/invoice-approvals-routes';
+import { registerDocumentRoutes } from './documents/documents-routes';
 // STR-041 code review: no HTTP surface of its own -- imported for its
 // module-load side effect (registering vacateRolesOnStatusChange with
 // members-api.ts's memberStatusTransitionListeners). Without this import,
@@ -266,3 +267,9 @@ new RawRoute(scope, 'get-payment-status', {
 // STR-083: two-phase invoice sign-off -- verify (designated-verifier) then
 // EC-subset majority approve (designated-approver).
 registerInvoiceApprovalRoutes(scope, db);
+
+// STR-111: the document registry -- registration with a presigned upload
+// URL, and reads (metadata + presigned download) with lazy checksum/size
+// verification from the real uploaded bytes. Reuses the shared `documents`
+// FileBucket STR-025 already wired -- no second bucket.
+registerDocumentRoutes(scope, db, documents);

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { randomUUID } from 'node:crypto';
+import { sql } from '@aws-blocks/blocks';
 import '../../aws-blocks/index';
 import { db, documents } from '../../aws-blocks/index';
 import { runLocalMigrations, MIGRATIONS_DIR } from '../../aws-blocks/migrations-runner';
@@ -78,5 +79,145 @@ describe('STR-025 T-C1 — link-document-to-entry endpoint contract', () => {
     const op = await contractTest('admin', '/books/{book}/entries/{entryId}/documents', 'post');
     expect(response.status).toBe(404);
     expect(() => op.expectValidResponse(response.status, response.body)).not.toThrow();
+  });
+});
+
+// STR-111 T-C1 (BE-C) — the document registry's POST /v1/documents,
+// GET /v1/documents/{documentId}, and GET /v1/documents/{documentId}/download
+// against the Admin OpenAPI's real (non-gapped) schemas, following the same
+// real-handler dispatchRequest template as the STR-025 suite above.
+describe('STR-111 T-C1 — document registration and read endpoints contract', () => {
+  it('POST /v1/documents conforms to the declared 201 response shape', async () => {
+    await runLocalMigrations(db, MIGRATIONS_DIR);
+
+    const response = await dispatchRequest('POST', '/v1/documents', {
+      level: 'society',
+      title: 'Society Bye-laws',
+      category: 'Bye-laws',
+      filename: 'byelaws.pdf',
+      content_type: 'application/pdf',
+    }, { 'X-Actor-Employee-Id': 'emp-1' });
+
+    const op = await contractTest('admin', '/documents', 'post');
+    expect(response.status).toBe(201);
+    expect(() => op.expectValidResponse(response.status, response.body)).not.toThrow();
+  });
+
+  it('POST /v1/documents with an unknown category conforms to the declared 422 response shape', async () => {
+    await runLocalMigrations(db, MIGRATIONS_DIR);
+
+    const response = await dispatchRequest('POST', '/v1/documents', {
+      level: 'society',
+      title: 'Bad',
+      category: 'Not A Real Category',
+      filename: 'f.pdf',
+      content_type: 'application/pdf',
+    }, { 'X-Actor-Employee-Id': 'emp-1' });
+
+    const op = await contractTest('admin', '/documents', 'post');
+    expect(response.status).toBe(422);
+    expect(() => op.expectValidResponse(response.status, response.body)).not.toThrow();
+  });
+
+  it('GET /v1/documents/{documentId} conforms to the schema with size_bytes omitted and checksum null before any file lands', async () => {
+    await runLocalMigrations(db, MIGRATIONS_DIR);
+
+    const registerResponse = await dispatchRequest('POST', '/v1/documents', {
+      level: 'society',
+      title: 'Society Bye-laws',
+      category: 'Bye-laws',
+      filename: 'byelaws.pdf',
+      content_type: 'application/pdf',
+    }, { 'X-Actor-Employee-Id': 'emp-1' });
+    const documentId = (registerResponse.body as { document_id: string }).document_id;
+
+    const response = await dispatchRequest('GET', `/v1/documents/${documentId}`);
+
+    const op = await contractTest('admin', '/documents/{documentId}', 'get');
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({ checksum: null });
+    expect(response.body).not.toHaveProperty('size_bytes');
+    expect(() => op.expectValidResponse(response.status, response.body)).not.toThrow();
+  });
+
+  it('GET /v1/documents/{documentId}/download conforms to the declared shapes (200 once uploaded, 404 before)', async () => {
+    await runLocalMigrations(db, MIGRATIONS_DIR);
+
+    const registerResponse = await dispatchRequest('POST', '/v1/documents', {
+      level: 'society',
+      title: 'Society Bye-laws',
+      category: 'Bye-laws',
+      filename: 'byelaws.pdf',
+      content_type: 'application/pdf',
+    }, { 'X-Actor-Employee-Id': 'emp-1' });
+    const documentId = (registerResponse.body as { document_id: string }).document_id;
+
+    const op = await contractTest('admin', '/documents/{documentId}/download', 'get');
+
+    const before404 = await dispatchRequest('GET', `/v1/documents/${documentId}/download`);
+    expect(before404.status).toBe(404);
+    expect(() => op.expectValidResponse(before404.status, before404.body)).not.toThrow();
+
+    const fileKeyRow = await db.queryOne<{ file_key: string }>(
+      sql`SELECT file_key FROM documents WHERE id = ${documentId}`,
+    );
+    await documents.put(fileKeyRow!.file_key, 'byelaws contents', { contentType: 'application/pdf' });
+
+    const after200 = await dispatchRequest('GET', `/v1/documents/${documentId}/download`);
+    expect(after200.status).toBe(200);
+    expect(() => op.expectValidResponse(after200.status, after200.body)).not.toThrow();
+  });
+});
+
+// STR-111 review fix (Bug 1) — uploaded_by must come from the resolved
+// caller actor (X-Actor-Employee-Id/X-Actor-Member-Id), never the literal
+// 'unknown' the OpenAPI DocumentInput schema has no field for.
+describe('STR-111 review fix (Bug 1) — POST /v1/documents resolves uploaded_by from the caller actor', () => {
+  it('rejects with 401 when no X-Actor-* header is present', async () => {
+    await runLocalMigrations(db, MIGRATIONS_DIR);
+
+    const response = await dispatchRequest('POST', '/v1/documents', {
+      level: 'society',
+      title: 'Society Bye-laws',
+      category: 'Bye-laws',
+      filename: 'byelaws.pdf',
+      content_type: 'application/pdf',
+    });
+
+    expect(response.status).toBe(401);
+  });
+
+  it('persists the resolved employee actor as uploaded_by, not "unknown"', async () => {
+    await runLocalMigrations(db, MIGRATIONS_DIR);
+
+    const response = await dispatchRequest('POST', '/v1/documents', {
+      level: 'society',
+      title: 'Society Bye-laws',
+      category: 'Bye-laws',
+      filename: 'byelaws.pdf',
+      content_type: 'application/pdf',
+    }, { 'X-Actor-Employee-Id': 'emp-42' });
+    expect(response.status).toBe(201);
+    const documentId = (response.body as { document_id: string }).document_id;
+
+    const row = await db.queryOne<{ uploaded_by: string }>(sql`SELECT uploaded_by FROM documents WHERE id = ${documentId}`);
+    expect(row!.uploaded_by).toBe('emp-42');
+  });
+
+  it('persists the resolved member actor as uploaded_by when only X-Actor-Member-Id is present', async () => {
+    await runLocalMigrations(db, MIGRATIONS_DIR);
+
+    const response = await dispatchRequest('POST', '/v1/documents', {
+      level: 'society',
+      title: 'Society Bye-laws',
+      category: 'Bye-laws',
+      filename: 'byelaws.pdf',
+      content_type: 'application/pdf',
+    }, { 'X-Actor-Member-Id': 'mem-7' });
+    expect(response.status).toBe(201);
+    const documentId = (response.body as { document_id: string }).document_id;
+
+    const row = await db.queryOne<{ uploaded_by: string }>(sql`SELECT uploaded_by FROM documents WHERE id = ${documentId}`);
+    expect(row!.uploaded_by).toBe('mem-7');
   });
 });

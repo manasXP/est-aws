@@ -19,6 +19,7 @@ import { registerOwnershipRoutes } from './assets/ownerships-routes';
 import { registerMeOwnershipRoutes } from './assets/me-ownerships-routes';
 import { registerPcAssetRoutes } from './assets/pc-assets-routes';
 import { registerInvoiceApprovalRoutes } from './vendors/invoice-approvals-routes';
+import { registerInvoicePaymentRoutes } from './vendors/invoice-payments-routes';
 import { registerDocumentRoutes } from './documents/documents-routes';
 // STR-041 code review: no HTTP surface of its own -- imported for its
 // module-load side effect (registering vacateRolesOnStatusChange with
@@ -267,6 +268,11 @@ new RawRoute(scope, 'get-payment-status', {
 // STR-083: two-phase invoice sign-off -- verify (designated-verifier) then
 // EC-subset majority approve (designated-approver).
 registerInvoiceApprovalRoutes(scope, db);
+
+// STR-086: E09's capstone -- records payment against an approved invoice
+// (finance-recorder), posting to the Expense Ledger + chosen Bank/Cash Book
+// and linking the invoice's scanned document to the posted entry.
+registerInvoicePaymentRoutes(scope, db, documents);
 
 // STR-111: the document registry -- registration with a presigned upload
 // URL, and reads (metadata + presigned download) with lazy checksum/size

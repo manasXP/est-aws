@@ -47,12 +47,25 @@ async function approvedInvoiceId(): Promise<string> {
   await setEmployeeCapabilities(db, verifier.employee_id, ['designated-verifier']);
   await dispatchRequest('POST', `/v1/invoices/${invoice.id}/verify`, {}, { 'X-Actor-Employee-Id': verifier.employee_id });
 
-  const approver = await createMember(db, { name: 'Payment Contract Approver' });
-  await admitMember(db, approver.member_id);
-  await assignRole(db, approver.member_id, 'management', '2026-01-01', 'ec-admin');
-  await assignRole(db, approver.member_id, 'executive_member', '2026-01-01', 'ec-admin');
-  await designateApprover(db, approver.member_id);
-  await dispatchRequest('POST', `/v1/invoices/${invoice.id}/approve`, {}, { 'X-Actor-Member-Id': approver.member_id });
+  // The designated-approver majority is against this shared db singleton's
+  // *entire* live subset, which grows across every call to this helper
+  // within the file (each call designates one more approver) -- so a single
+  // vote only suffices for the first call. Keep adding distinct designated
+  // approvers and voting until the majority is actually crossed, the same
+  // "don't assume 1 vote is enough" caution STR-084's own contract test
+  // documents for required_count.
+  let status = 'verified';
+  let round = 0;
+  while (status !== 'approved') {
+    round += 1;
+    const approver = await createMember(db, { name: `Payment Contract Approver ${randomUUID()}-${round}` });
+    await admitMember(db, approver.member_id);
+    await assignRole(db, approver.member_id, 'management', '2026-01-01', 'ec-admin');
+    await assignRole(db, approver.member_id, 'executive_member', '2026-01-01', 'ec-admin');
+    await designateApprover(db, approver.member_id);
+    const response = await dispatchRequest('POST', `/v1/invoices/${invoice.id}/approve`, {}, { 'X-Actor-Member-Id': approver.member_id });
+    status = (response.body as { status: string }).status;
+  }
 
   return invoice.id;
 }

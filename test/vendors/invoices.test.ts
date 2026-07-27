@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { sql, Scope, Database, FileBucket } from '@aws-blocks/blocks';
 import { runLocalMigrations, MIGRATIONS_DIR } from '../../aws-blocks/migrations-runner';
 import { createVendor, createWorkOrder, cancelWorkOrder, getWorkOrder } from '../../aws-blocks/vendors/work-orders';
-import { submitInvoice, computeInvoicedTotal, InvoiceConflictError } from '../../aws-blocks/vendors/invoices';
+import { submitInvoice, computeInvoicedTotal, InvoiceConflictError, InvoiceValidationError } from '../../aws-blocks/vendors/invoices';
 import { contractTest } from '../contract/harness';
 
 // STR-082 -- invoice submission and invoiced-total tracking, unit cases.
@@ -148,6 +148,70 @@ describe('STR-082 T-U4 -- submitting an invoice against a cancelled work order',
     expect(invoices).toHaveLength(0);
     const events = await db.query(sql`SELECT id FROM invoice_events`);
     expect(events).toHaveLength(0);
+  });
+});
+
+// T-U6/T-U7: genuine gaps in the story's own Red plan, not covered by any
+// cited TC case -- submitInvoice's document_id and resubmission_of
+// validation branches (aws-blocks/vendors/invoices.ts) had no test coverage
+// at all until this addition.
+describe('STR-082 T-U6 -- submitting an invoice with a document_id not present in the bucket', () => {
+  it('fails with InvoiceValidationError and writes nothing', async () => {
+    const db = await freshMigratedDb();
+    const bucket = freshBucket();
+    const vendor = await createVendor(db, { name: 'Acme Plumbing' });
+    const workOrder = await createWorkOrder(db, {
+      vendorId: vendor.id,
+      scope: 'Fix leaking pipe',
+      value: '5000.00',
+      issuedOn: '2026-07-01',
+    });
+
+    await expect(
+      submitInvoice(db, bucket, workOrder.id, { amount: '2000.00', invoiceDate: '2026-07-05', documentId: 'invoices/does-not-exist.pdf' }),
+    ).rejects.toThrow(InvoiceValidationError);
+
+    const invoices = await db.query(sql`SELECT id FROM invoices`);
+    expect(invoices).toHaveLength(0);
+  });
+});
+
+describe('STR-082 T-U7 -- submitting an invoice with a resubmission_of not found on the same work order', () => {
+  it('fails with InvoiceValidationError and writes nothing', async () => {
+    const db = await freshMigratedDb();
+    const bucket = freshBucket();
+    const vendor = await createVendor(db, { name: 'Acme Plumbing' });
+    const workOrder = await createWorkOrder(db, {
+      vendorId: vendor.id,
+      scope: 'Fix leaking pipe',
+      value: '5000.00',
+      issuedOn: '2026-07-01',
+    });
+    const otherWorkOrder = await createWorkOrder(db, {
+      vendorId: vendor.id,
+      scope: 'Repaint lobby',
+      value: '3000.00',
+      issuedOn: '2026-07-01',
+    });
+    await bucket.put('invoices/other.pdf', 'invoice scan');
+    const { invoice: otherInvoice } = await submitInvoice(db, bucket, otherWorkOrder.id, {
+      amount: '1000.00',
+      invoiceDate: '2026-07-02',
+      documentId: 'invoices/other.pdf',
+    });
+    await bucket.put('invoices/inv-1.pdf', 'invoice scan');
+
+    await expect(
+      submitInvoice(db, bucket, workOrder.id, {
+        amount: '2000.00',
+        invoiceDate: '2026-07-05',
+        documentId: 'invoices/inv-1.pdf',
+        resubmissionOf: otherInvoice.id,
+      }),
+    ).rejects.toThrow(InvoiceValidationError);
+
+    const invoices = await db.query(sql`SELECT id FROM invoices WHERE work_order_id = ${workOrder.id}`);
+    expect(invoices).toHaveLength(0);
   });
 });
 

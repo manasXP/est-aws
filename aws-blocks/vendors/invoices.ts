@@ -139,8 +139,15 @@ export async function submitInvoice(
 
   let overInvoiced = false;
   await db.transaction(async tx => {
+    // FOR UPDATE (not a plain SELECT): a concurrent cancelWorkOrder's UPDATE
+    // only takes a lock on the row it's writing, which a bare SELECT here
+    // wouldn't wait on -- amendWorkOrder hit and fixed the identical class
+    // of race (see its own comment for the full FOR KEY SHARE/FOR NO KEY
+    // UPDATE explanation). Locking here means a racing cancelWorkOrder
+    // either fully commits before this read (so `status` is already
+    // 'cancelled') or blocks until this transaction commits/rolls back.
     const workOrder = await tx.queryOne<{ status: string; value: string; vendor_id: string }>(
-      sql`SELECT status, value, vendor_id FROM work_orders WHERE id = ${workOrderId}`,
+      sql`SELECT status, value, vendor_id FROM work_orders WHERE id = ${workOrderId} FOR UPDATE`,
     );
     if (!workOrder) {
       throw new InvoiceConflictError(`Work order ${workOrderId} does not exist.`);

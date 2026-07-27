@@ -127,7 +127,15 @@ describe('STR-032 T-C1 — admit/suspend/reinstate contract', () => {
 
   it('POST /v1/members/{memberId}/suspend with a missing actor returns 422 Invalid', async () => {
     const id = randomUUID();
-    await db.execute(sql`INSERT INTO members (id, name, member_status) VALUES (${id}, 'Contract Missing Actor Member', 'active')`);
+    // `joining_date` is irrelevant to what this case asserts, but it must be
+    // set: the Admin OpenAPI's Member schema requires it on every member, and
+    // the local Blocks Database is a file store shared across runs, so an
+    // `active` row seeded without one survives into the *next* run and breaks
+    // the `GET /v1/members?status=active` contract case above. Found via
+    // STR-095, whose verifier runs the suite twice over one `.bb-data`.
+    await db.execute(
+      sql`INSERT INTO members (id, name, member_status, joining_date) VALUES (${id}, 'Contract Missing Actor Member', 'active', '2026-01-20')`,
+    );
 
     const response = await dispatchRequest('POST', `/v1/members/${id}/suspend`, {});
     expect(response.status).toBe(422);

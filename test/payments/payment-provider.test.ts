@@ -106,5 +106,12 @@ describe('PaymentProvider', () => {
 
       expect(await provider.verifyWebhookSignature(alteredBody, signature)).toBe(false);
     });
+
+    it('parseWebhookEvent round-trips the fields a caller signed', () => {
+      const provider = new FakePaymentProvider();
+      const rawBody = JSON.stringify({ type: 'payment.captured', providerIntentId: 'fake-intent-1' });
+
+      expect(provider.parseWebhookEvent(rawBody)).toEqual({ type: 'payment.captured', providerIntentId: 'fake-intent-1' });
+    });
   });
 });

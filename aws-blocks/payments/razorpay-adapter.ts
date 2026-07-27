@@ -7,6 +7,7 @@ import type {
   ProviderIntentStatus,
 } from './payment-provider';
 import { verifyHmacSignature } from './payment-provider';
+import { parseMoney } from '../money';
 
 // STR-091: the real, test-mode-credentialed PaymentProvider implementation.
 // No Razorpay SDK/HTTP type leaks outside this file (Definition of Done).
@@ -29,14 +30,22 @@ export class RazorpayTestModeAdapter implements PaymentProvider {
   async createIntent(params: CreateIntentParams): Promise<CreateIntentResult> {
     const [keyId, keySecret] = await Promise.all([this.credentials.keyId.get(), this.credentials.keySecret.get()]);
     const auth = Buffer.from(`${keyId}:${keySecret}`).toString('base64');
+    // Razorpay's Orders API takes `amount` as an integer in the smallest
+    // currency subunit (paise for INR), not a decimal string -- money.ts's
+    // parseMoney already gives us that as a bigint; Number() is safe here,
+    // no realistic receipt amount approaches Number.MAX_SAFE_INTEGER paise.
+    const amountPaise = Number(parseMoney(params.amount));
     const response = await fetch(`${RAZORPAY_API_BASE}/orders`, {
       method: 'POST',
       headers: {
         Authorization: `Basic ${auth}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ amount: params.amount, currency: 'INR' }),
+      body: JSON.stringify({ amount: amountPaise, currency: 'INR' }),
     });
+    if (!response.ok) {
+      throw new Error(`Razorpay order creation failed: ${response.status} ${await response.text()}`);
+    }
     const body = await response.json();
     return { providerIntentId: body.id, providerParams: body };
   }
@@ -62,6 +71,9 @@ export class RazorpayTestModeAdapter implements PaymentProvider {
     const response = await fetch(`${RAZORPAY_API_BASE}/orders/${providerIntentId}`, {
       headers: { Authorization: `Basic ${auth}` },
     });
+    if (!response.ok) {
+      throw new Error(`Razorpay order status lookup failed: ${response.status} ${await response.text()}`);
+    }
     const body = await response.json();
     const status: ProviderIntentStatus['status'] = body.status === 'paid' ? 'paid' : body.status === 'created' ? 'created' : 'failed';
     return { status };

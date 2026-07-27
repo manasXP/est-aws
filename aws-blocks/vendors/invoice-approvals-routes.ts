@@ -9,9 +9,35 @@
 import { RawRoute } from '@aws-blocks/blocks';
 import type { Database, Scope } from '@aws-blocks/blocks';
 import { verifyInvoice, recordApproval, recordOverrideApproval, designatedApproverCount, majorityThreshold } from './invoice-approvals';
-import { getInvoice, InvoiceConflictError, InvoiceForbiddenError, type Invoice } from './invoices';
+import { getInvoice, getInvoiceActions, InvoiceConflictError, InvoiceForbiddenError, type Invoice, type InvoiceAction } from './invoices';
 import { requireCapability, resolveActor } from '../http/capability-gate';
 import { sendConflictError, sendCapabilityRequired } from '../http/problem-response';
+
+/**
+ * Translates an invoice's audit trail to the Admin/Mobile OpenAPI's shared
+ * `actions` wire shape (STR-085, TC-VEN-029: both surfaces build this from
+ * the same `getInvoiceActions` read, so they can never disagree). `notes` is
+ * omitted (not sent as `null`) when absent -- the schema declares it a plain
+ * string, not required.
+ *
+ * Events with no recorded actor are dropped rather than sent: the schema's
+ * `actor_id` is a required, non-nullable string, but STR-082's submitInvoice
+ * writes its own `submitted` event with a nullable, caller-supplied
+ * `actorId` (no HTTP route calls submitInvoice yet, so nothing has ever
+ * populated it in practice) -- a spec-vs-data gap outside this story's own
+ * scope (STR-083/084's verify/approve/reject/override events always set a
+ * real actor). Flagged for whichever story ships the submit-invoice HTTP
+ * route to always pass one.
+ */
+export function toActionsResponse(actions: InvoiceAction[]): Record<string, unknown>[] {
+  return actions
+    .filter(action => action.actorId !== null)
+    .map(action => {
+      const entry: Record<string, unknown> = { action: action.action, actor_id: action.actorId, at: action.at };
+      if (action.notes !== null) entry.notes = action.notes;
+      return entry;
+    });
+}
 
 /**
  * Translates the service layer's camelCase Invoice to the Admin OpenAPI's
@@ -27,6 +53,7 @@ import { sendConflictError, sendCapabilityRequired } from '../http/problem-respo
 export function toInvoiceResponse(
   invoice: Invoice,
   approvalProgress?: { approved_count: number; required_count: number },
+  actions?: InvoiceAction[],
 ): Record<string, unknown> {
   const body: Record<string, unknown> = {
     invoice_id: invoice.id,
@@ -40,6 +67,7 @@ export function toInvoiceResponse(
     resubmitted_as: invoice.resubmittedAs,
   };
   if (approvalProgress) body.approval_progress = approvalProgress;
+  if (actions) body.actions = toActionsResponse(actions);
   if (invoice.gstAmount !== null) body.gst_amount = invoice.gstAmount;
   if (invoice.invoiceNumber !== null) body.invoice_number = invoice.invoiceNumber;
   return body;
@@ -66,7 +94,8 @@ export function registerInvoiceApprovalRoutes(scope: Scope, db: Database): void 
       try {
         const invoice = await verifyInvoice(db, invoiceId, actor.employeeId, notes ?? null);
         const requiredCount = majorityThreshold(await designatedApproverCount(db));
-        ctx.response.send(toInvoiceResponse(invoice, { approved_count: 0, required_count: requiredCount }));
+        const actions = await getInvoiceActions(db, invoiceId);
+        ctx.response.send(toInvoiceResponse(invoice, { approved_count: 0, required_count: requiredCount }, actions));
       } catch (e) {
         if (e instanceof InvoiceConflictError) {
           sendConflictError(ctx, e);
@@ -99,8 +128,13 @@ export function registerInvoiceApprovalRoutes(scope: Scope, db: Database): void 
 
         try {
           const { invoice: updated, approvalProgress } = await recordOverrideApproval(db, invoiceId, actor.memberId, notes ?? null);
+          const actions = await getInvoiceActions(db, invoiceId);
           ctx.response.send(
-            toInvoiceResponse(updated, { approved_count: approvalProgress.approvedCount, required_count: approvalProgress.requiredCount }),
+            toInvoiceResponse(
+              updated,
+              { approved_count: approvalProgress.approvedCount, required_count: approvalProgress.requiredCount },
+              actions,
+            ),
           );
         } catch (e) {
           if (e instanceof InvoiceConflictError) {
@@ -127,8 +161,13 @@ export function registerInvoiceApprovalRoutes(scope: Scope, db: Database): void 
 
       try {
         const { invoice: updated, approvalProgress } = await recordApproval(db, invoiceId, actor.memberId, notes ?? null);
+        const actions = await getInvoiceActions(db, invoiceId);
         ctx.response.send(
-          toInvoiceResponse(updated, { approved_count: approvalProgress.approvedCount, required_count: approvalProgress.requiredCount }),
+          toInvoiceResponse(
+            updated,
+            { approved_count: approvalProgress.approvedCount, required_count: approvalProgress.requiredCount },
+            actions,
+          ),
         );
       } catch (e) {
         if (e instanceof InvoiceConflictError) {

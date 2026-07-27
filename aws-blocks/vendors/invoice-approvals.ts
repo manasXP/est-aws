@@ -187,6 +187,51 @@ export async function isCurrentEcMember(db: Database | Transaction, memberId: st
 }
 
 /**
+ * Read-only counterpart of recordApproval's live majority count (STR-085:
+ * the mobile `/ec` GET surface needs this outside of a write, to report
+ * `approval_progress` on a `verified` invoice nobody is currently approving).
+ */
+export async function normalApprovalCount(db: Database, invoiceId: string): Promise<number> {
+  const row = await db.queryOne<{ count: number }>(
+    sql`SELECT COUNT(DISTINCT ia.member_id)::int AS count
+        FROM invoice_approvals ia
+        JOIN capability_approver_designations cad ON cad.member_id = ia.member_id
+        JOIN role_assignments ra ON ra.member_id = cad.member_id
+        WHERE ia.invoice_id = ${invoiceId} AND ia.is_override = false
+          AND ra.effective_to IS NULL AND ra.role = ANY(${pgTextArray(EC_OFFICES)}::text[])`,
+  );
+  return row!.count;
+}
+
+/** Read-only counterpart of recordOverrideApproval's live majority count. */
+export async function overrideApprovalCount(db: Database, invoiceId: string): Promise<number> {
+  const row = await db.queryOne<{ count: number }>(
+    sql`SELECT COUNT(DISTINCT ia.member_id)::int AS count
+        FROM invoice_approvals ia
+        JOIN role_assignments ra ON ra.member_id = ia.member_id
+        WHERE ia.invoice_id = ${invoiceId} AND ia.is_override = true
+          AND ra.effective_to IS NULL AND ra.role = ANY(${pgTextArray(EC_OFFICES)}::text[])`,
+  );
+  return row!.count;
+}
+
+/**
+ * Whether any EC-override vote was ever cast on this invoice (STR-085 code
+ * review fix): an `approved` invoice can be resolved either the normal way
+ * (majority of the designated subset while `verified`) or via override
+ * (majority of the entire EC while `rejected`) -- once `approved`, the
+ * status alone no longer tells a reader which branch resolved it. A raw
+ * existence check, deliberately NOT scoped to currently-open EC members
+ * (unlike overrideApprovalCount's live count): an invoice overridden by
+ * members who have since left the EC must still read as override-resolved,
+ * not silently reclassified as the normal path once its voters' tenure ends.
+ */
+export async function invoiceHasOverrideVotes(db: Database, invoiceId: string): Promise<boolean> {
+  const row = await db.queryOne(sql`SELECT 1 FROM invoice_approvals WHERE invoice_id = ${invoiceId} AND is_override = true LIMIT 1`);
+  return row !== null;
+}
+
+/**
  * `POST /invoices/{invoiceId}/reject` business logic (TC-VEN-024: only a
  * `verified` invoice can be rejected, with a mandatory reason; the invoice
  * moves to `rejected` immediately and its prior accumulated approvals stop

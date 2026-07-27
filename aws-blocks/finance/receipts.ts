@@ -3,11 +3,14 @@
 // a society prefix"). This is only the allocation primitive -- it does not
 // format the final receipt string (STR-073), decide GST/plain shape
 // (STR-075), or persist a receipt record (STR-079).
+import { randomUUID } from 'node:crypto';
 import { sql } from '@aws-blocks/blocks';
-import type { Database, Transaction } from '@aws-blocks/blocks';
+import type { Database, FileBucket, Transaction } from '@aws-blocks/blocks';
 import { financialYearOf } from './financial-year';
+import type { FinancialYear } from './financial-year';
 import { getCurrentTreasurerName } from '../members/role-assignments';
 import { parseMoney, formatMoney } from '../money';
+import { linkDocumentToEntry, DocumentLinkError } from './documents';
 
 /**
  * Atomically allocate the next integer in `fyLabel`'s receipt series,
@@ -36,12 +39,25 @@ export async function allocateReceiptSeriesNumber(tx: Transaction, fyLabel: stri
 }
 
 /**
+ * Resolves `issuedOnDate` to its **IST calendar date** via
+ * `AT TIME ZONE 'Asia/Kolkata'` before feeding it to `financialYearOf` --
+ * the same idiom STR-024 established for FY bucketing (aws-blocks/finance/books.ts,
+ * aws-blocks/members/members-api.ts) -- so a receipt issued in the UTC
+ * evening of Mar 31 that is already IST Apr 1 lands in the new FY, not the
+ * old one. Runs against the caller's own `tx`.
+ */
+async function resolveFinancialYear(tx: Transaction, issuedOnDate: string): Promise<FinancialYear> {
+  const dateRow = await tx.queryOne<{ ist_date: string }>(
+    sql`SELECT (${issuedOnDate}::timestamptz AT TIME ZONE 'Asia/Kolkata')::date::text AS ist_date`,
+  );
+  return financialYearOf(dateRow!.ist_date);
+}
+
+/**
  * STR-073: formats a receipt number as `<prefix>/<fy-label>/<counter>`, e.g.
  * `SOC/2026-27/000001`. `issuedOnDate` is resolved to its **IST calendar
- * date** via `AT TIME ZONE 'Asia/Kolkata'` before being fed to
- * `financialYearOf` -- the same idiom STR-024 established for FY bucketing
- * (aws-blocks/finance/books.ts, aws-blocks/members/members-api.ts) -- so a
- * receipt issued in the UTC evening of Mar 31 that is already IST Apr 1
+ * date** via `resolveFinancialYear` before being fed to `financialYearOf` --
+ * so a receipt issued in the UTC evening of Mar 31 that is already IST Apr 1
  * lands in the new FY, not the old one.
  *
  * All reads run against the caller's own `tx` -- the date resolution has no
@@ -54,10 +70,7 @@ export async function allocateReceiptSeriesNumber(tx: Transaction, fyLabel: stri
  * failing loudly before anything is written.
  */
 export async function formatReceiptNumber(tx: Transaction, issuedOnDate: string): Promise<string> {
-  const dateRow = await tx.queryOne<{ ist_date: string }>(
-    sql`SELECT (${issuedOnDate}::timestamptz AT TIME ZONE 'Asia/Kolkata')::date::text AS ist_date`,
-  );
-  const fy = financialYearOf(dateRow!.ist_date);
+  const fy = await resolveFinancialYear(tx, issuedOnDate);
 
   const allocated = await allocateReceiptSeriesNumber(tx, fy.label);
 
@@ -85,7 +98,7 @@ export type ReceiptFormat =
   | { kind: 'plain' }
   | { kind: 'gst'; gstin: string; treasurerName: string | null; taxableAmount: string; cgstAmount: string; sgstAmount: string };
 
-export async function buildReceiptFormat(db: Database, totalAmount: string): Promise<ReceiptFormat> {
+export async function buildReceiptFormat(db: Transaction, totalAmount: string): Promise<ReceiptFormat> {
   const settings = await db.queryOne<{ gstin: string | null }>(
     sql`SELECT gstin FROM society_settings WHERE id = 'default'`,
   );
@@ -133,4 +146,105 @@ export function computeGstTaxLines(totalPaise: bigint): { taxableAmount: bigint;
   taxableAmount = taxableAmount + leftover;
 
   return { taxableAmount, cgstAmount, sgstAmount };
+}
+
+export interface IssueReceiptResult {
+  id: string;
+  receiptNumber: string;
+  fyLabel: string;
+  entryId: string;
+  amount: string;
+  gstin: string | null;
+  taxableAmount: string | null;
+  cgstAmount: string | null;
+  sgstAmount: string | null;
+  treasurerName: string | null;
+  documentPath: string;
+  issuedAt: string;
+}
+
+/**
+ * Assembles STR-071/073/075/077's number/format computations and STR-025's
+ * document link into one persisted, ledger-linked receipt (AC1-AC4). The
+ * entry-existence check runs first, before any counter allocation or
+ * bucket write, so a bad entryId leaves nothing behind (AC4) -- the one
+ * exception is that a FileBucket `put` is not part of the SQL transaction
+ * (FileBucket isn't a transactional resource), so atomicity is guaranteed
+ * only up through that first check; nothing after it is expected to fail
+ * in practice (receipt_number is freshly allocated, entryId was just
+ * verified).
+ */
+export async function issueReceipt(
+  db: Database,
+  bucket: FileBucket,
+  entryId: string,
+  amount: string,
+  options: { issuedOnDate?: string } = {},
+): Promise<IssueReceiptResult> {
+  parseMoney(amount);
+  const issuedOnDate = options.issuedOnDate ?? new Date().toISOString();
+
+  return db.transaction(async tx => {
+    const entry = await tx.queryOne(sql`SELECT id FROM journal_entries WHERE id = ${entryId}`);
+    if (!entry) {
+      throw new DocumentLinkError(`No journal entry found with id: ${entryId}`, 'entry_not_found');
+    }
+
+    const fy = await resolveFinancialYear(tx, issuedOnDate);
+    const fyLabel = fy.label;
+    const receiptNumber = await formatReceiptNumber(tx, issuedOnDate);
+    // The 6-digit zero-padded counter is always the last "/"-separated
+    // segment of receiptNumber, regardless of whether receipt_prefix itself
+    // contains a "/" (see resolveFinancialYear above for fyLabel instead of
+    // parsing it back out of this string).
+    const counter = receiptNumber.split('/').pop()!;
+    const format = await buildReceiptFormat(tx, amount);
+
+    const documentPath = `receipts/${fyLabel}/${counter}.txt`;
+    const lines = [
+      `Receipt Number: ${receiptNumber}`,
+      `Financial Year: ${fyLabel}`,
+      `Entry ID: ${entryId}`,
+      `Amount: ${amount}`,
+    ];
+    if (format.kind === 'gst') {
+      lines.push(
+        `GSTIN: ${format.gstin}`,
+        `Taxable Amount: ${format.taxableAmount}`,
+        `CGST: ${format.cgstAmount}`,
+        `SGST: ${format.sgstAmount}`,
+        `Treasurer: ${format.treasurerName ?? ''}`,
+      );
+    }
+    await bucket.put(documentPath, lines.join('\n'), { contentType: 'text/plain' });
+
+    await linkDocumentToEntry(tx, bucket, entryId, documentPath);
+
+    const gstin = format.kind === 'gst' ? format.gstin : null;
+    const taxableAmount = format.kind === 'gst' ? format.taxableAmount : null;
+    const cgstAmount = format.kind === 'gst' ? format.cgstAmount : null;
+    const sgstAmount = format.kind === 'gst' ? format.sgstAmount : null;
+    const treasurerName = format.kind === 'gst' ? format.treasurerName : null;
+
+    const row = await tx.queryOne<{ id: string; issued_at: string }>(
+      sql`INSERT INTO receipts (id, receipt_number, fy_label, entry_id, amount, gstin, taxable_amount, cgst_amount, sgst_amount, treasurer_name, document_path)
+          VALUES (${randomUUID()}, ${receiptNumber}, ${fyLabel}, ${entryId}, ${amount}::numeric, ${gstin}, ${taxableAmount}::numeric, ${cgstAmount}::numeric, ${sgstAmount}::numeric, ${treasurerName}, ${documentPath})
+          RETURNING id, issued_at::text AS issued_at`,
+    );
+
+    return {
+      id: row!.id,
+      receiptNumber,
+      fyLabel,
+      entryId,
+      amount,
+      gstin,
+      taxableAmount,
+      cgstAmount,
+      sgstAmount,
+      treasurerName,
+      documentPath,
+      issuedAt: row!.issued_at,
+    };
+  });
 }

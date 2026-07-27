@@ -110,6 +110,15 @@ describe('STR-101 Tally ledger masters', () => {
       expect(() => tallyParentGroupFor('reserve')).not.toThrow();
       expect(tallyParentGroupFor('reserve')).toBe('Suspense');
     });
+
+    // Regression: a plain object literal would resolve an inherited
+    // Object.prototype member instead of falling back for a kind like
+    // 'constructor' or '__proto__'.
+    it('falls back to the default for a kind matching an inherited Object.prototype member', () => {
+      expect(tallyParentGroupFor('constructor')).toBe('Suspense');
+      expect(tallyParentGroupFor('__proto__')).toBe('Suspense');
+      expect(tallyParentGroupFor('hasOwnProperty')).toBe('Suspense');
+    });
   });
 
   describe('buildLedgerMastersXml', () => {
@@ -129,6 +138,19 @@ describe('STR-101 Tally ledger masters', () => {
       expect(() => buildLedgerMastersXml([{ id: 'reserve', name: 'Reserve Fund', kind: 'reserve' }])).not.toThrow();
       const xml = buildLedgerMastersXml([{ id: 'reserve', name: 'Reserve Fund', kind: 'reserve' }]);
       expect(xml).toContain('<PARENT>Suspense</PARENT>');
+    });
+
+    // Regression: an account name containing XML metacharacters must be
+    // escaped, not interpolated raw into the NAME="..." attribute — an
+    // unescaped `"` would let the value break out of the attribute and
+    // inject arbitrary markup into the Tally import document.
+    it('escapes XML metacharacters in the account name', () => {
+      const xml = buildLedgerMastersXml([
+        { id: 'evil', name: 'Evil" /><LEDGER NAME="Injected & <Bad>', kind: 'cash' },
+      ]);
+      expect(xml).toContain('<LEDGER NAME="Evil&quot; /&gt;&lt;LEDGER NAME=&quot;Injected &amp; &lt;Bad&gt;" ACTION="Create">');
+      expect(xml).not.toContain('NAME="Evil" ');
+      expect(xml).not.toContain('<LEDGER NAME="Injected');
     });
   });
 

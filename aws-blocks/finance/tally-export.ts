@@ -37,15 +37,21 @@ export async function getLedgerAccountsForPeriod(db: Database, from: string, to:
 /** Documented fallback Tally parent group for any `ledger_accounts.kind` this table doesn't map. */
 const DEFAULT_TALLY_PARENT_GROUP = 'Suspense';
 
-/** `ledger_accounts.kind` -> the Tally `<PARENT>` group a `<LEDGER>` master imports under. */
-export const TALLY_PARENT_GROUPS: Record<string, string> = {
-  cash: 'Cash-in-hand',
-  bank: 'Bank Accounts',
-};
+/**
+ * `ledger_accounts.kind` -> the Tally `<PARENT>` group a `<LEDGER>` master
+ * imports under. A `Map`, not a plain object — a `kind` value that happens
+ * to name an inherited `Object.prototype` member (e.g. `'constructor'`)
+ * must still miss the lookup and fall back, not resolve to that inherited
+ * value.
+ */
+export const TALLY_PARENT_GROUPS: ReadonlyMap<string, string> = new Map([
+  ['cash', 'Cash-in-hand'],
+  ['bank', 'Bank Accounts'],
+]);
 
 /** Resolves a `kind` to its Tally parent group, falling back to a documented default for an unmapped kind. */
 export function tallyParentGroupFor(kind: string): string {
-  return TALLY_PARENT_GROUPS[kind] ?? DEFAULT_TALLY_PARENT_GROUP;
+  return TALLY_PARENT_GROUPS.get(kind) ?? DEFAULT_TALLY_PARENT_GROUP;
 }
 
 function escapeXml(value: string): string {

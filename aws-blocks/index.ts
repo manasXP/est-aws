@@ -9,8 +9,20 @@ import { FakePaymentProvider } from './payments/fake-payment-provider';
 import { initiatePayment, getPaymentStatus, ChargeNotPayableError, ChargeAlreadyLockedError } from './payments/payment-initiation';
 import { settleWebhookEvent, InvalidWebhookSignatureError } from './payments/webhook-settlement';
 import { findLingeringIntents, reconcileIntent } from './payments/reconciliation';
+import { recordOfflinePayment, OfflinePaymentConflictError, OfflinePaymentValidationError } from './payments/offline-payments';
 import { linkDocumentToEntry, DocumentLinkError } from './finance/documents';
-import { problemResponse, sendUnauthorized, sendNotFound, sendValidationError, ValidationError } from './http/problem-response';
+import { JournalError } from './finance/journal';
+import { requireCapability, resolveActor } from './http/capability-gate';
+import type { Actor } from './members/capabilities';
+import {
+  problemResponse,
+  sendUnauthorized,
+  sendNotFound,
+  sendValidationError,
+  sendConflictError,
+  ValidationError,
+  ConflictError,
+} from './http/problem-response';
 import { registerBookRoutes } from './finance/books-routes';
 import { registerMemberRoutes } from './members/members-routes';
 import { registerProjectRoutes } from './projects/projects-routes';
@@ -321,6 +333,84 @@ new CronJob(scope, 'payment-reconciliation-sweep', {
     const lingering = await findLingeringIntents(db, RECONCILIATION_STALE_AFTER_MINUTES);
     for (const intent of lingering) {
       await paymentReconciliationJob.submit({ paymentIntentId: intent.paymentIntentId });
+    }
+  },
+});
+
+// STR-095: the offline (cash/cheque) receipt surface -- the offline mirror of
+// the webhook settlement above, for money collected outside the gateway.
+// Unlike that route this one *is* an operator-driven money-posting endpoint,
+// so it carries the Admin API's two guards for those: the finance-recorder
+// capability and an Idempotency-Key header, both checked before any body
+// parsing.
+new RawRoute(scope, 'record-offline-payment', {
+  method: 'POST',
+  path: '/v1/charges/{chargeId}/offline-payment',
+  handler: async ctx => {
+    if (!(await requireCapability(ctx, db, 'finance-recorder'))) {
+      return;
+    }
+
+    // Presence-only, the same convention as the salary-payment and
+    // invoice-payment endpoints.
+    const idempotencyKey = ctx.request.headers.get('Idempotency-Key');
+    if (!idempotencyKey) {
+      sendValidationError(ctx, new ValidationError('Idempotency-Key header is required.'));
+      return;
+    }
+
+    const { chargeId } = ctx.request.params;
+    const { method, amount, received_on, reference } = await ctx.request.json();
+    // Guaranteed non-null once requireCapability passes -- an unresolvable
+    // actor has no claims, so the gate would already have returned.
+    // finance-recorder is grantable to either a member (the default, the
+    // current Treasurer) or a delegated employee, so this stays the full union.
+    const actor = resolveActor(ctx) as Actor;
+
+    try {
+      const result = await recordOfflinePayment(
+        db,
+        documents,
+        chargeId,
+        actor,
+        { method, amount, receivedOn: received_on, reference: reference ?? null },
+        idempotencyKey,
+      );
+      ctx.response.status = 201;
+      ctx.response.send({
+        receipt_id: result.receiptId,
+        receipt_number: result.receiptNumber,
+        amount: result.amount,
+        // `receipts.issued_at::text` is Postgres' own rendering
+        // (`2026-08-05 10:11:12.13+00`), which is not the RFC 3339 the
+        // Receipt schema's `format: date-time` requires -- normalized here,
+        // at the HTTP boundary, rather than changing STR-079's shared result.
+        issued_at: new Date(result.issuedAt).toISOString(),
+        charge_ids: result.chargeIds,
+        // Null for offline receipts -- there is no gateway payment behind
+        // them (the Receipt schema's own `payment_id` description).
+        payment_id: null,
+      });
+    } catch (e) {
+      if (e instanceof OfflinePaymentConflictError) {
+        sendConflictError(ctx, new ConflictError(e.message));
+        return;
+      }
+      if (e instanceof OfflinePaymentValidationError) {
+        sendValidationError(ctx, new ValidationError(e.message));
+        return;
+      }
+      // Defense in depth, matching the salary-payment and invoice-payment
+      // routes' own catch for the identical posting call: the
+      // amount-matches-the-charge check in recordOfflinePayment already makes
+      // this unreachable in practice, but a raw 500 would otherwise leak a
+      // JournalError past this route's 422 contract.
+      if (e instanceof JournalError) {
+        ctx.response.status = 422;
+        ctx.response.send(problemResponse('validation_error', e.message));
+        return;
+      }
+      throw e;
     }
   },
 });

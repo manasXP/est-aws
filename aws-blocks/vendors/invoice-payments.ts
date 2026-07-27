@@ -10,7 +10,7 @@ import type { Database, FileBucket } from '@aws-blocks/blocks';
 import { InvoiceConflictError, InvoiceValidationError, getInvoice, type Invoice } from './invoices';
 import { postJournalEntry } from '../finance/journal';
 import { linkDocumentToEntry } from '../finance/documents';
-import { formatMoney, parseMoney, InvalidMoneyError } from '../money';
+import { formatMoney, parseMoney, moneyEquals, InvalidMoneyError } from '../money';
 import type { Actor } from '../members/capabilities';
 
 export type InvoicePaymentMethod = 'bank' | 'cash';
@@ -59,9 +59,16 @@ function actorTypeOf(actor: Actor): 'employee' | 'member' {
  * its own commit boundary, not a `Transaction`) -- STR-021's own module
  * boundary. The final step (document link + invoice_payments row + `paid`
  * event) runs in its own transaction once the entry exists, mirroring
- * finance/receipts.ts's issueReceipt: atomicity is guaranteed through the
- * status flip; nothing after it is expected to fail in practice (the
- * ledger accounts are the fixed, always-seeded 'expense'/'bank'/'cash').
+ * finance/receipts.ts's issueReceipt.
+ *
+ * The flip is a one-way door -- once it commits, a `postJournalEntry`
+ * failure can no longer be retried (the `status = 'approved'` guard now
+ * rejects it). That's why every check postJournalEntry itself would make
+ * (line-amount format/positivity, via the amount-equals-the-invoice check
+ * below) is done first, inside this same transaction, before the flip --
+ * not left for postJournalEntry to catch afterward. What's left unguarded
+ * after the flip is only the fixed, always-seeded 'expense'/'bank'/'cash'
+ * accounts existing, which nothing in this codebase ever un-seeds.
  */
 export async function recordInvoicePayment(
   db: Database,
@@ -86,14 +93,26 @@ export async function recordInvoicePayment(
   let vendorId = '';
 
   await db.transaction(async tx => {
-    const locked = await tx.queryOne<{ status: string; vendor_id: string; document_id: string }>(
-      sql`SELECT status, vendor_id, document_id FROM invoices WHERE id = ${invoiceId} FOR UPDATE`,
+    const locked = await tx.queryOne<{ status: string; vendor_id: string; document_id: string; amount: string }>(
+      sql`SELECT status, vendor_id, document_id, amount FROM invoices WHERE id = ${invoiceId} FOR UPDATE`,
     );
     if (!locked) {
       throw new InvoiceConflictError(`Invoice ${invoiceId} does not exist.`);
     }
     if (locked.status !== 'approved') {
       throw new InvoiceConflictError(`Invoice ${invoiceId} is ${locked.status}; only an approved invoice can be paid.`);
+    }
+    // Review finding: the payment amount must match what was actually
+    // approved -- a free-form client-supplied amount would let a
+    // finance-recorder misstate the immutable ledger (over- or under-post
+    // against the invoice) with no server-side signal. Checked before the
+    // status flip below, not after, so a mismatched amount 422s with
+    // nothing written rather than leaving the invoice stranded 'paid' with
+    // no journal entry once postJournalEntry (which validates positivity,
+    // not equality) runs later.
+    const invoiceAmount = formatMoney(parseMoney(locked.amount));
+    if (!moneyEquals(amount, invoiceAmount)) {
+      throw new InvoiceValidationError(`Payment amount ${amount} does not match the invoice's approved amount ${invoiceAmount}.`);
     }
     documentId = locked.document_id;
     vendorId = locked.vendor_id;

@@ -10,9 +10,10 @@ import type { Database, FileBucket, Scope } from '@aws-blocks/blocks';
 import { recordInvoicePayment } from './invoice-payments';
 import { InvoiceConflictError, InvoiceValidationError } from './invoices';
 import { toInvoiceResponse } from './invoice-approvals-routes';
+import { JournalError } from '../finance/journal';
 import { requireCapability, resolveActor } from '../http/capability-gate';
 import type { Actor } from '../members/capabilities';
-import { sendConflictError, sendValidationError, ValidationError } from '../http/problem-response';
+import { sendConflictError, sendValidationError, ValidationError, problemResponse } from '../http/problem-response';
 
 export function registerInvoicePaymentRoutes(scope: Scope, db: Database, bucket: FileBucket): void {
   new RawRoute(scope, 'record-invoice-payment', {
@@ -60,6 +61,16 @@ export function registerInvoicePaymentRoutes(scope: Scope, db: Database, bucket:
         }
         if (e instanceof InvoiceValidationError) {
           sendValidationError(ctx, e);
+          return;
+        }
+        // Defense in depth, matching employees-routes.ts's own salary-
+        // payment catch for the identical postJournalEntry call: the
+        // amount-matches-the-invoice check in recordInvoicePayment already
+        // makes this unreachable in practice, but a raw 500 would otherwise
+        // leak a JournalError past the route's own 422 contract.
+        if (e instanceof JournalError) {
+          ctx.response.status = 422;
+          ctx.response.send(problemResponse('validation_error', e.message));
           return;
         }
         throw e;

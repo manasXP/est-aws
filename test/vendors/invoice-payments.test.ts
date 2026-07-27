@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { sql, Scope, Database, FileBucket } from '@aws-blocks/blocks';
 import { runLocalMigrations, MIGRATIONS_DIR } from '../../aws-blocks/migrations-runner';
 import { createVendor, createWorkOrder } from '../../aws-blocks/vendors/work-orders';
-import { submitInvoice, getInvoice, InvoiceConflictError, type Invoice } from '../../aws-blocks/vendors/invoices';
+import { submitInvoice, getInvoice, InvoiceConflictError, InvoiceValidationError, type Invoice } from '../../aws-blocks/vendors/invoices';
 import { verifyInvoice, recordApproval } from '../../aws-blocks/vendors/invoice-approvals';
 import { recordInvoicePayment, type RecordInvoicePaymentInput } from '../../aws-blocks/vendors/invoice-payments';
 import { isDocumentLinkedToLedger } from '../../aws-blocks/finance/documents';
@@ -198,5 +198,35 @@ describe('STR-086 T-U5 -- payment links the invoice document to the posted entry
     await recordInvoicePayment(db, bucket, invoice.id, { employeeId: recorder.employee_id }, paymentInput);
 
     await expect(isDocumentLinkedToLedger(db, invoice.documentId)).resolves.toBe(true);
+  });
+});
+
+// Genuine gap found in code review, not in the story's own Red plan: a
+// client-supplied payment amount that doesn't match what was actually
+// approved would otherwise post an arbitrary, unreconciled entry to the
+// immutable Expense Ledger with no server-side signal, and (before this
+// fix) could strand the invoice at 'paid' with no journal entry at all if
+// the mismatched amount also failed postJournalEntry's own positivity
+// check -- see aws-blocks/vendors/invoice-payments.ts's recordInvoicePayment
+// for the fix (checked before the approved -> paid flip, not after).
+describe("STR-086 (review finding) -- a payment amount that doesn't match the invoice's approved amount is rejected", () => {
+  it('rejects with InvoiceValidationError; the invoice stays approved and nothing is written', async () => {
+    const db = await freshMigratedDb();
+    const bucket = freshBucket();
+    const invoice = await approvedInvoice(db, bucket);
+    const recorder = await financeRecorderEmployee(db);
+
+    await expect(
+      recordInvoicePayment(db, bucket, invoice.id, { employeeId: recorder.employee_id }, { ...paymentInput, amount: '1.00' }),
+    ).rejects.toThrow(InvoiceValidationError);
+
+    const stillApproved = await getInvoice(db, invoice.id);
+    expect(stillApproved!.status).toBe('approved');
+
+    const payments = await db.query(sql`SELECT id FROM invoice_payments WHERE invoice_id = ${invoice.id}`);
+    expect(payments).toHaveLength(0);
+
+    const entries = await db.query(sql`SELECT id FROM journal_entries`);
+    expect(entries).toHaveLength(0);
   });
 });

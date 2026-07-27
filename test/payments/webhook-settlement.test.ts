@@ -29,7 +29,7 @@ async function freshMigratedDb(): Promise<Database> {
 }
 
 function freshBucket(): FileBucket {
-  const bucket = new FileBucket(new Scope(`str-094-webhook-settlement-test-${randomUUID()}`), 'documents');
+  const bucket = new FileBucket(new Scope(`str-094-test-${randomUUID()}`), 'documents');
   cleanupBuckets.push(bucket);
   return bucket;
 }

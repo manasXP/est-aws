@@ -7,7 +7,7 @@ import type {
   ProviderIntentStatus,
 } from './payment-provider';
 import { verifyHmacSignature } from './payment-provider';
-import { parseMoney } from '../money';
+import { parseMoney, formatMoney } from '../money';
 
 // STR-091: the real, test-mode-credentialed PaymentProvider implementation.
 // No Razorpay SDK/HTTP type leaks outside this file (Definition of Done).
@@ -60,9 +60,24 @@ export class RazorpayTestModeAdapter implements PaymentProvider {
     return verifyHmacSignature(webhookSecret, rawBody, signatureHeader);
   }
 
+  // STR-094: Razorpay's real webhook envelope has no distinct top-level
+  // delivery id in the JSON body (it's only in the X-Razorpay-Event-Id
+  // header, not signed as part of rawBody) -- the payment entity's own `id`
+  // is used as the dedup key instead, since a redelivery of the same payment
+  // event always carries the same payment id. `amount` arrives as an
+  // integer in paise (Razorpay's smallest-subunit convention, same as
+  // createIntent above), converted via money.ts's formatMoney rather than
+  // compared as a raw int.
   parseWebhookEvent(rawBody: string): WebhookEvent {
     const body = JSON.parse(rawBody);
-    return { type: body.event, providerIntentId: body.payload?.payment?.entity?.order_id };
+    const payment = body.payload?.payment?.entity;
+    return {
+      type: body.event,
+      eventId: payment?.id,
+      providerIntentId: payment?.order_id,
+      amount: formatMoney(BigInt(payment?.amount ?? 0)),
+      failureReason: payment?.error_description ?? undefined,
+    };
   }
 
   async getIntentStatus(providerIntentId: string): Promise<ProviderIntentStatus> {

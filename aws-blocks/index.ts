@@ -7,6 +7,7 @@ import { FakePushAdapter } from './notifications/push-adapter';
 import type { PaymentProvider } from './payments/payment-provider';
 import { FakePaymentProvider } from './payments/fake-payment-provider';
 import { initiatePayment, getPaymentStatus, ChargeNotPayableError, ChargeAlreadyLockedError } from './payments/payment-initiation';
+import { settleWebhookEvent, InvalidWebhookSignatureError } from './payments/webhook-settlement';
 import { linkDocumentToEntry, DocumentLinkError } from './finance/documents';
 import { problemResponse, sendUnauthorized, sendNotFound, sendValidationError, ValidationError } from './http/problem-response';
 import { registerBookRoutes } from './finance/books-routes';
@@ -263,6 +264,33 @@ new RawRoute(scope, 'get-payment-status', {
       completed_at: result.completedAt,
       failure_reason: result.failureReason,
     });
+  },
+});
+
+// STR-094: the Razorpay webhook delivery endpoint -- the signature itself is
+// the authentication (no Idempotency-Key, no capability gate). Reads the raw
+// body via ctx.request.text() (not .json()) since HMAC verification needs
+// the exact bytes Razorpay signed, before any JSON parsing happens.
+new RawRoute(scope, 'razorpay-webhook', {
+  method: 'POST',
+  path: '/v1/webhooks/razorpay',
+  handler: async ctx => {
+    const rawBody = await ctx.request.text();
+    const signatureHeader = ctx.request.headers.get('X-Razorpay-Signature') ?? '';
+    try {
+      await settleWebhookEvent(db, documents, paymentProvider, rawBody, signatureHeader);
+    } catch (e: unknown) {
+      if (e instanceof InvalidWebhookSignatureError) {
+        ctx.response.status = 400;
+        ctx.response.send(problemResponse('invalid_webhook_signature', e.message));
+        return;
+      }
+      throw e;
+    }
+    // 200 on every other outcome (including the amount-mismatch rejection) --
+    // acking 200 there avoids a Razorpay retry storm; the flagged intent
+    // carries the unresolved state forward (STR-096).
+    ctx.response.send({ status: 'ok' });
   },
 });
 

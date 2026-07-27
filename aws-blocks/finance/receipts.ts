@@ -165,17 +165,21 @@ export interface IssueReceiptResult {
 
 /**
  * Assembles STR-071/073/075/077's number/format computations and STR-025's
- * document link into one persisted, ledger-linked receipt (AC1-AC4). The
- * entry-existence check runs first, before any counter allocation or
- * bucket write, so a bad entryId leaves nothing behind (AC4) -- the one
- * exception is that a FileBucket `put` is not part of the SQL transaction
- * (FileBucket isn't a transactional resource), so atomicity is guaranteed
- * only up through that first check; nothing after it is expected to fail
- * in practice (receipt_number is freshly allocated, entryId was just
- * verified).
+ * document link into one persisted, ledger-linked receipt (AC1-AC4), against
+ * an already-open `tx` -- extracted (STR-094) so a caller that must compose
+ * this into a larger single atomic transaction (e.g. aws-blocks/payments/
+ * webhook-settlement.ts) can call this directly with its own open `tx`,
+ * rather than nesting a second, independent `db.transaction()` inside its
+ * own. Does not open a transaction itself. The entry-existence check runs
+ * first, before any counter allocation or bucket write, so a bad entryId
+ * leaves nothing behind (AC4) -- the one exception is that a FileBucket
+ * `put` is not part of the SQL transaction (FileBucket isn't a transactional
+ * resource), so atomicity is guaranteed only up through that first check;
+ * nothing after it is expected to fail in practice (receipt_number is
+ * freshly allocated, entryId was just verified).
  */
-export async function issueReceipt(
-  db: Database,
+export async function issueReceiptTx(
+  tx: Transaction,
   bucket: FileBucket,
   entryId: string,
   amount: string,
@@ -184,67 +188,82 @@ export async function issueReceipt(
   parseMoney(amount);
   const issuedOnDate = options.issuedOnDate ?? new Date().toISOString();
 
-  return db.transaction(async tx => {
-    const entry = await tx.queryOne(sql`SELECT id FROM journal_entries WHERE id = ${entryId}`);
-    if (!entry) {
-      throw new DocumentLinkError(`No journal entry found with id: ${entryId}`, 'entry_not_found');
-    }
+  const entry = await tx.queryOne(sql`SELECT id FROM journal_entries WHERE id = ${entryId}`);
+  if (!entry) {
+    throw new DocumentLinkError(`No journal entry found with id: ${entryId}`, 'entry_not_found');
+  }
 
-    const fy = await resolveFinancialYear(tx, issuedOnDate);
-    const fyLabel = fy.label;
-    const receiptNumber = await formatReceiptNumber(tx, issuedOnDate);
-    // The 6-digit zero-padded counter is always the last "/"-separated
-    // segment of receiptNumber, regardless of whether receipt_prefix itself
-    // contains a "/" (see resolveFinancialYear above for fyLabel instead of
-    // parsing it back out of this string).
-    const counter = receiptNumber.split('/').pop()!;
-    const format = await buildReceiptFormat(tx, amount);
+  const fy = await resolveFinancialYear(tx, issuedOnDate);
+  const fyLabel = fy.label;
+  const receiptNumber = await formatReceiptNumber(tx, issuedOnDate);
+  // The 6-digit zero-padded counter is always the last "/"-separated
+  // segment of receiptNumber, regardless of whether receipt_prefix itself
+  // contains a "/" (see resolveFinancialYear above for fyLabel instead of
+  // parsing it back out of this string).
+  const counter = receiptNumber.split('/').pop()!;
+  const format = await buildReceiptFormat(tx, amount);
 
-    const documentPath = `receipts/${fyLabel}/${counter}.txt`;
-    const lines = [
-      `Receipt Number: ${receiptNumber}`,
-      `Financial Year: ${fyLabel}`,
-      `Entry ID: ${entryId}`,
-      `Amount: ${amount}`,
-    ];
-    if (format.kind === 'gst') {
-      lines.push(
-        `GSTIN: ${format.gstin}`,
-        `Taxable Amount: ${format.taxableAmount}`,
-        `CGST: ${format.cgstAmount}`,
-        `SGST: ${format.sgstAmount}`,
-        `Treasurer: ${format.treasurerName ?? ''}`,
-      );
-    }
-    await bucket.put(documentPath, lines.join('\n'), { contentType: 'text/plain' });
-
-    await linkDocumentToEntry(tx, bucket, entryId, documentPath);
-
-    const gstin = format.kind === 'gst' ? format.gstin : null;
-    const taxableAmount = format.kind === 'gst' ? format.taxableAmount : null;
-    const cgstAmount = format.kind === 'gst' ? format.cgstAmount : null;
-    const sgstAmount = format.kind === 'gst' ? format.sgstAmount : null;
-    const treasurerName = format.kind === 'gst' ? format.treasurerName : null;
-
-    const row = await tx.queryOne<{ id: string; issued_at: string }>(
-      sql`INSERT INTO receipts (id, receipt_number, fy_label, entry_id, amount, gstin, taxable_amount, cgst_amount, sgst_amount, treasurer_name, document_path)
-          VALUES (${randomUUID()}, ${receiptNumber}, ${fyLabel}, ${entryId}, ${amount}::numeric, ${gstin}, ${taxableAmount}::numeric, ${cgstAmount}::numeric, ${sgstAmount}::numeric, ${treasurerName}, ${documentPath})
-          RETURNING id, issued_at::text AS issued_at`,
+  const documentPath = `receipts/${fyLabel}/${counter}.txt`;
+  const lines = [
+    `Receipt Number: ${receiptNumber}`,
+    `Financial Year: ${fyLabel}`,
+    `Entry ID: ${entryId}`,
+    `Amount: ${amount}`,
+  ];
+  if (format.kind === 'gst') {
+    lines.push(
+      `GSTIN: ${format.gstin}`,
+      `Taxable Amount: ${format.taxableAmount}`,
+      `CGST: ${format.cgstAmount}`,
+      `SGST: ${format.sgstAmount}`,
+      `Treasurer: ${format.treasurerName ?? ''}`,
     );
+  }
+  await bucket.put(documentPath, lines.join('\n'), { contentType: 'text/plain' });
 
-    return {
-      id: row!.id,
-      receiptNumber,
-      fyLabel,
-      entryId,
-      amount,
-      gstin,
-      taxableAmount,
-      cgstAmount,
-      sgstAmount,
-      treasurerName,
-      documentPath,
-      issuedAt: row!.issued_at,
-    };
-  });
+  await linkDocumentToEntry(tx, bucket, entryId, documentPath);
+
+  const gstin = format.kind === 'gst' ? format.gstin : null;
+  const taxableAmount = format.kind === 'gst' ? format.taxableAmount : null;
+  const cgstAmount = format.kind === 'gst' ? format.cgstAmount : null;
+  const sgstAmount = format.kind === 'gst' ? format.sgstAmount : null;
+  const treasurerName = format.kind === 'gst' ? format.treasurerName : null;
+
+  const row = await tx.queryOne<{ id: string; issued_at: string }>(
+    sql`INSERT INTO receipts (id, receipt_number, fy_label, entry_id, amount, gstin, taxable_amount, cgst_amount, sgst_amount, treasurer_name, document_path)
+        VALUES (${randomUUID()}, ${receiptNumber}, ${fyLabel}, ${entryId}, ${amount}::numeric, ${gstin}, ${taxableAmount}::numeric, ${cgstAmount}::numeric, ${sgstAmount}::numeric, ${treasurerName}, ${documentPath})
+        RETURNING id, issued_at::text AS issued_at`,
+  );
+
+  return {
+    id: row!.id,
+    receiptNumber,
+    fyLabel,
+    entryId,
+    amount,
+    gstin,
+    taxableAmount,
+    cgstAmount,
+    sgstAmount,
+    treasurerName,
+    documentPath,
+    issuedAt: row!.issued_at,
+  };
+}
+
+/**
+ * Assembles STR-071/073/075/077's number/format computations and STR-025's
+ * document link into one persisted, ledger-linked receipt (AC1-AC4). Thin
+ * wrapper over `issueReceiptTx` (STR-094) -- opens its own transaction and
+ * delegates everything to it, so existing callers keep their identical
+ * single-`Database`-argument call shape.
+ */
+export async function issueReceipt(
+  db: Database,
+  bucket: FileBucket,
+  entryId: string,
+  amount: string,
+  options: { issuedOnDate?: string } = {},
+): Promise<IssueReceiptResult> {
+  return db.transaction(tx => issueReceiptTx(tx, bucket, entryId, amount, options));
 }

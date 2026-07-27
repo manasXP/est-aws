@@ -187,7 +187,23 @@ new RawRoute(scope, 'initiate-payment', {
     }
     // STR-093: paymentMethod drives convenience-fee itemization inside
     // initiatePayment (see aws-blocks/payments/convenience-fee.ts).
+    //
+    // FINDING (review, STR-093): the Mobile Public API's `/me/payments` POST
+    // request schema (EST-Spec/okf-bundle/api/mobile/openapi.yaml) only
+    // documents `charge_ids` -- there is no `payment_method` field a
+    // spec-compliant client can send at all, so the server has no contractual
+    // way to *learn* the real payment method. Validating it here (rather than
+    // defaulting an unset/garbage value into the fee-charging branch, which
+    // silently overcharges every UPI payment once a society configures a
+    // nonzero convenience-fee rate) closes the money-correctness hole, but it
+    // does not resolve the underlying spec gap -- EST-Spec needs a
+    // `payment_method` field added to this request schema (gate-G7,
+    // out of scope for this fix) before a real client can pass this check.
     const paymentMethod = body?.payment_method;
+    if (paymentMethod !== 'upi' && paymentMethod !== 'card' && paymentMethod !== 'netbanking') {
+      sendValidationError(ctx, new ValidationError("payment_method is required and must be one of 'upi', 'card', 'netbanking'."));
+      return;
+    }
     try {
       const result = await initiatePayment(db, paymentProvider, memberId, chargeIds, paymentMethod, idempotencyKey);
       ctx.response.status = 201;

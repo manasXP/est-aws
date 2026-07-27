@@ -58,7 +58,7 @@ describe('STR-092 T-U1 -- POST /v1/me/payments (covers TC-PAY-020)', () => {
     const response = await dispatchRequest(
       'POST',
       '/v1/me/payments',
-      { charge_ids: [chargeId] },
+      { charge_ids: [chargeId], payment_method: 'upi' },
       { 'X-Actor-Member-Id': memberId, 'Idempotency-Key': randomUUID() },
     );
 
@@ -92,7 +92,7 @@ describe('STR-092 review fix -- POST /v1/me/payments against an already-paid cha
     const response = await dispatchRequest(
       'POST',
       '/v1/me/payments',
-      { charge_ids: [chargeId] },
+      { charge_ids: [chargeId], payment_method: 'upi' },
       { 'X-Actor-Member-Id': memberId, 'Idempotency-Key': randomUUID() },
     );
 
@@ -125,6 +125,71 @@ describe('STR-092 review fix -- POST /v1/me/payments with an empty charge_ids ar
 
     const rows = await db.query(sql`SELECT id FROM payment_intents WHERE idempotency_key = ${idempotencyKey}`);
     expect(rows).toHaveLength(0);
+  });
+});
+
+// Review-fix (money-correctness bug) -- payment_method was previously read
+// with no presence/enum check at all and passed straight into
+// computeConvenienceFee, which only treats the literal string 'upi' as
+// fee-free; anything else (undefined, or garbage like 'cash') fell through to
+// the fee-charging branch. The Mobile OpenAPI request schema for this
+// endpoint only documents `charge_ids` -- a spec-compliant client cannot even
+// send `payment_method` -- so every real request would have been silently
+// overcharged once a society configures a nonzero convenience-fee rate.
+// These two cases confirm the fix: missing, and a non-enum value, both 422
+// before initiatePayment/computeConvenienceFee ever run, with nothing
+// written -- same atomicity posture as the empty-charge_ids case above.
+describe('STR-093 review fix -- POST /v1/me/payments requires a valid payment_method (money-correctness)', () => {
+  it('returns 422 with no payment_method at all, writing nothing', async () => {
+    const projectId = await createTestProject();
+    const memberId = await createTestMember();
+    const assetId = await createTestAsset(projectId);
+    const ownershipResponse = await dispatchRequest('POST', `/v1/members/${memberId}/ownerships`, { asset_id: assetId });
+    const ownershipId = (ownershipResponse.body as { ownership_id: string }).ownership_id;
+    const chargeId = await seedDueCharge(memberId, ownershipId);
+    const idempotencyKey = randomUUID();
+
+    const response = await dispatchRequest(
+      'POST',
+      '/v1/me/payments',
+      { charge_ids: [chargeId] },
+      { 'X-Actor-Member-Id': memberId, 'Idempotency-Key': idempotencyKey },
+    );
+
+    expect(response.status).toBe(422);
+    const op = await contractTest('mobile', '/me/payments', 'post');
+    expect(() => op.expectValidResponse(422, response.body)).not.toThrow();
+
+    const rows = await db.query(sql`SELECT id FROM payment_intents WHERE idempotency_key = ${idempotencyKey}`);
+    expect(rows).toHaveLength(0);
+    const charge = await db.queryOne<{ status: string }>(sql`SELECT status FROM charges WHERE id = ${chargeId}`);
+    expect(charge!.status).toBe('due');
+  });
+
+  it("returns 422 for a garbage payment_method value ('cash'), writing nothing", async () => {
+    const projectId = await createTestProject();
+    const memberId = await createTestMember();
+    const assetId = await createTestAsset(projectId);
+    const ownershipResponse = await dispatchRequest('POST', `/v1/members/${memberId}/ownerships`, { asset_id: assetId });
+    const ownershipId = (ownershipResponse.body as { ownership_id: string }).ownership_id;
+    const chargeId = await seedDueCharge(memberId, ownershipId);
+    const idempotencyKey = randomUUID();
+
+    const response = await dispatchRequest(
+      'POST',
+      '/v1/me/payments',
+      { charge_ids: [chargeId], payment_method: 'cash' },
+      { 'X-Actor-Member-Id': memberId, 'Idempotency-Key': idempotencyKey },
+    );
+
+    expect(response.status).toBe(422);
+    const op = await contractTest('mobile', '/me/payments', 'post');
+    expect(() => op.expectValidResponse(422, response.body)).not.toThrow();
+
+    const rows = await db.query(sql`SELECT id FROM payment_intents WHERE idempotency_key = ${idempotencyKey}`);
+    expect(rows).toHaveLength(0);
+    const charge = await db.queryOne<{ status: string }>(sql`SELECT status FROM charges WHERE id = ${chargeId}`);
+    expect(charge!.status).toBe('due');
   });
 });
 
@@ -165,5 +230,41 @@ describe('STR-093 T-U3 -- GET /v1/me/payments/{paymentId} polls pending with no 
       expect((pollResponse.body as { status: string }).status).toBe('pending');
       expect(() => op.expectValidResponse(200, pollResponse.body)).not.toThrow();
     }
+  });
+});
+
+// Review-fix (test-coverage gap) -- getPaymentStatus's ownership scoping
+// (`WHERE id = ... AND member_id = ...`) is implemented correctly, but no
+// test exercised it: a payment belonging to a different member must 404
+// identically to a genuinely nonexistent payment id (no ownership leak via a
+// distinct status/body shape for "exists but not yours" vs "doesn't exist").
+describe('STR-093 review fix -- GET /v1/me/payments/{paymentId} ownership scoping', () => {
+  it('404s identically for another member\'s real payment and a nonexistent payment id', async () => {
+    const projectId = await createTestProject();
+    const memberA = await createTestMember();
+    const memberB = await createTestMember();
+    const assetId = await createTestAsset(projectId);
+    const ownershipResponse = await dispatchRequest('POST', `/v1/members/${memberA}/ownerships`, { asset_id: assetId });
+    const ownershipId = (ownershipResponse.body as { ownership_id: string }).ownership_id;
+    const chargeId = await seedDueCharge(memberA, ownershipId);
+
+    const initiateResponse = await dispatchRequest(
+      'POST',
+      '/v1/me/payments',
+      { charge_ids: [chargeId], payment_method: 'upi' },
+      { 'X-Actor-Member-Id': memberA, 'Idempotency-Key': randomUUID() },
+    );
+    expect(initiateResponse.status).toBe(201);
+    const paymentId = (initiateResponse.body as { payment_id: string }).payment_id;
+
+    const op = await contractTest('mobile', '/me/payments/{paymentId}', 'get');
+
+    const foreignResponse = await dispatchRequest('GET', `/v1/me/payments/${paymentId}`, undefined, { 'X-Actor-Member-Id': memberB });
+    const missingResponse = await dispatchRequest('GET', `/v1/me/payments/${randomUUID()}`, undefined, { 'X-Actor-Member-Id': memberB });
+
+    expect(foreignResponse.status).toBe(404);
+    expect(missingResponse.status).toBe(404);
+    expect(foreignResponse.body).toEqual(missingResponse.body);
+    expect(() => op.expectValidResponse(404, foreignResponse.body)).not.toThrow();
   });
 });

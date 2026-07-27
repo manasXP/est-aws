@@ -28,4 +28,12 @@ INSERT INTO payment_settings (id) VALUES ('default');
 -- record the itemization for storage/audit/reconciliation even though the
 -- Mobile OpenAPI's PaymentIntent/Payment schemas surface no separate fee
 -- field.
-ALTER TABLE payment_intents ADD COLUMN payment_method TEXT, ADD COLUMN convenience_fee NUMERIC(14,2) NOT NULL DEFAULT 0;
+-- CHECK constraint added on review (STR-093): payment_method is now
+-- validated by the RawRoute handler (aws-blocks/index.ts) to be exactly one
+-- of 'upi'/'card'/'netbanking' before initiatePayment ever writes a row, so
+-- this is a DB-level backstop against the same free-text drift the
+-- application-layer validation guards against -- not a path this table
+-- needs NULL for (every insert of this column supplies one of the three
+-- values), so the CHECK is unconditional, no `payment_method IS NULL OR`
+-- escape hatch.
+ALTER TABLE payment_intents ADD COLUMN payment_method TEXT CHECK (payment_method IN ('upi', 'card', 'netbanking')), ADD COLUMN convenience_fee NUMERIC(14,2) NOT NULL DEFAULT 0;

@@ -11,6 +11,7 @@ import { ValidationError } from '../http/problem-response';
 import { getMember } from '../members/members-api';
 import { getProject } from '../projects/projects-api';
 import { pgTextArray } from '../sql-array';
+import type { Actor } from '../members/capabilities';
 
 export type DocumentLevel = 'society' | 'project' | 'member';
 export type DocumentStatus = 'active' | 'archived';
@@ -225,6 +226,72 @@ export async function getDocument(db: Database, bucket: FileBucket, documentId: 
   }
 
   return toDocument(row);
+}
+
+// STR-112: exactly the four fields the story's user story allows -- the
+// OpenAPI DocumentPatch also carries `member_visible`, but mutating that
+// flag is STR-115's deliverable (which extends this set, not a second
+// PATCH handler).
+export interface DocumentMetadataPatch {
+  title?: string;
+  category?: string;
+  tags?: string[];
+  notes?: string | null;
+}
+
+/**
+ * `PATCH /v1/documents/{documentId}` business logic (STR-112, AC1/AC3/AC4):
+ * edits metadata only -- the file-identity columns are never touched (and
+ * the documents_identity_immutable trigger guards them at the database
+ * layer regardless, AC2). Validates `category` via the same isValidCategory
+ * check as registration; nothing is written on rejection. Every successful
+ * edit inserts one document_metadata_audits row (actor, timestamp,
+ * before/after values, `tags` JSON-serialized as TEXT) in the same
+ * transaction as the UPDATE. Returns `null` if `documentId` doesn't exist
+ * (the route 404s).
+ */
+export async function updateDocument(
+  db: Database,
+  documentId: string,
+  patch: DocumentMetadataPatch,
+  actor: Actor,
+): Promise<DocumentRecord | null> {
+  return db.transaction(async tx => {
+    // FOR UPDATE so two concurrent PATCHes serialize on the row and can't
+    // both audit the same before-values (the STR-081 precedent,
+    // work-orders.ts's amendWorkOrder). Like there, the single-connection
+    // PGlite local mock can't exercise true concurrent blocking, so this is
+    // a production (real Postgres/Aurora) correctness fix, not a
+    // locally-provable one.
+    const row = await tx.queryOne<DocumentRow>(sql`SELECT * FROM documents WHERE id = ${documentId} FOR UPDATE`);
+    if (!row) return null;
+
+    // Parity with registerDocument's `if (!input.title)` rejection -- an
+    // edit can't blank out the title registration would never have
+    // accepted. `!patch.title` also catches a `null` smuggled past the
+    // route's `!== undefined` pass-through.
+    if (patch.title !== undefined && !patch.title) {
+      throw new DocumentValidationError('title must not be empty.');
+    }
+    if (patch.category !== undefined && !(await isValidCategory(tx, patch.category))) {
+      throw new DocumentValidationError(`Unknown category: ${patch.category}`, 'unknown_category');
+    }
+
+    const title = patch.title ?? row.title;
+    const category = patch.category ?? row.category;
+    const tags = patch.tags ?? row.tags;
+    const notes = patch.notes !== undefined ? patch.notes : row.notes;
+
+    await tx.execute(
+      sql`UPDATE documents SET title = ${title}, category = ${category}, tags = ${pgTextArray(tags)}::text[], notes = ${notes} WHERE id = ${documentId}`,
+    );
+    await tx.execute(
+      sql`INSERT INTO document_metadata_audits (id, document_id, actor_member_id, actor_employee_id, before_title, after_title, before_category, after_category, before_tags, after_tags, before_notes, after_notes)
+          VALUES (${randomUUID()}, ${documentId}, ${'memberId' in actor ? actor.memberId : null}, ${'employeeId' in actor ? actor.employeeId : null}, ${row.title}, ${title}, ${row.category}, ${category}, ${JSON.stringify(row.tags)}, ${JSON.stringify(tags)}, ${row.notes}, ${notes})`,
+    );
+
+    return toDocument({ ...row, title, category, tags, notes });
+  });
 }
 
 /**

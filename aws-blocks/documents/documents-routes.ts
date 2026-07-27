@@ -5,7 +5,7 @@
 // delegates to documents-api.ts for everything else.
 import { RawRoute } from '@aws-blocks/blocks';
 import type { Database, FileBucket, Scope } from '@aws-blocks/blocks';
-import { registerDocument, getDocument, getDownloadUrl, DocumentValidationError, DOWNLOAD_URL_EXPIRES_IN_SECONDS } from './documents-api';
+import { registerDocument, getDocument, getDownloadUrl, updateDocument, DocumentValidationError, DOWNLOAD_URL_EXPIRES_IN_SECONDS } from './documents-api';
 import type { DocumentRecord } from './documents-api';
 import { sendNotFound, sendValidationError, sendUnauthorized, problemResponse } from '../http/problem-response';
 import { resolveActor } from '../http/capability-gate';
@@ -99,6 +99,47 @@ export function registerDocumentRoutes(scope: Scope, db: Database, bucket: FileB
         return;
       }
       ctx.response.send(toDocumentResponse(doc));
+    },
+  });
+
+  new RawRoute(scope, 'update-document', {
+    method: 'PATCH',
+    path: '/v1/documents/{documentId}',
+    handler: async ctx => {
+      const actor = resolveActor(ctx);
+      if (!actor) {
+        sendUnauthorized(ctx, 'X-Actor-Employee-Id or X-Actor-Member-Id header is required.');
+        return;
+      }
+
+      const body = await ctx.request.json();
+      try {
+        // Only the four STR-112 metadata fields are passed through --
+        // `member_visible` (and anything else in the body) is dropped
+        // silently until STR-115 makes the flag writable.
+        const doc = await updateDocument(db, ctx.request.params.documentId, {
+          ...(body?.title !== undefined && { title: body.title }),
+          ...(body?.category !== undefined && { category: body.category }),
+          ...(body?.tags !== undefined && { tags: body.tags }),
+          ...(body?.notes !== undefined && { notes: body.notes }),
+        }, actor);
+        if (!doc) {
+          sendNotFound(ctx, `No document ${ctx.request.params.documentId}`);
+          return;
+        }
+        ctx.response.send(toDocumentResponse(doc));
+      } catch (e) {
+        if (e instanceof DocumentValidationError) {
+          if (e.code === 'unknown_category') {
+            ctx.response.status = 422;
+            ctx.response.send(problemResponse('unknown_category', e.message));
+            return;
+          }
+          sendValidationError(ctx, e);
+          return;
+        }
+        throw e;
+      }
     },
   });
 

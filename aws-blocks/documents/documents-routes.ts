@@ -5,8 +5,8 @@
 // delegates to documents-api.ts for everything else.
 import { RawRoute } from '@aws-blocks/blocks';
 import type { Database, FileBucket, Scope } from '@aws-blocks/blocks';
-import { registerDocument, getDocument, getDownloadUrl, updateDocument, listCategories, replaceCategories, archiveDocument, restoreDocument, DocumentValidationError, DocumentCategoryConflictError, DocumentLifecycleConflictError, DOWNLOAD_URL_EXPIRES_IN_SECONDS } from './documents-api';
-import type { DocumentRecord } from './documents-api';
+import { registerDocument, getDocument, getDownloadUrl, updateDocument, listDocuments, listCategories, replaceCategories, archiveDocument, restoreDocument, DocumentValidationError, DocumentCategoryConflictError, DocumentLifecycleConflictError, DOWNLOAD_URL_EXPIRES_IN_SECONDS } from './documents-api';
+import type { DocumentRecord, DocumentLevel, DocumentStatus } from './documents-api';
 import { sendNotFound, sendValidationError, sendUnauthorized, sendConflictError, problemResponse } from '../http/problem-response';
 import { resolveActor } from '../http/capability-gate';
 
@@ -41,6 +41,44 @@ function toDocumentResponse(doc: DocumentRecord): Record<string, unknown> {
 }
 
 export function registerDocumentRoutes(scope: Scope, db: Database, bucket: FileBucket): void {
+  // STR-115: the search surface (TC-DOC-040). `cursor`/`limit` are accepted
+  // per the contract but `next_cursor` is always null — the STR-051
+  // precedent; no story has built real cursoring yet.
+  new RawRoute(scope, 'list-documents', {
+    method: 'GET',
+    path: '/v1/documents',
+    handler: async ctx => {
+      const params = ctx.request.url.searchParams;
+      const status = params.get('status') ?? 'active';
+      const level = params.get('level');
+      try {
+        if (status !== 'active' && status !== 'archived' && status !== 'all') {
+          throw new DocumentValidationError('status must be one of active, archived, all.');
+        }
+        if (level !== null && level !== 'society' && level !== 'project' && level !== 'member') {
+          throw new DocumentValidationError('level must be one of society, project, member.');
+        }
+        const items = await listDocuments(db, {
+          status: status as DocumentStatus | 'all',
+          level: (level as DocumentLevel | null) ?? undefined,
+          projectId: params.get('project_id') ?? undefined,
+          memberId: params.get('member_id') ?? undefined,
+          q: params.get('q') ?? undefined,
+          category: params.get('category') ?? undefined,
+          uploadedFrom: params.get('uploaded_from') ?? undefined,
+          uploadedTo: params.get('uploaded_to') ?? undefined,
+        });
+        ctx.response.send({ items: items.map(toDocumentResponse), next_cursor: null });
+      } catch (e) {
+        if (e instanceof DocumentValidationError) {
+          sendValidationError(ctx, e);
+          return;
+        }
+        throw e;
+      }
+    },
+  });
+
   new RawRoute(scope, 'create-document', {
     method: 'POST',
     path: '/v1/documents',
@@ -114,14 +152,14 @@ export function registerDocumentRoutes(scope: Scope, db: Database, bucket: FileB
 
       const body = await ctx.request.json();
       try {
-        // Only the four STR-112 metadata fields are passed through --
-        // `member_visible` (and anything else in the body) is dropped
-        // silently until STR-115 makes the flag writable.
+        // The four STR-112 metadata fields plus STR-115's member_visible --
+        // anything else in the body is dropped silently.
         const doc = await updateDocument(db, ctx.request.params.documentId, {
           ...(body?.title !== undefined && { title: body.title }),
           ...(body?.category !== undefined && { category: body.category }),
           ...(body?.tags !== undefined && { tags: body.tags }),
           ...(body?.notes !== undefined && { notes: body.notes }),
+          ...(body?.member_visible !== undefined && { memberVisible: body.member_visible }),
         }, actor);
         if (!doc) {
           sendNotFound(ctx, `No document ${ctx.request.params.documentId}`);

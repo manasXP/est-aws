@@ -14,6 +14,13 @@ import {
   TicketLifecycleConflictError,
 } from './lifecycle';
 import { setTicketWorkOrder } from './work-order-link';
+import {
+  listTicketsForTriage,
+  getTicketDetail,
+  listTicketsForMember,
+  getTicketDetailForMember,
+} from './queries';
+import type { TicketAttachmentRecord } from './queries';
 import { addComment } from './comments';
 import { getMember } from '../members/members-api';
 import { getEmployee } from '../employees/employees-api';
@@ -45,19 +52,24 @@ function toTicketResponse(ticket: TicketRecord): Record<string, unknown> {
 // the member-facing one carries the member and assignee (by id *and* name),
 // `entered_by`, and the work-order link. The two name lookups are why this
 // one needs the db; STR-126's triage queue is the next consumer.
-async function toAdminTicketResponse(db: Database, ticket: TicketRecord): Promise<Record<string, unknown>> {
-  const member = await getMember(db, ticket.memberId);
-  const assignee = ticket.assigneeId === null ? null : await getEmployee(db, ticket.assigneeId);
+// STR-126: split from toAdminTicketResponse so the read surfaces, which
+// already carry both names out of their own JOIN, can render the same
+// shape without re-querying per row.
+function adminTicketFields(
+  ticket: TicketRecord,
+  memberName: string,
+  assigneeName: string | null,
+): Record<string, unknown> {
   return {
     ticket_id: ticket.ticketId,
     member_id: ticket.memberId,
-    member_name: member!.name,
+    member_name: memberName,
     category: ticket.category,
     subject: ticket.subject,
     description: ticket.description,
     status: ticket.status,
     assignee_id: ticket.assigneeId,
-    assignee_name: assignee?.name ?? null,
+    assignee_name: assigneeName,
     entered_by: ticket.enteredBy,
     work_order_id: ticket.workOrderId,
     resolution_note: ticket.resolutionNote,
@@ -65,6 +77,27 @@ async function toAdminTicketResponse(db: Database, ticket: TicketRecord): Promis
     updated_at: ticket.updatedAt,
     resolved_at: ticket.resolvedAt,
     closed_at: ticket.closedAt,
+  };
+}
+
+/** The write paths (STR-125's create and STR-122's transitions) hold only a
+ * TicketRecord, so they look the two names up; the read paths do not. */
+async function toAdminTicketResponse(db: Database, ticket: TicketRecord): Promise<Record<string, unknown>> {
+  const member = await getMember(db, ticket.memberId);
+  const assignee = ticket.assigneeId === null ? null : await getEmployee(db, ticket.assigneeId);
+  return adminTicketFields(ticket, member!.name, assignee?.name ?? null);
+}
+
+// STR-126: the TicketAttachment wire shape, identical on both surfaces.
+// `size_bytes` is optional in both schemas and no column records it --
+// STR-124 presigns the upload rather than proxying the bytes, so the
+// backend never sees the size.
+function toAttachmentResponse(attachment: TicketAttachmentRecord): Record<string, unknown> {
+  return {
+    attachment_id: attachment.attachmentId,
+    file_name: attachment.fileName,
+    mime_type: attachment.mimeType,
+    uploaded_at: attachment.uploadedAt,
   };
 }
 
@@ -179,6 +212,103 @@ export function registerTicketRoutes(
       } catch (e) {
         sendLifecycleError(ctx, e);
       }
+    },
+  });
+
+  // STR-126: the four read surfaces. All are pure aggregation over
+  // queries.ts -- no handler here writes anything, which is the story's
+  // Definition of Done. `cursor`/`limit` are accepted per the contract but
+  // `next_cursor` is always null, the STR-051/115 precedent: no story has
+  // built real cursoring yet.
+
+  new RawRoute(scope, 'list-tickets-triage', {
+    method: 'GET',
+    path: '/v1/tickets',
+    handler: async ctx => {
+      const params = ctx.request.url.searchParams;
+      // The Admin OpenAPI defaults this queue to `open` -- the triage view
+      // is the work still to be done, not the whole history.
+      const tickets = await listTicketsForTriage(db, {
+        category: params.get('category') ?? undefined,
+        status: params.get('status') ?? 'open',
+        assigneeId: params.get('assignee_id') ?? undefined,
+        memberId: params.get('member_id') ?? undefined,
+      });
+      ctx.response.send({
+        items: tickets.map(t => ({
+          ...adminTicketFields(t, t.memberName, t.assigneeName),
+          age_days: t.ageDays,
+        })),
+        next_cursor: null,
+      });
+    },
+  });
+
+  new RawRoute(scope, 'get-ticket-detail', {
+    method: 'GET',
+    path: '/v1/tickets/{ticketId}',
+    handler: async ctx => {
+      const { ticketId } = ctx.request.params;
+      const detail = await getTicketDetail(db, ticketId);
+      if (!detail) {
+        sendNotFound(ctx, `No ticket ${ticketId}`);
+        return;
+      }
+      ctx.response.send({
+        ...adminTicketFields(detail, detail.memberName, detail.assigneeName),
+        comments: detail.comments.map(toCommentResponse),
+        attachments: detail.attachments.map(toAttachmentResponse),
+        actions: detail.actions.map(a => ({
+          action: a.action,
+          actor_id: a.actorId,
+          at: a.at,
+          ...(a.notes === null ? {} : { notes: a.notes }),
+        })),
+      });
+    },
+  });
+
+  new RawRoute(scope, 'list-my-tickets', {
+    method: 'GET',
+    path: '/v1/me/tickets',
+    handler: async ctx => {
+      const memberId = ctx.request.headers.get('X-Actor-Member-Id');
+      if (!memberId) {
+        sendUnauthorized(ctx, 'X-Actor-Member-Id header is required.');
+        return;
+      }
+
+      // The mobile contract defaults to every status -- a member tracks
+      // their whole history, not just what is still open.
+      const tickets = await listTicketsForMember(db, memberId, ctx.request.url.searchParams.get('status') ?? 'all');
+      ctx.response.send({ items: tickets.map(toTicketResponse), next_cursor: null });
+    },
+  });
+
+  new RawRoute(scope, 'get-my-ticket-detail', {
+    method: 'GET',
+    path: '/v1/me/tickets/{ticketId}',
+    handler: async ctx => {
+      const memberId = ctx.request.headers.get('X-Actor-Member-Id');
+      if (!memberId) {
+        sendUnauthorized(ctx, 'X-Actor-Member-Id header is required.');
+        return;
+      }
+
+      const { ticketId } = ctx.request.params;
+      // 404 rather than 403: "absent" and "someone else's" must be
+      // indistinguishable, or the endpoint becomes an existence oracle
+      // across members (the STR-124 posture for attachment bytes).
+      const detail = await getTicketDetailForMember(db, ticketId, memberId);
+      if (!detail) {
+        sendNotFound(ctx, `No ticket ${ticketId}`);
+        return;
+      }
+      ctx.response.send({
+        ...toTicketResponse(detail),
+        comments: detail.comments.map(toCommentResponse),
+        attachments: detail.attachments.map(toAttachmentResponse),
+      });
     },
   });
 

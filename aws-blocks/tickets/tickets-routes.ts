@@ -15,8 +15,11 @@ import {
 } from './lifecycle';
 import { addComment } from './comments';
 import type { TicketCommentRecord } from './comments';
+import { createAttachmentUploadSlot, getAttachmentDownloadUrl } from './attachments';
+import { DOWNLOAD_URL_EXPIRES_IN_SECONDS } from '../documents/documents-api';
 import type { PushAdapter } from '../notifications/push-adapter';
-import { sendUnauthorized, sendValidationError, sendConflictError } from '../http/problem-response';
+import type { FileBucket } from '@aws-blocks/blocks';
+import { sendUnauthorized, sendValidationError, sendConflictError, sendNotFound } from '../http/problem-response';
 
 // The mobile Ticket schema: member-facing -- no member_id/assignee_id/
 // entered_by exposure (the assignee is STR-126's triage-queue concern).
@@ -64,7 +67,12 @@ function sendLifecycleError(ctx: BlocksContext, e: unknown): void {
   throw e;
 }
 
-export function registerTicketRoutes(scope: Scope, db: Database, pushAdapter: PushAdapter): void {
+export function registerTicketRoutes(
+  scope: Scope,
+  db: Database,
+  pushAdapter: PushAdapter,
+  bucket: FileBucket,
+): void {
   new RawRoute(scope, 'create-ticket', {
     method: 'POST',
     path: '/v1/me/tickets',
@@ -241,6 +249,89 @@ export function registerTicketRoutes(scope: Scope, db: Database, pushAdapter: Pu
       } catch (e) {
         sendLifecycleError(ctx, e);
       }
+    },
+  });
+
+  // STR-124: ticket-scoped attachments. Both download routes 404 on a null
+  // from attachments.ts rather than distinguishing "absent" from
+  // "forbidden" -- an existence oracle across members would itself be a
+  // small leak, and the OpenAPI declares 404 for both surfaces.
+
+  new RawRoute(scope, 'add-ticket-attachment', {
+    method: 'POST',
+    path: '/v1/me/tickets/{ticketId}/attachments',
+    handler: async ctx => {
+      const memberId = ctx.request.headers.get('X-Actor-Member-Id');
+      if (!memberId) {
+        sendUnauthorized(ctx, 'X-Actor-Member-Id header is required.');
+        return;
+      }
+
+      const body = await ctx.request.json().catch(() => null);
+      try {
+        const slot = await createAttachmentUploadSlot(
+          db,
+          bucket,
+          ctx.request.params.ticketId,
+          memberId,
+          body?.file_name,
+          body?.mime_type,
+        );
+        ctx.response.status = 201;
+        ctx.response.send({
+          attachment_id: slot.attachmentId,
+          upload_url: slot.uploadUrl,
+          expires_at: slot.expiresAt,
+        });
+      } catch (e) {
+        sendLifecycleError(ctx, e);
+      }
+    },
+  });
+
+  new RawRoute(scope, 'get-ticket-attachment-member', {
+    method: 'GET',
+    path: '/v1/me/tickets/{ticketId}/attachments/{attachmentId}',
+    handler: async ctx => {
+      const memberId = ctx.request.headers.get('X-Actor-Member-Id');
+      if (!memberId) {
+        sendUnauthorized(ctx, 'X-Actor-Member-Id header is required.');
+        return;
+      }
+
+      const { ticketId, attachmentId } = ctx.request.params;
+      const url = await getAttachmentDownloadUrl(db, bucket, ticketId, memberId, attachmentId);
+      if (!url) {
+        sendNotFound(ctx, `No attachment ${attachmentId} on ticket ${ticketId}`);
+        return;
+      }
+      ctx.response.send({
+        url,
+        expires_at: new Date(Date.now() + DOWNLOAD_URL_EXPIRES_IN_SECONDS * 1000).toISOString(),
+      });
+    },
+  });
+
+  new RawRoute(scope, 'get-ticket-attachment-staff', {
+    method: 'GET',
+    path: '/v1/tickets/{ticketId}/attachments/{attachmentId}',
+    handler: async ctx => {
+      const actorId = ctx.request.headers.get('X-Actor-Employee-Id');
+      if (!actorId) {
+        sendUnauthorized(ctx, 'X-Actor-Employee-Id header is required.');
+        return;
+      }
+
+      const { ticketId, attachmentId } = ctx.request.params;
+      const url = await getAttachmentDownloadUrl(db, bucket, ticketId, 'staff', attachmentId);
+      if (!url) {
+        sendNotFound(ctx, `No attachment ${attachmentId} on ticket ${ticketId}`);
+        return;
+      }
+      ctx.response.send({
+        url,
+        expires_at: new Date(Date.now() + DOWNLOAD_URL_EXPIRES_IN_SECONDS * 1000).toISOString(),
+      });
     },
   });
 

@@ -462,7 +462,7 @@ registerPcDocumentRoutes(scope, db, documents);
 // the E13 member-requests foundation. STR-122 adds the four lifecycle
 // transitions (assign/resolve on the admin surface, reopen/withdraw on the
 // mobile one), whose resolve path pushes through the shared adapter.
-registerTicketRoutes(scope, db, pushAdapter);
+registerTicketRoutes(scope, db, pushAdapter, documents);
 
 // STR-122: the ticket auto-close run -- daily at 03:30 IST, just after the
 // charge run's window. Closes every ticket resolved more than 7 days ago.

@@ -317,6 +317,22 @@ describe('STR-131 T-U5 — publishing appends exactly one bulletinPostPublished 
     expect(post.postId).toBeTruthy();
   });
 
+  it('leaves the post published when a listener throws (dispatch is after commit)', async () => {
+    const db = await freshMigratedDb();
+    const ec = await ecMember(db, 'EC Member');
+    bulletinPostPublishedListeners.push(async () => {
+      throw new Error('push provider unavailable');
+    });
+
+    await expect(
+      createBulletinPost(db, ec.member_id, { scope: 'society', title: 'S', body: 'B' }),
+    ).rejects.toThrow('push provider unavailable');
+
+    const board = await listBulletinPosts(db, { scope: 'society' });
+    expect(board).toHaveLength(1);
+    expect(board[0].title).toBe('S');
+  });
+
   it('emits nothing when the create is refused', async () => {
     const db = await freshMigratedDb();
     const atLarge = await activeMember(db, 'Member At Large');

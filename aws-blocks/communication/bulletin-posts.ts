@@ -11,7 +11,7 @@
 // or in migrations/043_bulletin_posts.sql.
 import { randomUUID } from 'node:crypto';
 import { sql } from '@aws-blocks/blocks';
-import type { Database, Transaction } from '@aws-blocks/blocks';
+import type { Database } from '@aws-blocks/blocks';
 import { ValidationError, ConflictError } from '../http/problem-response';
 import { hasCurrentEcOffice } from '../members/role-assignments';
 import { isPcMember } from '../assets/asset-visibility';
@@ -112,15 +112,19 @@ export interface BulletinPostPublishedEvent {
 }
 
 /**
- * Listeners called by createBulletinPost after its INSERT, inside the same
- * transaction -- the STR-032 -> STR-041 event-seam shape (members-api.ts's
- * `memberStatusTransitionListeners`). Empty in this story (AC4: publishing
- * needs no listener to succeed); STR-133 registers the push-dispatch
- * listener here without this module depending on it.
+ * Listeners called by createBulletinPost once its INSERT has committed --
+ * deliberately *not* the in-transaction shape of members-api.ts's
+ * `memberStatusTransitionListeners`, whose listeners do their own DB writes.
+ * STR-133's listener dispatches a push instead, so this follows
+ * lifecycle.ts's resolveTicket precedent: an external provider failure must
+ * not roll back a post that is already on the board. No `tx` is handed out,
+ * which is what makes that guarantee structural.
+ *
+ * Empty in this story (AC4: publishing needs no listener to succeed);
+ * STR-133 registers the push-dispatch listener here without this module
+ * depending on it.
  */
-export const bulletinPostPublishedListeners: Array<
-  (event: BulletinPostPublishedEvent, tx: Transaction) => Promise<void>
-> = [];
+export const bulletinPostPublishedListeners: Array<(event: BulletinPostPublishedEvent) => Promise<void>> = [];
 
 interface BulletinPostRow {
   id: string;
@@ -260,10 +264,15 @@ export async function createBulletinPost(
         sql`INSERT INTO bulletin_post_attachments (post_id, document_id) VALUES (${postId}, ${documentId})`,
       );
     }
-    for (const listener of bulletinPostPublishedListeners) {
-      await listener({ postId, scope: input.scope, projectId, authorMemberId }, tx);
-    }
   });
+
+  // After the commit, so a listener's failure cannot unpublish a post that
+  // is already on the board (lifecycle.ts's resolveTicket precedent). A
+  // refused create never reaches here at all -- the throws above return
+  // first, and this line is past the transaction either way.
+  for (const listener of bulletinPostPublishedListeners) {
+    await listener({ postId, scope: input.scope, projectId, authorMemberId });
+  }
 
   return (await getBulletinPost(db, postId))!;
 }

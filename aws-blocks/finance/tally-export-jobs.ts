@@ -106,6 +106,11 @@ export async function startTallyExport(
   }
 
   const exportId = randomUUID();
+  // Row first, submit second: if submit throws (SQS-transient-only in AWS;
+  // unreachable in the local mock), the orphaned `queued` row is inert and a
+  // client retry mints a fresh id -- no duplicates. The reverse order would
+  // be worse: the handler's not-found return would silently swallow a job
+  // whose row hadn't been written yet.
   await db.execute(
     sql`INSERT INTO export_jobs (id, status, period_from, period_to)
         VALUES (${exportId}, 'queued', ${from}::date, ${to}::date)`,
@@ -125,7 +130,7 @@ export async function getExportJob(db: Database, exportId: string): Promise<Expo
 }
 
 /**
- * The AsyncJob handler body (AC2, TC-FIN-042): marks the row `running`,
+ * The AsyncJob handler body (AC2, TC-FIN-042): claims the row `running`,
  * generates STR-101's masters + STR-102's vouchers for the row's own period,
  * stores the concatenated document at `tally-exports/<exportId>.xml`, and
  * marks `completed` + document_path + completed_at. Each status write is its
@@ -139,13 +144,35 @@ export async function processTallyExport(db: Database, bucket: FileBucket, expor
   const job = await getExportJob(db, exportId);
   if (!job) return; // no row to carry a failure -- nothing to process either
 
-  await db.transaction(async tx => {
-    await tx.execute(sql`UPDATE export_jobs SET status = 'running' WHERE id = ${exportId}`);
-  });
+  // At-least-once delivery guard (the webhook-settlement rowCount
+  // precedent): claim the row only while it's still non-terminal, so a
+  // redelivered duplicate can never flip a terminal job back to running or
+  // overwrite an artifact an auditor may already have downloaded (the
+  // journal may have grown since completed_at -- regeneration would change
+  // the bytes). Deliberately NOT queued-only: a Lambda crash after this
+  // claim leaves the row `running`, and SQS redelivery is the only retry
+  // mechanism, so `running` must stay reprocessable.
+  const claimed = await db.transaction(async tx =>
+    tx.execute(
+      sql`UPDATE export_jobs SET status = 'running'
+          WHERE id = ${exportId} AND status IN ('queued', 'running')`,
+    ),
+  );
+  if (claimed.rowCount === 0) return;
 
   try {
-    const masters = buildLedgerMastersXml(await getLedgerAccountsForPeriod(db, job.from, job.to));
+    // Read order is load-bearing: postings FIRST, masters SECOND. The
+    // journal is strictly append-only, so any journal_lines row visible to
+    // the postings query is necessarily visible to the later masters query
+    // -- masters ⊇ voucher-referenced accounts by construction (an extra
+    // master from a mid-gap commit is harmless; a voucher referencing a
+    // ledger absent from masters would make Tally reject the whole import).
+    // A transaction wrapper would NOT fix this -- READ COMMITTED takes a
+    // fresh snapshot per statement. Single-connection PGlite can't exercise
+    // the race locally, so this comment is the record (the STR-112
+    // FOR UPDATE precedent).
     const vouchers = buildDayBookVouchersXml(await getPostingsInPeriod(db, job.from, job.to));
+    const masters = buildLedgerMastersXml(await getLedgerAccountsForPeriod(db, job.from, job.to));
     const documentPath = `tally-exports/${exportId}.xml`;
     await bucket.put(documentPath, masters + TALLY_EXPORT_XML_SEPARATOR + vouchers, {
       contentType: 'application/xml',

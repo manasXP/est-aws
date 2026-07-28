@@ -122,6 +122,67 @@ describe('STR-103 T-U1 (TC-FIN-042) — successful export processing', () => {
   });
 });
 
+describe('STR-103 review fix — at-least-once redelivery guards', () => {
+  // SQS delivers at-least-once: a duplicate delivery for an already-terminal
+  // job must be dropped, never flip the row back to running or overwrite the
+  // stored artifact (whose bytes an auditor may already hold -- and which
+  // would differ if the journal grew since completed_at).
+  it('drops a duplicate delivery for a completed job: status, completed_at, and stored bytes stay frozen', async () => {
+    const db = await freshMigratedDb();
+    const bucket = freshBucket();
+    await postJournalEntry(db, 'first in-period posting', [
+      { accountId: 'bank', direction: 'debit', amount: '100.00' },
+      { accountId: 'cash', direction: 'credit', amount: '100.00' },
+    ], { postedAt: '2026-06-15T10:00:00Z' });
+
+    const { queue } = stubQueue();
+    const job = await startTallyExport(db, queue, '2026-04-01', '2027-03-31');
+    await processTallyExport(db, bucket, job.exportId);
+
+    const first = await exportJobRow(db, job.exportId);
+    const firstCompletedAt = new Date(first.completed_at as string | Date).toISOString();
+    const firstBytes = (await bucket.get(first.document_path!))!.body.toString('utf-8');
+
+    // The journal grows between the two deliveries -- regeneration would
+    // produce different bytes, which is exactly what must not happen.
+    await postJournalEntry(db, 'posting landing after completion', [
+      { accountId: 'cash', direction: 'debit', amount: '75.00' },
+      { accountId: 'bank', direction: 'credit', amount: '75.00' },
+    ], { postedAt: '2026-08-01T10:00:00Z' });
+
+    await processTallyExport(db, bucket, job.exportId);
+
+    const second = await exportJobRow(db, job.exportId);
+    expect(second.status).toBe('completed');
+    expect(new Date(second.completed_at as string | Date).toISOString()).toBe(firstCompletedAt);
+    expect((await bucket.get(second.document_path!))!.body.toString('utf-8')).toBe(firstBytes);
+  });
+
+  // The guard must NOT be queued-only: a Lambda crash after the running-mark
+  // leaves the row `running`, and SQS redelivery is the only retry mechanism
+  // -- so a `running` row stays reprocessable.
+  it('reprocesses a row a crash left in running -- redelivery is the only retry mechanism', async () => {
+    const db = await freshMigratedDb();
+    const bucket = freshBucket();
+    await postJournalEntry(db, 'in-period posting', [
+      { accountId: 'bank', direction: 'debit', amount: '100.00' },
+      { accountId: 'cash', direction: 'credit', amount: '100.00' },
+    ], { postedAt: '2026-06-15T10:00:00Z' });
+
+    const { queue } = stubQueue();
+    const job = await startTallyExport(db, queue, '2026-04-01', '2027-03-31');
+    // Simulate the crash: marked running, then died before storing anything.
+    await db.execute(sql`UPDATE export_jobs SET status = 'running' WHERE id = ${job.exportId}`);
+
+    await processTallyExport(db, bucket, job.exportId);
+
+    const row = await exportJobRow(db, job.exportId);
+    expect(row.status).toBe('completed');
+    expect(row.document_path).toBe(`tally-exports/${job.exportId}.xml`);
+    expect(await bucket.get(row.document_path!)).not.toBeNull();
+  });
+});
+
 describe('STR-103 T-U2 (TC-FIN-042) — storage failure lands the job in failed', () => {
   it('passes through running, records the error message as failure_reason, and stores nothing', async () => {
     const db = await freshMigratedDb();

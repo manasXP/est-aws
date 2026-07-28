@@ -104,6 +104,30 @@ describe('STR-103 T-C3 — GET /v1/exports/{exportId}', () => {
     expect(completed.body).toMatchObject({ export_id: exportId, status: 'completed' });
     expect(() => op.expectValidResponse(completed.status, completed.body)).not.toThrow();
   });
+
+  // Review F4: the failed state is the one wire state where both nullable
+  // fields flip -- failure_reason non-null, completed_at null -- and the
+  // states above never serialize it.
+  it('serializes a failed job conforming to the ExportJob schema', async () => {
+    await runLocalMigrations(db, MIGRATIONS_DIR);
+    const op = await contractTest('admin', '/exports/{exportId}', 'get');
+
+    const exportId = randomUUID();
+    await db.execute(
+      sql`INSERT INTO export_jobs (id, status, period_from, period_to, failure_reason)
+          VALUES (${exportId}, 'failed', ${'2031-05-01'}::date, ${'2031-05-31'}::date, ${'simulated generation failure'})`,
+    );
+
+    const response = await dispatchRequest('GET', `/v1/exports/${exportId}`);
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({
+      export_id: exportId,
+      status: 'failed',
+      failure_reason: 'simulated generation failure',
+      completed_at: null,
+    });
+    expect(() => op.expectValidResponse(response.status, response.body)).not.toThrow();
+  });
 });
 
 describe('STR-103 T-C4 — GET /v1/exports/{exportId}/download', () => {

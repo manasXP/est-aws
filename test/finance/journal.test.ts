@@ -170,6 +170,7 @@ describe('STR-021 posting writer — append-only double-entry journal', () => {
       '034_webhook_settlement.sql',
       '035_document_metadata_audits.sql',
       '036_offline_payments.sql',
+      '037_tally_export_jobs.sql',
     ]);
 
     const second = await runLocalMigrations(db, MIGRATIONS_DIR);

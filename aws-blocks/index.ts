@@ -11,6 +11,8 @@ import { settleWebhookEvent, InvalidWebhookSignatureError } from './payments/web
 import { findLingeringIntents, reconcileIntent } from './payments/reconciliation';
 import { recordOfflinePayment, OfflinePaymentConflictError, OfflinePaymentValidationError } from './payments/offline-payments';
 import { linkDocumentToEntry, DocumentLinkError } from './finance/documents';
+import { processTallyExport } from './finance/tally-export-jobs';
+import { registerTallyExportRoutes } from './finance/tally-export-routes';
 import { JournalError } from './finance/journal';
 import { requireCapability, resolveActor } from './http/capability-gate';
 import type { Actor } from './members/capabilities';
@@ -336,6 +338,22 @@ new CronJob(scope, 'payment-reconciliation-sweep', {
     }
   },
 });
+
+// STR-103: E11's Tally export assembly -- POST /v1/exports/tally starts this
+// AsyncJob, which generates STR-101's masters + STR-102's vouchers for the
+// requested period and stores the concatenated document in the shared
+// `documents` bucket (no second bucket). Status lives in export_jobs,
+// written by the handler at each transition -- AsyncJob itself is
+// fire-and-forget with no status API. processTallyExport records its own
+// failures as `failed` + failure_reason and never rethrows, so the queue
+// never retries a job the table already marked failed.
+const tallyExportJob = new AsyncJob(scope, 'tally-export', {
+  handler: async (payload: { exportId: string }) => {
+    await processTallyExport(db, documents, payload.exportId);
+  },
+});
+
+registerTallyExportRoutes(scope, db, documents, tallyExportJob);
 
 // STR-095: the offline (cash/cheque) receipt surface -- the offline mirror of
 // the webhook settlement above, for money collected outside the gateway.

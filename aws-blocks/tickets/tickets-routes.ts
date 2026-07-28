@@ -3,10 +3,18 @@
 // me-ownerships-routes convention) and admin `GET`/`PUT /v1/ticket-routing`.
 // Thin adapters delegating to tickets.ts.
 import { RawRoute } from '@aws-blocks/blocks';
-import type { Database, Scope } from '@aws-blocks/blocks';
+import type { BlocksContext, Database, Scope } from '@aws-blocks/blocks';
 import { raiseTicket, getTicketRouting, replaceTicketRouting, TicketValidationError } from './tickets';
 import type { TicketRecord } from './tickets';
-import { sendUnauthorized, sendValidationError } from '../http/problem-response';
+import {
+  pickupTicket,
+  resolveTicket,
+  reopenTicket,
+  withdrawTicket,
+  TicketLifecycleConflictError,
+} from './lifecycle';
+import type { PushAdapter } from '../notifications/push-adapter';
+import { sendUnauthorized, sendValidationError, sendConflictError } from '../http/problem-response';
 
 // The mobile Ticket schema: member-facing -- no member_id/assignee_id/
 // entered_by exposure (the assignee is STR-126's triage-queue concern).
@@ -25,7 +33,23 @@ function toTicketResponse(ticket: TicketRecord): Record<string, unknown> {
   };
 }
 
-export function registerTicketRoutes(scope: Scope, db: Database): void {
+/** STR-122: maps a lifecycle rejection onto its HTTP status -- 422 for a
+ * missing resolution note, 409 for a transition invalid in the ticket's
+ * current state (including every attempt on a terminal ticket). Shared by
+ * all four transition handlers so neither surface invents its own mapping. */
+function sendLifecycleError(ctx: BlocksContext, e: unknown): void {
+  if (e instanceof TicketValidationError) {
+    sendValidationError(ctx, e);
+    return;
+  }
+  if (e instanceof TicketLifecycleConflictError) {
+    sendConflictError(ctx, e);
+    return;
+  }
+  throw e;
+}
+
+export function registerTicketRoutes(scope: Scope, db: Database, pushAdapter: PushAdapter): void {
   new RawRoute(scope, 'create-ticket', {
     method: 'POST',
     path: '/v1/me/tickets',
@@ -72,6 +96,95 @@ export function registerTicketRoutes(scope: Scope, db: Database): void {
           return;
         }
         throw e;
+      }
+    },
+  });
+
+  // STR-122's four lifecycle transitions -- each a thin adapter over
+  // lifecycle.ts, which owns every status guard. The admin pair acts as an
+  // employee (X-Actor-Employee-Id); the mobile pair acts as the raising
+  // member (X-Actor-Member-Id), whose ownership lifecycle.ts re-checks.
+
+  new RawRoute(scope, 'assign-ticket', {
+    method: 'POST',
+    path: '/v1/tickets/{ticketId}/assign',
+    handler: async ctx => {
+      const actorId = ctx.request.headers.get('X-Actor-Employee-Id');
+      if (!actorId) {
+        sendUnauthorized(ctx, 'X-Actor-Employee-Id header is required.');
+        return;
+      }
+
+      const body = await ctx.request.json().catch(() => null);
+      try {
+        const ticket = await pickupTicket(db, ctx.request.params.ticketId, actorId, body?.assignee_id ?? null);
+        ctx.response.send(toTicketResponse(ticket));
+      } catch (e) {
+        sendLifecycleError(ctx, e);
+      }
+    },
+  });
+
+  new RawRoute(scope, 'resolve-ticket', {
+    method: 'POST',
+    path: '/v1/tickets/{ticketId}/resolve',
+    handler: async ctx => {
+      const actorId = ctx.request.headers.get('X-Actor-Employee-Id');
+      if (!actorId) {
+        sendUnauthorized(ctx, 'X-Actor-Employee-Id header is required.');
+        return;
+      }
+
+      const body = await ctx.request.json().catch(() => null);
+      try {
+        const ticket = await resolveTicket(
+          db,
+          ctx.request.params.ticketId,
+          actorId,
+          body?.resolution_note,
+          pushAdapter,
+        );
+        ctx.response.send(toTicketResponse(ticket));
+      } catch (e) {
+        sendLifecycleError(ctx, e);
+      }
+    },
+  });
+
+  new RawRoute(scope, 'reopen-ticket', {
+    method: 'POST',
+    path: '/v1/me/tickets/{ticketId}/reopen',
+    handler: async ctx => {
+      const memberId = ctx.request.headers.get('X-Actor-Member-Id');
+      if (!memberId) {
+        sendUnauthorized(ctx, 'X-Actor-Member-Id header is required.');
+        return;
+      }
+
+      try {
+        const ticket = await reopenTicket(db, ctx.request.params.ticketId, memberId, new Date());
+        ctx.response.send(toTicketResponse(ticket));
+      } catch (e) {
+        sendLifecycleError(ctx, e);
+      }
+    },
+  });
+
+  new RawRoute(scope, 'withdraw-ticket', {
+    method: 'POST',
+    path: '/v1/me/tickets/{ticketId}/withdraw',
+    handler: async ctx => {
+      const memberId = ctx.request.headers.get('X-Actor-Member-Id');
+      if (!memberId) {
+        sendUnauthorized(ctx, 'X-Actor-Member-Id header is required.');
+        return;
+      }
+
+      try {
+        const ticket = await withdrawTicket(db, ctx.request.params.ticketId, memberId);
+        ctx.response.send(toTicketResponse(ticket));
+      } catch (e) {
+        sendLifecycleError(ctx, e);
       }
     },
   });

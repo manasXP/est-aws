@@ -42,7 +42,9 @@ export interface TicketRecord {
   closedAt: string | null;
 }
 
-interface TicketRow {
+/** The raw `tickets` row shape — exported for STR-122's lifecycle.ts, which
+ * reads and updates the same table under `FOR UPDATE`. */
+export interface TicketRow {
   id: string;
   member_id: string;
   category: TicketCategory;
@@ -62,7 +64,9 @@ function toIso(value: string | Date): string {
   return value instanceof Date ? value.toISOString() : value;
 }
 
-function toTicket(row: TicketRow): TicketRecord {
+/** Row → API record. Exported so STR-122's lifecycle.ts returns the same
+ * shape from its transitions rather than re-deriving the mapping. */
+export function toTicket(row: TicketRow): TicketRecord {
   return {
     ticketId: row.id,
     memberId: row.member_id,
@@ -113,11 +117,22 @@ export async function raiseTicket(
   );
 
   const ticketId = randomUUID();
-  const row = await db.queryOne<TicketRow>(
-    sql`INSERT INTO tickets (id, member_id, category, subject, description, assignee_id)
-        VALUES (${ticketId}, ${memberId}, ${category}, ${subject}, ${description}, ${routed?.assignee_id ?? null})
-        RETURNING *`,
-  );
+  // STR-122: the `opened` row is the first entry in the append-only
+  // status-history trail (migrations/040), written in the same transaction
+  // as the ticket itself so a ticket can never exist without its opening
+  // audit entry.
+  const row = await db.transaction(async tx => {
+    const inserted = await tx.queryOne<TicketRow>(
+      sql`INSERT INTO tickets (id, member_id, category, subject, description, assignee_id)
+          VALUES (${ticketId}, ${memberId}, ${category}, ${subject}, ${description}, ${routed?.assignee_id ?? null})
+          RETURNING *`,
+    );
+    await tx.execute(
+      sql`INSERT INTO ticket_actions (id, ticket_id, action, actor_id)
+          VALUES (${randomUUID()}, ${ticketId}, 'opened', ${memberId})`,
+    );
+    return inserted;
+  });
   return toTicket(row!);
 }
 

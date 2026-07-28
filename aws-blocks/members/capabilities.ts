@@ -22,12 +22,23 @@ import { listRoleAssignments, EC_OFFICES } from './role-assignments';
  * capability in v1") -- deliberately absent from this list and never
  * checked against project_committee_seats anywhere below.
  */
-export type GovernanceCapability = 'designated-verifier' | 'designated-approver' | 'finance-recorder';
+export type GovernanceCapability =
+  | 'designated-verifier'
+  | 'designated-approver'
+  | 'finance-recorder'
+  // STR-132: the two Communication capabilities -- composing on the society
+  // board (EC only) and moderating any board (Management or EC). Both derive
+  // from current role assignments with no designation table of their own,
+  // the way finance-recorder already defaults off the Treasurer's role.
+  | 'bulletin_compose'
+  | 'bulletin_moderate';
 
 export const GOVERNANCE_CAPABILITIES: readonly GovernanceCapability[] = [
   'designated-verifier',
   'designated-approver',
   'finance-recorder',
+  'bulletin_compose',
+  'bulletin_moderate',
 ];
 
 /** Who the claims are being built for -- exactly one of a member or an employee identity. */
@@ -90,12 +101,24 @@ export async function buildClaims(db: Database, actor: Actor): Promise<Governanc
     claims.push('finance-recorder');
   }
 
+  const holdsEcOffice = openRoles.some(r => EC_OFFICES.includes(r.role));
+
   // designated-approver requires both a current EC-office role and the
   // configurable designation -- either alone confers nothing (a plain EC
   // member isn't automatically an approver; a stale designation for
   // someone no longer on the EC confers nothing, per AC4).
-  if (openRoles.some(r => EC_OFFICES.includes(r.role)) && (await isDesignatedApprover(db, actor.memberId))) {
+  if (holdsEcOffice && (await isDesignatedApprover(db, actor.memberId))) {
     claims.push('designated-approver');
+  }
+
+  // STR-132: the society board is EC-only (Communication), while moderation
+  // is Management-or-EC -- authority over a post, not authorship of one, so
+  // it reaches project boards an EC office confers no posting right on.
+  if (holdsEcOffice) {
+    claims.push('bulletin_compose');
+  }
+  if (holdsEcOffice || openRoles.some(r => r.role === 'management')) {
+    claims.push('bulletin_moderate');
   }
 
   return claims;

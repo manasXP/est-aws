@@ -40,6 +40,7 @@ import { registerEcInvoiceRoutes } from './vendors/ec-invoices-routes';
 import { registerDocumentRoutes } from './documents/documents-routes';
 import { registerPcDocumentRoutes } from './documents/pc-documents-routes';
 import { registerTicketRoutes } from './tickets/tickets-routes';
+import { registerBulletinPostRoutes } from './communication/bulletin-posts-routes';
 import { autoCloseResolvedTickets } from './tickets/lifecycle';
 // STR-041 code review: no HTTP surface of its own -- imported for its
 // module-load side effect (registering vacateRolesOnStatusChange with
@@ -463,6 +464,11 @@ registerPcDocumentRoutes(scope, db, documents);
 // transitions (assign/resolve on the admin surface, reopen/withdraw on the
 // mobile one), whose resolve path pushes through the shared adapter.
 registerTicketRoutes(scope, db, pushAdapter, documents);
+
+// STR-132: the Admin bulletin-post surface -- EC compose/edit on the society
+// board and Management/EC archive moderation across both boards, over
+// STR-131's entity functions.
+registerBulletinPostRoutes(scope, db);
 
 // STR-122: the ticket auto-close run -- daily at 03:30 IST, just after the
 // charge run's window. Closes every ticket resolved more than 7 days ago.

@@ -8,6 +8,7 @@ import { randomUUID, createHash } from 'node:crypto';
 import { sql } from '@aws-blocks/blocks';
 import type { Database, FileBucket, Transaction } from '@aws-blocks/blocks';
 import { ValidationError, ConflictError } from '../http/problem-response';
+import { isDocumentLinkedToLedger } from '../finance/documents';
 import { getMember } from '../members/members-api';
 import { getProject } from '../projects/projects-api';
 import { pgTextArray } from '../sql-array';
@@ -351,6 +352,112 @@ export async function updateDocument(
     );
 
     return toDocument({ ...row, title, category, tags, notes });
+  });
+}
+
+/** STR-114: domain rejection for an archive/restore invalid in the
+ * document's current state, or an archive blocked because the document is
+ * compliance evidence (ledger- or invoice-linked). Nothing is written when
+ * this is thrown. Named after members-api.ts's MemberLifecycleConflictError
+ * precedent. */
+export class DocumentLifecycleConflictError extends ConflictError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'DocumentLifecycleConflictError';
+  }
+}
+
+export interface ListDocumentsFilters {
+  status?: DocumentStatus | 'all';
+  level?: DocumentLevel;
+  projectId?: string;
+  memberId?: string;
+}
+
+/**
+ * The base document listing (STR-114, TC-DOC-020): `status` defaults to
+ * `active`, so archived documents are excluded unless asked for
+ * (`archived` or `all`). STR-115 extends this signature with `q`/category/
+ * date filters and wires it to `GET /v1/documents` — this story ships only
+ * what the archive-exclusion proof needs.
+ */
+export async function listDocuments(db: Database, filters: ListDocumentsFilters): Promise<DocumentRecord[]> {
+  const status = filters.status ?? 'active';
+  const rows = await db.query<DocumentRow>(sql`
+    SELECT * FROM documents
+    WHERE (${status} = 'all' OR status = ${status})
+      AND (${filters.level ?? null}::text IS NULL OR level = ${filters.level ?? null})
+      AND (${filters.projectId ?? null}::text IS NULL OR project_id = ${filters.projectId ?? null})
+      AND (${filters.memberId ?? null}::text IS NULL OR member_id = ${filters.memberId ?? null})
+    ORDER BY uploaded_at DESC, id`);
+  return rows.map(toDocument);
+}
+
+/**
+ * The invoice half of the archive-blocking guard (TC-DOC-021) — a stub
+ * returning `false` unconditionally: the `vendor_invoices` table it must
+ * consult belongs to E09 (Vendor workflow), which has no story files cut
+ * yet, so there is nothing to look up today. Flagged in STR-114 for
+ * whoever cuts E09's stories: replace this with a real
+ * `vendor_invoices.document_id` lookup and re-verify TC-DOC-021's invoice
+ * clause at that point. (The STR-043 "lookup port, stubbed until the
+ * upstream epic ships" pattern.)
+ */
+export async function isDocumentLinkedToInvoice(_db: Database, _documentId: string): Promise<boolean> {
+  return false;
+}
+
+/**
+ * `POST /v1/documents/{documentId}/archive` business logic (STR-114,
+ * AC1/AC2/AC3): transactionally re-checks status under a row lock, then
+ * consults STR-025's `isDocumentLinkedToLedger` (called unchanged, against
+ * the row's internal `file_key` — the same FileBucket path STR-025 links
+ * by) plus the E09-stubbed invoice guard, and only then flips the status.
+ * The guards take the outer `db` handle because STR-025's signature is
+ * `Database` (a `Transaction` is not one structurally) — they read tables
+ * this transaction never writes, so the read is safe either way. Returns
+ * `null` if `documentId` doesn't exist (the route 404s).
+ */
+export async function archiveDocument(db: Database, documentId: string): Promise<DocumentRecord | null> {
+  return db.transaction(async tx => {
+    const row = await tx.queryOne<DocumentRow>(sql`SELECT * FROM documents WHERE id = ${documentId} FOR UPDATE`);
+    if (!row) return null;
+
+    if (row.status === 'archived') {
+      throw new DocumentLifecycleConflictError(`Document ${documentId} is already archived.`);
+    }
+    if (await isDocumentLinkedToLedger(db, row.file_key)) {
+      throw new DocumentLifecycleConflictError(
+        `Document ${documentId} is linked to a ledger entry — compliance evidence is never archived.`,
+      );
+    }
+    if (await isDocumentLinkedToInvoice(db, documentId)) {
+      throw new DocumentLifecycleConflictError(
+        `Document ${documentId} is linked to a vendor invoice — compliance evidence is never archived.`,
+      );
+    }
+
+    await tx.execute(sql`UPDATE documents SET status = 'archived' WHERE id = ${documentId}`);
+    return toDocument({ ...row, status: 'archived' });
+  });
+}
+
+/**
+ * `POST /v1/documents/{documentId}/restore` business logic (STR-114, AC1/
+ * AC3): the inverse flip, 409 unless currently archived. Returns `null` if
+ * `documentId` doesn't exist (the route 404s).
+ */
+export async function restoreDocument(db: Database, documentId: string): Promise<DocumentRecord | null> {
+  return db.transaction(async tx => {
+    const row = await tx.queryOne<DocumentRow>(sql`SELECT * FROM documents WHERE id = ${documentId} FOR UPDATE`);
+    if (!row) return null;
+
+    if (row.status !== 'archived') {
+      throw new DocumentLifecycleConflictError(`Document ${documentId} is not archived.`);
+    }
+
+    await tx.execute(sql`UPDATE documents SET status = 'active' WHERE id = ${documentId}`);
+    return toDocument({ ...row, status: 'active' });
   });
 }
 

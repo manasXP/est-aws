@@ -11,12 +11,7 @@ import { randomUUID } from 'node:crypto';
 import { sql } from '@aws-blocks/blocks';
 import type { Database, FileBucket } from '@aws-blocks/blocks';
 import { ValidationError } from '../http/problem-response';
-import {
-  getLedgerAccountsForPeriod,
-  buildLedgerMastersXml,
-  getPostingsInPeriod,
-  buildDayBookVouchersXml,
-} from './tally-export';
+import { getLedgerAccountsForPeriod, getPostingsInPeriod, buildTallyExportXml } from './tally-export';
 
 export type ExportJobStatus = 'queued' | 'running' | 'completed' | 'failed';
 
@@ -40,10 +35,6 @@ export interface ExportJobRecord {
 export interface ExportJobQueue {
   submit(payload: { exportId: string }): Promise<{ jobId: string }>;
 }
-
-/** Between the masters and vouchers documents in the stored file. Exported
- * so tests can assert byte-identity against the generators' own output. */
-export const TALLY_EXPORT_XML_SEPARATOR = '\n';
 
 // Presigned download lifetime -- no contract-specified value, same
 // sane-short-lived-window reasoning as documents-api.ts's
@@ -171,10 +162,13 @@ export async function processTallyExport(db: Database, bucket: FileBucket, expor
     // fresh snapshot per statement. Single-connection PGlite can't exercise
     // the race locally, so this comment is the record (the STR-112
     // FOR UPDATE precedent).
-    const vouchers = buildDayBookVouchersXml(await getPostingsInPeriod(db, job.from, job.to));
-    const masters = buildLedgerMastersXml(await getLedgerAccountsForPeriod(db, job.from, job.to));
+    const postings = await getPostingsInPeriod(db, job.from, job.to);
+    const accounts = await getLedgerAccountsForPeriod(db, job.from, job.to);
+    // STR-104: one envelope carrying both (buildTallyExportXml), never the
+    // two concatenated envelopes this used to store -- that file had two
+    // root elements and was not well-formed XML.
     const documentPath = `tally-exports/${exportId}.xml`;
-    await bucket.put(documentPath, masters + TALLY_EXPORT_XML_SEPARATOR + vouchers, {
+    await bucket.put(documentPath, buildTallyExportXml(accounts, postings), {
       contentType: 'application/xml',
     });
     await db.transaction(async tx => {

@@ -8,10 +8,9 @@ import { postJournalEntry } from '../../aws-blocks/finance/journal';
 import {
   getLedgerAccountsForPeriod,
   getPostingsInPeriod,
-  buildLedgerMastersXml,
-  buildDayBookVouchersXml,
+  buildTallyExportXml,
 } from '../../aws-blocks/finance/tally-export';
-import { processTallyExport, TALLY_EXPORT_XML_SEPARATOR } from '../../aws-blocks/finance/tally-export-jobs';
+import { processTallyExport } from '../../aws-blocks/finance/tally-export-jobs';
 import { contractTest } from './harness';
 import { dispatchRequest } from '../support/dispatch';
 
@@ -165,10 +164,10 @@ describe('STR-103 T-C4 — GET /v1/exports/{exportId}/download', () => {
     expect(body.url).toEqual(expect.any(String));
     expect(body.url).toContain(row!.document_path);
 
-    const expected =
-      buildLedgerMastersXml(await getLedgerAccountsForPeriod(db, '2031-05-01', '2031-05-31')) +
-      TALLY_EXPORT_XML_SEPARATOR +
-      buildDayBookVouchersXml(await getPostingsInPeriod(db, '2031-05-01', '2031-05-31'));
+    const expected = buildTallyExportXml(
+      await getLedgerAccountsForPeriod(db, '2031-05-01', '2031-05-31'),
+      await getPostingsInPeriod(db, '2031-05-01', '2031-05-31'),
+    );
     const stored = await documents.get(row!.document_path);
     expect(stored!.body.toString('utf-8')).toBe(expected);
   });

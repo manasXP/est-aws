@@ -139,22 +139,54 @@ function escapeXml(value: string): string {
     .replace(/"/g, '&quot;');
 }
 
-/** Formats ledger accounts as a Tally `<LEDGER>` masters import document. */
-export function buildLedgerMastersXml(accounts: readonly LedgerAccount[]): string {
-  const ledgers = accounts
-    .map(
-      account => `<LEDGER NAME="${escapeXml(account.name)}" ACTION="Create">
-<PARENT>${escapeXml(tallyParentGroupFor(account.kind))}</PARENT>
-</LEDGER>`,
-    )
-    .join('\n');
+/**
+ * STR-104: Tally's documented import envelope
+ * (https://help.tallysolutions.com/sample-xml/). STR-101/102 originally
+ * emitted a bare `<ENVELOPE><IMPORTDATA><REQUESTDATA>` shell with no
+ * `<HEADER>`, no `<BODY>`, no `<REQUESTDESC>`/`<REPORTNAME>` naming the
+ * import report, and no `<TALLYMESSAGE>` around each master/voucher --
+ * Tally reads none of those elements' contents without them. `reportName`
+ * is what distinguishes a masters import (`All Masters`) from a vouchers
+ * import (`Vouchers`).
+ */
+function tallyImportEnvelope(reportName: string, messages: string): string {
   return `<ENVELOPE>
+<HEADER>
+<TALLYREQUEST>Import Data</TALLYREQUEST>
+</HEADER>
+<BODY>
 <IMPORTDATA>
+<REQUESTDESC>
+<REPORTNAME>${reportName}</REPORTNAME>
+</REQUESTDESC>
 <REQUESTDATA>
-${ledgers}
+${messages}
 </REQUESTDATA>
 </IMPORTDATA>
+</BODY>
 </ENVELOPE>`;
+}
+
+/** Each master/voucher travels in its own `<TALLYMESSAGE>`; Tally applies them in document order. */
+function tallyMessage(body: string): string {
+  return `<TALLYMESSAGE xmlns:UDF="TallyUDF">
+${body}
+</TALLYMESSAGE>`;
+}
+
+function ledgerMessages(accounts: readonly LedgerAccount[]): string {
+  return accounts
+    .map(account =>
+      tallyMessage(`<LEDGER NAME="${escapeXml(account.name)}" ACTION="Create">
+<PARENT>${escapeXml(tallyParentGroupFor(account.kind))}</PARENT>
+</LEDGER>`),
+    )
+    .join('\n');
+}
+
+/** Formats ledger accounts as a standalone Tally `<LEDGER>` masters import document. */
+export function buildLedgerMastersXml(accounts: readonly LedgerAccount[]): string {
+  return tallyImportEnvelope('All Masters', ledgerMessages(accounts));
 }
 
 /**
@@ -175,8 +207,8 @@ ${ledgers}
  * decimal string (`postJournalEntry` rejects non-positive lines), so no
  * arithmetic on the amount is needed at all (AC4).
  */
-export function buildDayBookVouchersXml(postings: readonly Posting[]): string {
-  const vouchers = postings
+function voucherMessages(postings: readonly Posting[]): string {
+  return postings
     .map(posting => {
       const date = posting.istDate.replace(/-/g, '');
       const ledgerEntries = posting.lines
@@ -188,18 +220,45 @@ export function buildDayBookVouchersXml(postings: readonly Posting[]): string {
 </ALLLEDGERENTRIES.LIST>`,
         )
         .join('\n');
-      return `<VOUCHER VCHTYPE="Journal" ACTION="Create">
+      // STR-104: <VOUCHERTYPENAME> is what Tally actually reads on import
+      // -- the VCHTYPE attribute alone left the type unset. Both are
+      // emitted, matching Tally's own published voucher sample.
+      return tallyMessage(`<VOUCHER VCHTYPE="Journal" ACTION="Create">
 <DATE>${date}</DATE>
+<VOUCHERTYPENAME>Journal</VOUCHERTYPENAME>
 <NARRATION>${escapeXml(posting.description)}</NARRATION>
 ${ledgerEntries}
-</VOUCHER>`;
+</VOUCHER>`);
     })
     .join('\n');
-  return `<ENVELOPE>
-<IMPORTDATA>
-<REQUESTDATA>
-${vouchers}
-</REQUESTDATA>
-</IMPORTDATA>
-</ENVELOPE>`;
+}
+
+/** Formats postings as a standalone Tally day-book vouchers import document. */
+export function buildDayBookVouchersXml(postings: readonly Posting[]): string {
+  return tallyImportEnvelope('Vouchers', voucherMessages(postings));
+}
+
+/**
+ * STR-104: the single artifact STR-103 stores and hands the auditor --
+ * masters and vouchers as sibling `<TALLYMESSAGE>` blocks inside ONE
+ * envelope. STR-103 originally concatenated `buildLedgerMastersXml` and
+ * `buildDayBookVouchersXml`, which put two `<ENVELOPE>` roots in one file:
+ * not well-formed XML, rejected outright by every parser (libxml2, expat)
+ * before Tally's dialect even came into it.
+ *
+ * Masters are emitted FIRST because Tally applies `<TALLYMESSAGE>` blocks
+ * in document order and rejects a voucher naming a ledger it does not yet
+ * know -- the whole reason STR-101 exists. The envelope is the `Vouchers`
+ * report: the masters ride along to satisfy the vouchers' `<LEDGERNAME>`
+ * references, rather than being a chart-of-accounts sync of their own.
+ * That combination -- masters inside a `Vouchers` import -- is the one
+ * shape here that Tally's published samples do not show verbatim; it is
+ * the open question for the real-Tally import run, in the same way
+ * `ISDEEMEDPOSITIVE` was before this story confirmed it.
+ */
+export function buildTallyExportXml(
+  accounts: readonly LedgerAccount[],
+  postings: readonly Posting[],
+): string {
+  return tallyImportEnvelope('Vouchers', `${ledgerMessages(accounts)}\n${voucherMessages(postings)}`);
 }

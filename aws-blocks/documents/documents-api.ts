@@ -260,6 +260,16 @@ export async function registerDocument(
   return { documentId, uploadUrl, expiresAt };
 }
 
+/** Bare row read with NONE of getDocument's lazy checksum side effects
+ * (bucket read, sha256, UPDATE) — for gates that must not do storage work
+ * on behalf of callers who may turn out unauthorized (STR-116 review:
+ * the PC download route evaluates its 403 on this, then lets only
+ * authorized callers reach the lazily-verifying download path). */
+export async function getDocumentMetadata(db: Database, documentId: string): Promise<DocumentRecord | null> {
+  const row = await db.queryOne<DocumentRow>(sql`SELECT * FROM documents WHERE id = ${documentId}`);
+  return row ? toDocument(row) : null;
+}
+
 /**
  * `GET /v1/documents/{documentId}` (AC2, epic Risk mitigation): reads the
  * row, lazily computing and persisting `checksum`/`size_bytes` from the real

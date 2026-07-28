@@ -9,7 +9,7 @@
 // documents-api.ts for the reads.
 import { RawRoute } from '@aws-blocks/blocks';
 import type { Database, FileBucket, Scope } from '@aws-blocks/blocks';
-import { listDocuments, getDocument, getDownloadUrl, DOWNLOAD_URL_EXPIRES_IN_SECONDS } from './documents-api';
+import { listDocuments, getDocumentMetadata, getDownloadUrl, DOWNLOAD_URL_EXPIRES_IN_SECONDS } from './documents-api';
 import type { DocumentRecord } from './documents-api';
 import { isPcMember } from '../assets/asset-visibility';
 import { getProject } from '../projects/projects-api';
@@ -80,17 +80,27 @@ export function registerPcDocumentRoutes(scope: Scope, db: Database, bucket: Fil
     path: '/v1/pc/documents/{documentId}/download',
     handler: async ctx => {
       const { documentId } = ctx.request.params;
-      const doc = await getDocument(db, bucket, documentId);
-      // Archived documents 404 like nonexistent ones: this surface neither
-      // lists them (T-U3) nor confirms what it does not list.
-      if (!doc || doc.status === 'archived') {
+      // Side-effect-free row read: the gate must not trigger STR-111's
+      // lazy checksum work (bucket read + hash + UPDATE) for callers who
+      // turn out unauthorized (review finding).
+      const doc = await getDocumentMetadata(db, documentId);
+      if (!doc) {
         sendNotFound(ctx, `No document ${documentId}`);
         return;
       }
 
+      // Gate BEFORE the archived check: outsiders get 403 whether the
+      // document is active or archived, so archival transitions are not
+      // observable through this route (review finding). PC members still
+      // see archived docs 404 — invisible on this surface, like the
+      // listing (T-U3).
       const memberId = ctx.request.headers.get('X-Actor-Member-Id');
       if (!memberId || !(await isPcMemberOfDocument(db, doc, memberId))) {
         sendCapabilityRequired(ctx, 'pc-member');
+        return;
+      }
+      if (doc.status === 'archived') {
+        sendNotFound(ctx, `No document ${documentId}`);
         return;
       }
 

@@ -112,6 +112,25 @@ describe('STR-116 T-C1 — PC project documents listing contract (covers TC-DOC-
     expect(() => op.expectValidResponse(response.status, response.body)).not.toThrow();
   });
 
+  it('download 403 (non-PC caller) and 404 (archived, PC member) bodies conform to their declared schemas', async () => {
+    const projectId = await createProject();
+    const pcMember = await createActiveMember();
+    const outsider = await createActiveMember();
+    await seatPc(projectId, [pcMember]);
+    const documentId = await registerProjectDoc(projectId, 'Gate-checked evidence');
+
+    const op = await contractTest('mobile', '/pc/documents/{documentId}/download', 'get');
+
+    const forbidden = await dispatchRequest('GET', `/v1/pc/documents/${documentId}/download`, {}, { 'X-Actor-Member-Id': outsider });
+    expect(forbidden.status).toBe(403);
+    expect(() => op.expectValidResponse(forbidden.status, forbidden.body)).not.toThrow();
+
+    await dispatchRequest('POST', `/v1/documents/${documentId}/archive`);
+    const archived404 = await dispatchRequest('GET', `/v1/pc/documents/${documentId}/download`, {}, { 'X-Actor-Member-Id': pcMember });
+    expect(archived404.status).toBe(404);
+    expect(() => op.expectValidResponse(archived404.status, archived404.body)).not.toThrow();
+  });
+
   it('GET /pc/documents/{documentId}/download conforms to the declared 200 shape for a PC member', async () => {
     const projectId = await createProject();
     const pcMember = await createActiveMember();

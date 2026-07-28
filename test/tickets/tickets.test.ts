@@ -135,6 +135,34 @@ describe('STR-121 T-U3 — an unrouted category opens tickets with a null assign
   });
 });
 
+describe('STR-121 AC1 — every category opens, validation boundaries hold (review follow-up)', () => {
+  it('raises a ticket in each of the four categories', async () => {
+    const db = await freshMigratedDb();
+    const member = await createMember(db, { name: 'Asha Rao' });
+
+    for (const category of ['finance', 'maintenance', 'records', 'general']) {
+      const ticket = await raiseTicket(db, member.member_id, category, `${category} issue`, 'details');
+      expect(ticket.category).toBe(category);
+      expect(ticket.status).toBe('open');
+    }
+  });
+
+  it('accepts a 200-character subject and rejects 201, missing subject, and missing description as 422', async () => {
+    const db = await freshMigratedDb();
+    const member = await createMember(db, { name: 'Asha Rao' });
+
+    const at200 = await raiseTicket(db, member.member_id, 'general', 'x'.repeat(200), 'details');
+    expect(at200.subject).toHaveLength(200);
+
+    await expect(raiseTicket(db, member.member_id, 'general', 'x'.repeat(201), 'details'))
+      .rejects.toBeInstanceOf(TicketValidationError);
+    await expect(raiseTicket(db, member.member_id, 'general', '', 'details'))
+      .rejects.toBeInstanceOf(TicketValidationError);
+    await expect(raiseTicket(db, member.member_id, 'general', 'subject', ''))
+      .rejects.toBeInstanceOf(TicketValidationError);
+  });
+});
+
 describe('STR-121 T-U4 — raised_by is the member, entered_by stays null on this surface', () => {
   it('records member_id as raised_by and leaves entered_by null', async () => {
     const db = await freshMigratedDb();

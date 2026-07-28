@@ -344,7 +344,10 @@ export async function editBulletinPost(
 }
 
 export interface ListBulletinPostsFilters {
-  scope: BulletinScope;
+  /** STR-132: `'all'` spans both boards -- the Admin moderation surface's
+   * own default (`GET /v1/bulletin-posts?scope=all`), which no single-board
+   * read can express. */
+  scope: BulletinScope | 'all';
   /** Required for `scope: 'project'` -- one board per project. */
   projectId?: string | null;
   /** Off by default: the active board read is what AC2's "archiving hides
@@ -366,15 +369,15 @@ export async function listBulletinPosts(
     throw new BulletinPostValidationError('projectId is required to read a project board.');
   }
 
-  const rows = await db.query<BulletinPostRow>(
-    filters.scope === 'society'
-      ? filters.includeArchived
-        ? sql`SELECT * FROM bulletin_posts WHERE scope = 'society' ORDER BY pinned DESC, posted_at DESC`
-        : sql`SELECT * FROM bulletin_posts WHERE scope = 'society' AND archived = false ORDER BY pinned DESC, posted_at DESC`
-      : filters.includeArchived
-        ? sql`SELECT * FROM bulletin_posts WHERE scope = 'project' AND project_id = ${projectId} ORDER BY pinned DESC, posted_at DESC`
-        : sql`SELECT * FROM bulletin_posts WHERE scope = 'project' AND project_id = ${projectId} AND archived = false ORDER BY pinned DESC, posted_at DESC`,
-  );
+  // The parameterised-filter idiom documents-api.ts's listDocuments uses --
+  // one query for every combination, so adding `'all'` costs a branch in the
+  // WHERE clause rather than doubling the ternary tree.
+  const rows = await db.query<BulletinPostRow>(sql`
+    SELECT * FROM bulletin_posts
+    WHERE (${filters.scope} = 'all' OR scope = ${filters.scope})
+      AND (${projectId}::text IS NULL OR project_id = ${projectId})
+      AND (${filters.includeArchived ?? false} OR archived = false)
+    ORDER BY pinned DESC, posted_at DESC`);
 
   const posts: BulletinPostRecord[] = [];
   for (const row of rows) {

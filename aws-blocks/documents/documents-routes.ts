@@ -5,7 +5,7 @@
 // delegates to documents-api.ts for everything else.
 import { RawRoute } from '@aws-blocks/blocks';
 import type { Database, FileBucket, Scope } from '@aws-blocks/blocks';
-import { registerDocument, getDocument, getDownloadUrl, updateDocument, listCategories, replaceCategories, DocumentValidationError, DocumentCategoryConflictError, DOWNLOAD_URL_EXPIRES_IN_SECONDS } from './documents-api';
+import { registerDocument, getDocument, getDownloadUrl, updateDocument, listCategories, replaceCategories, archiveDocument, restoreDocument, DocumentValidationError, DocumentCategoryConflictError, DocumentLifecycleConflictError, DOWNLOAD_URL_EXPIRES_IN_SECONDS } from './documents-api';
 import type { DocumentRecord } from './documents-api';
 import { sendNotFound, sendValidationError, sendUnauthorized, sendConflictError, problemResponse } from '../http/problem-response';
 import { resolveActor } from '../http/capability-gate';
@@ -136,6 +136,52 @@ export function registerDocumentRoutes(scope: Scope, db: Database, bucket: FileB
             return;
           }
           sendValidationError(ctx, e);
+          return;
+        }
+        throw e;
+      }
+    },
+  });
+
+  // STR-114: archive/restore — the only removal semantics (TC-DOC-022, no
+  // DELETE route anywhere on the document surface).
+  new RawRoute(scope, 'archive-document', {
+    method: 'POST',
+    path: '/v1/documents/{documentId}/archive',
+    handler: async ctx => {
+      const { documentId } = ctx.request.params;
+      try {
+        const doc = await archiveDocument(db, documentId);
+        if (!doc) {
+          sendNotFound(ctx, `No document ${documentId}`);
+          return;
+        }
+        ctx.response.send(toDocumentResponse(doc));
+      } catch (e) {
+        if (e instanceof DocumentLifecycleConflictError) {
+          sendConflictError(ctx, e);
+          return;
+        }
+        throw e;
+      }
+    },
+  });
+
+  new RawRoute(scope, 'restore-document', {
+    method: 'POST',
+    path: '/v1/documents/{documentId}/restore',
+    handler: async ctx => {
+      const { documentId } = ctx.request.params;
+      try {
+        const doc = await restoreDocument(db, documentId);
+        if (!doc) {
+          sendNotFound(ctx, `No document ${documentId}`);
+          return;
+        }
+        ctx.response.send(toDocumentResponse(doc));
+      } catch (e) {
+        if (e instanceof DocumentLifecycleConflictError) {
+          sendConflictError(ctx, e);
           return;
         }
         throw e;

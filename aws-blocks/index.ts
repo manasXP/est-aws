@@ -41,6 +41,8 @@ import { registerDocumentRoutes } from './documents/documents-routes';
 import { registerPcDocumentRoutes } from './documents/pc-documents-routes';
 import { registerTicketRoutes } from './tickets/tickets-routes';
 import { registerBulletinPostRoutes } from './communication/bulletin-posts-routes';
+import { registerMeBulletinRoutes } from './communication/bulletin-mobile-api';
+import { registerBulletinPushListener } from './communication/bulletin-push';
 import { autoCloseResolvedTickets } from './tickets/lifecycle';
 // STR-041 code review: no HTTP surface of its own -- imported for its
 // module-load side effect (registering vacateRolesOnStatusChange with
@@ -469,6 +471,16 @@ registerTicketRoutes(scope, db, pushAdapter, documents);
 // board and Management/EC archive moderation across both boards, over
 // STR-131's entity functions.
 registerBulletinPostRoutes(scope, db);
+
+// STR-133: the mobile half -- the member's feed across the boards they
+// belong to, the single-post deep-link target of the new-post push, and the
+// presigned attachment download.
+registerMeBulletinRoutes(scope, db, documents);
+
+// STR-133: the new-post push. Registered on STR-131's publish event, so
+// STR-132's EC compose and STR-134's PC compose both push without either
+// knowing this exists.
+registerBulletinPushListener(db, pushAdapter);
 
 // STR-122: the ticket auto-close run -- daily at 03:30 IST, just after the
 // charge run's window. Closes every ticket resolved more than 7 days ago.

@@ -39,6 +39,7 @@ import { registerInvoicePaymentRoutes } from './vendors/invoice-payments-routes'
 import { registerEcInvoiceRoutes } from './vendors/ec-invoices-routes';
 import { registerDocumentRoutes } from './documents/documents-routes';
 import { registerPcDocumentRoutes } from './documents/pc-documents-routes';
+import { registerTicketRoutes } from './tickets/tickets-routes';
 // STR-041 code review: no HTTP surface of its own -- imported for its
 // module-load side effect (registering vacateRolesOnStatusChange with
 // members-api.ts's memberStatusTransitionListeners). Without this import,
@@ -454,3 +455,7 @@ registerEcInvoiceRoutes(scope, db, documents);
 // FileBucket STR-025 already wired -- no second bucket.
 registerDocumentRoutes(scope, db, documents);
 registerPcDocumentRoutes(scope, db, documents);
+
+// STR-121: ticket creation (mobile) and category-routing config (admin) --
+// the E13 member-requests foundation.
+registerTicketRoutes(scope, db);

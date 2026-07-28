@@ -4,10 +4,13 @@ import { randomUUID } from 'node:crypto';
 import { sql, Scope, Database } from '@aws-blocks/blocks';
 import { runLocalMigrations, MIGRATIONS_DIR } from '../../aws-blocks/migrations-runner';
 import { postJournalEntry } from '../../aws-blocks/finance/journal';
+import { reverseJournalEntry } from '../../aws-blocks/finance/reversal';
 import {
   getLedgerAccountsForPeriod,
+  getPostingsInPeriod,
   tallyParentGroupFor,
   buildLedgerMastersXml,
+  buildDayBookVouchersXml,
 } from '../../aws-blocks/finance/tally-export';
 
 // STR-101 — the ledger-masters half of E11's Tally export (TC-FIN-041):
@@ -173,5 +176,127 @@ describe('STR-101 Tally ledger masters', () => {
 
     const accounts = await getLedgerAccountsForPeriod(db, '2026-04-01', '2027-03-31');
     expect(accounts.some(a => a.id === 'reserve')).toBe(true);
+  });
+});
+
+// STR-102 — the day-book voucher half of E11's Tally export (TC-FIN-040):
+// every journal posting whose posted_at falls inside the requested period
+// becomes exactly one Tally <VOUCHER>, and none outside it does.
+describe('STR-102 Tally day-book vouchers (TC-FIN-040)', () => {
+  // T-U1: a posting dated exactly on `from` is included; one on `to` is
+  // included (both bounds inclusive); one the calendar day before `from`
+  // and one the day after `to` are excluded.
+  it('includes postings on both inclusive bounds and excludes the days just outside them', async () => {
+    const db = await freshMigratedDb();
+
+    await postJournalEntry(db, 'on from bound', [
+      { accountId: 'bank', direction: 'debit', amount: '100.00' },
+      { accountId: 'cash', direction: 'credit', amount: '100.00' },
+    ], { postedAt: '2026-06-10T12:00:00Z' });
+
+    await postJournalEntry(db, 'on to bound', [
+      { accountId: 'bank', direction: 'debit', amount: '200.00' },
+      { accountId: 'cash', direction: 'credit', amount: '200.00' },
+    ], { postedAt: '2026-06-20T12:00:00Z' });
+
+    await postJournalEntry(db, 'day before from', [
+      { accountId: 'bank', direction: 'debit', amount: '300.00' },
+      { accountId: 'cash', direction: 'credit', amount: '300.00' },
+    ], { postedAt: '2026-06-09T12:00:00Z' });
+
+    await postJournalEntry(db, 'day after to', [
+      { accountId: 'bank', direction: 'debit', amount: '400.00' },
+      { accountId: 'cash', direction: 'credit', amount: '400.00' },
+    ], { postedAt: '2026-06-21T12:00:00Z' });
+
+    const postings = await getPostingsInPeriod(db, '2026-06-10', '2026-06-20');
+    expect(postings.map(p => p.description).sort()).toEqual(['on from bound', 'on to bound']);
+
+    const xml = buildDayBookVouchersXml(postings);
+    expect(xml.match(/<VOUCHER /g) ?? []).toHaveLength(2);
+    expect(xml).toContain('on from bound');
+    expect(xml).toContain('on to bound');
+    expect(xml).not.toContain('day before from');
+    expect(xml).not.toContain('day after to');
+  });
+
+  // T-U2: a reversing entry inside the period appears as its own
+  // independent voucher — no special-casing of reverses_entry_id.
+  it('exports a reversing entry as its own independent voucher, with no special-casing', async () => {
+    const db = await freshMigratedDb();
+
+    const { entryId } = await postJournalEntry(db, 'original posting', [
+      { accountId: 'bank', direction: 'debit', amount: '500.00' },
+      { accountId: 'cash', direction: 'credit', amount: '500.00' },
+    ], { postedAt: '2026-06-12T10:00:00Z' });
+
+    await reverseJournalEntry(db, entryId, 'reversal of original posting');
+    // reverseJournalEntry doesn't accept an explicit postedAt, so it lands
+    // at the real `now()` -- pin the period wide enough to cover both, with
+    // a far-future `to` so this test doesn't start failing when the real
+    // clock passes a nearer bound (review finding on the original window).
+    const postings = await getPostingsInPeriod(db, '2026-01-01', '2099-12-31');
+
+    expect(postings).toHaveLength(2);
+    const xml = buildDayBookVouchersXml(postings);
+    expect(xml.match(/<VOUCHER /g) ?? []).toHaveLength(2);
+    expect(xml).toContain('original posting');
+    expect(xml).toContain('reversal of original posting');
+  });
+
+  // T-U3: every voucher's ledger-entry amounts round-trip as the exact
+  // decimal string stored in journal_lines.amount -- no reformatting.
+  it('round-trips amounts as the exact decimal strings stored in journal_lines', async () => {
+    const db = await freshMigratedDb();
+
+    await postJournalEntry(db, 'exact decimal posting', [
+      { accountId: 'bank', direction: 'debit', amount: '1250.00' },
+      { accountId: 'cash', direction: 'credit', amount: '1250.00' },
+    ], { postedAt: '2026-06-12T10:00:00Z' });
+
+    const postings = await getPostingsInPeriod(db, '2026-06-01', '2026-06-30');
+    const xml = buildDayBookVouchersXml(postings);
+
+    // Convention (documented in tally-export.ts): a debit line's <AMOUNT>
+    // is negative, a credit line's <AMOUNT> is positive/unsigned.
+    expect(xml).toContain('<AMOUNT>-1250.00</AMOUNT>');
+    expect(xml).toContain('<AMOUNT>1250.00</AMOUNT>');
+  });
+
+  // T-U4 (mirrors STR-073's T-U2): the period boundary is resolved on the
+  // IST calendar date of posted_at, not UTC -- a posting timestamped in the
+  // UTC evening that is already IST past midnight of `from` is included.
+  it('resolves the period boundary on the IST calendar date, not UTC', async () => {
+    const db = await freshMigratedDb();
+
+    // 2026-06-09T19:00:00Z is 2026-06-10T00:30 IST -- already inside a
+    // 2026-06-10..2026-06-20 period by the IST calendar date, even though
+    // its UTC calendar date (2026-06-09) is not.
+    await postJournalEntry(db, 'IST-midnight-straddling posting', [
+      { accountId: 'bank', direction: 'debit', amount: '100.00' },
+      { accountId: 'cash', direction: 'credit', amount: '100.00' },
+    ], { postedAt: '2026-06-09T19:00:00Z' });
+
+    const postings = await getPostingsInPeriod(db, '2026-06-10', '2026-06-20');
+    expect(postings.some(p => p.description === 'IST-midnight-straddling posting')).toBe(true);
+  });
+
+  // T-U4 mirror (review finding): the same skew on the `to` bound must
+  // EXCLUDE -- a UTC-evening posting on `to`'s calendar date is already
+  // IST the next day, so it falls outside the window. A UTC-date
+  // implementation would wrongly include it.
+  it('excludes a UTC-evening posting on the to bound that is already IST the next day', async () => {
+    const db = await freshMigratedDb();
+
+    // 2026-06-20T19:00:00Z is 2026-06-21T00:30 IST -- outside a
+    // 2026-06-10..2026-06-20 period by the IST calendar date, even though
+    // its UTC calendar date (2026-06-20) is the `to` bound itself.
+    await postJournalEntry(db, 'IST-next-day posting on to bound', [
+      { accountId: 'bank', direction: 'debit', amount: '100.00' },
+      { accountId: 'cash', direction: 'credit', amount: '100.00' },
+    ], { postedAt: '2026-06-20T19:00:00Z' });
+
+    const postings = await getPostingsInPeriod(db, '2026-06-10', '2026-06-20');
+    expect(postings.some(p => p.description === 'IST-next-day posting on to bound')).toBe(false);
   });
 });

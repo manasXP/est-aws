@@ -9,6 +9,7 @@ import {
   listCategories,
   replaceCategories,
   DocumentCategoryConflictError,
+  DocumentValidationError,
 } from '../../aws-blocks/documents/documents-api';
 
 // STR-113 — management-editable document category list, unit cases.
@@ -127,6 +128,15 @@ describe('STR-113 T-U3 — dropping an in-use category is rejected 409, no parti
     const incoming = SEEDED_CATEGORIES.filter(c => c !== 'Circulars').concat('Should Not Land');
 
     await expect(replaceCategories(db, incoming)).rejects.toBeInstanceOf(DocumentCategoryConflictError);
+
+    const after = await listCategories(db);
+    expect([...after].sort()).toEqual([...SEEDED_CATEGORIES].sort());
+  });
+
+  it('rejects a whitespace-only category name as 422 validation, leaving the list unchanged', async () => {
+    const db = await freshMigratedDb();
+
+    await expect(replaceCategories(db, [...SEEDED_CATEGORIES, '   '])).rejects.toBeInstanceOf(DocumentValidationError);
 
     const after = await listCategories(db);
     expect([...after].sort()).toEqual([...SEEDED_CATEGORIES].sort());

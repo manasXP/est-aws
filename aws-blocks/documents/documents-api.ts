@@ -122,7 +122,7 @@ export async function listCategories(db: Database): Promise<string[]> {
  * would violate it even transiently inside the transaction.
  */
 export async function replaceCategories(db: Database, categories: unknown): Promise<string[]> {
-  if (!Array.isArray(categories) || !categories.every(c => typeof c === 'string' && c.length > 0)) {
+  if (!Array.isArray(categories) || !categories.every(c => typeof c === 'string' && c.trim().length > 0)) {
     throw new DocumentValidationError('categories must be an array of non-empty strings.');
   }
   const incoming = [...new Set(categories as string[])];
@@ -148,7 +148,10 @@ export async function replaceCategories(db: Database, categories: unknown): Prom
     }
   });
 
-  return incoming;
+  // Re-read rather than echoing `incoming` so PUT's response body carries
+  // the same ordering GET does (review finding: request-order vs ORDER BY
+  // name would otherwise disagree between the two).
+  return listCategories(db);
 }
 
 /** Whether `category` is in the (management-editable, STR-112/113) seeded

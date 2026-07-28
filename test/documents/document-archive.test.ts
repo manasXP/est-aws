@@ -6,6 +6,8 @@ import '../../aws-blocks/index';
 import { runLocalMigrations, MIGRATIONS_DIR } from '../../aws-blocks/migrations-runner';
 import { postJournalEntry } from '../../aws-blocks/finance/journal';
 import { linkDocumentToEntry } from '../../aws-blocks/finance/documents';
+import { createMember } from '../../aws-blocks/members/members-api';
+import { createProject } from '../../aws-blocks/projects/projects-api';
 import {
   registerDocument,
   getDocument,
@@ -139,6 +141,38 @@ describe('STR-114 T-U3 — invalid state transitions are 409, record unchanged',
 
     const row = await db.queryOne<{ status: string }>(sql`SELECT status FROM documents WHERE id = ${documentId}`);
     expect(row).toEqual({ status: 'active' });
+  });
+});
+
+describe('STR-114 — listDocuments level/entity filters and the all sentinel (review follow-up)', () => {
+  it('level, projectId, and memberId each narrow the listing, and status=all returns archived rows too', async () => {
+    const db = await freshMigratedDb();
+    const bucket = freshBucket();
+    const project = await createProject(db, { name: 'Wing A' });
+    const member = await createMember(db, { name: 'Asha Rao' });
+
+    const society = await registerDocument(db, bucket, {
+      level: 'society', title: 'Bye-laws', category: 'Bye-laws',
+      filename: 's.pdf', contentType: 'application/pdf', uploadedBy: 'emp-1',
+    });
+    const proj = await registerDocument(db, bucket, {
+      level: 'project', projectId: project.project_id, title: 'Sanction', category: 'Sanctioned Plans',
+      filename: 'p.pdf', contentType: 'application/pdf', uploadedBy: 'emp-1',
+    });
+    const memb = await registerDocument(db, bucket, {
+      level: 'member', memberId: member.member_id, title: 'KYC', category: 'KYC',
+      filename: 'm.pdf', contentType: 'application/pdf', uploadedBy: 'emp-1',
+    });
+
+    expect((await listDocuments(db, { level: 'project' })).map(d => d.documentId)).toEqual([proj.documentId]);
+    expect((await listDocuments(db, { projectId: project.project_id })).map(d => d.documentId)).toEqual([proj.documentId]);
+    expect((await listDocuments(db, { memberId: member.member_id })).map(d => d.documentId)).toEqual([memb.documentId]);
+
+    await archiveDocument(db, society.documentId);
+    const all = (await listDocuments(db, { status: 'all' })).map(d => d.documentId);
+    expect(all).toContain(society.documentId);
+    expect(all).toContain(proj.documentId);
+    expect(all).toContain(memb.documentId);
   });
 });
 

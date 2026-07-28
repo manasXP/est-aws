@@ -7,14 +7,9 @@ import { postJournalEntry } from '../../aws-blocks/finance/journal';
 import {
   getLedgerAccountsForPeriod,
   getPostingsInPeriod,
-  buildLedgerMastersXml,
-  buildDayBookVouchersXml,
+  buildTallyExportXml,
 } from '../../aws-blocks/finance/tally-export';
-import {
-  startTallyExport,
-  processTallyExport,
-  TALLY_EXPORT_XML_SEPARATOR,
-} from '../../aws-blocks/finance/tally-export-jobs';
+import { startTallyExport, processTallyExport } from '../../aws-blocks/finance/tally-export-jobs';
 
 // STR-103 — E11's assembly: the export_jobs lifecycle behind the Tally
 // export AsyncJob (TC-FIN-042). Unit-level (BE-U): every case runs directly
@@ -111,14 +106,18 @@ describe('STR-103 T-U1 (TC-FIN-042) — successful export processing', () => {
     expect(completed.completed_at).not.toBeNull();
     expect(completed.failure_reason).toBeNull();
 
-    // The stored document must be the two STR-101/102 generators' output
-    // verbatim -- computed independently here, never hardcoded XML.
-    const expected =
-      buildLedgerMastersXml(await getLedgerAccountsForPeriod(db, '2026-04-01', '2027-03-31')) +
-      TALLY_EXPORT_XML_SEPARATOR +
-      buildDayBookVouchersXml(await getPostingsInPeriod(db, '2026-04-01', '2027-03-31'));
+    // The stored document must be the STR-101/102 generators' combined
+    // output verbatim -- computed independently here, never hardcoded XML.
+    // STR-104: one envelope carrying masters + vouchers, not the two
+    // concatenated envelopes this originally stored (two root elements,
+    // not well-formed XML).
+    const expected = buildTallyExportXml(
+      await getLedgerAccountsForPeriod(db, '2026-04-01', '2027-03-31'),
+      await getPostingsInPeriod(db, '2026-04-01', '2027-03-31'),
+    );
     const stored = await bucket.get(completed.document_path!);
     expect(stored!.body.toString('utf-8')).toBe(expected);
+    expect(expected.match(/<ENVELOPE>/g) ?? []).toHaveLength(1);
   });
 });
 

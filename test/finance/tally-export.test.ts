@@ -11,6 +11,7 @@ import {
   tallyParentGroupFor,
   buildLedgerMastersXml,
   buildDayBookVouchersXml,
+  buildTallyExportXml,
 } from '../../aws-blocks/finance/tally-export';
 
 // STR-101 — the ledger-masters half of E11's Tally export (TC-FIN-041):
@@ -298,5 +299,97 @@ describe('STR-102 Tally day-book vouchers (TC-FIN-040)', () => {
 
     const postings = await getPostingsInPeriod(db, '2026-06-10', '2026-06-20');
     expect(postings.some(p => p.description === 'IST-next-day posting on to bound')).toBe(false);
+  });
+});
+
+// STR-104 — the real-Tally spike's dialect corrections. The STR-101/102
+// generators emitted a bare <ENVELOPE><IMPORTDATA><REQUESTDATA> shell, and
+// STR-103 concatenated the two envelopes into one file: that file has two
+// root elements, so it is not well-formed XML at all (libxml2 and expat
+// both reject it) and no Tally version can read it. Tally's published
+// import samples pin the envelope this suite now asserts -- HEADER /
+// TALLYREQUEST, a BODY wrapper, REQUESTDESC / REPORTNAME naming the import
+// report, and every master or voucher inside its own <TALLYMESSAGE>.
+// See https://help.tallysolutions.com/sample-xml/.
+describe('STR-104 Tally import dialect', () => {
+  const ACCOUNTS = [
+    { id: 'cash', name: 'Cash', kind: 'cash' },
+    { id: 'bank', name: 'Bank', kind: 'bank' },
+  ];
+
+  /** One `<ENVELOPE>` root, opened and closed exactly once -- the defect
+   * STR-103's `masters + separator + vouchers` concatenation introduced. */
+  function expectSingleEnvelope(xml: string): void {
+    expect(xml.match(/<ENVELOPE>/g) ?? []).toHaveLength(1);
+    expect(xml.match(/<\/ENVELOPE>/g) ?? []).toHaveLength(1);
+    expect(xml.trimEnd().endsWith('</ENVELOPE>')).toBe(true);
+  }
+
+  /** Tally's documented import envelope, minus the report name. */
+  function expectImportEnvelope(xml: string, reportName: string): void {
+    expectSingleEnvelope(xml);
+    expect(xml).toContain('<HEADER>');
+    expect(xml).toContain('<TALLYREQUEST>Import Data</TALLYREQUEST>');
+    expect(xml).toContain('<BODY>');
+    expect(xml).toContain('<IMPORTDATA>');
+    expect(xml).toContain('<REQUESTDESC>');
+    expect(xml).toContain(`<REPORTNAME>${reportName}</REPORTNAME>`);
+    expect(xml).toContain('<REQUESTDATA>');
+  }
+
+  it('wraps ledger masters in the documented All Masters import envelope', () => {
+    const xml = buildLedgerMastersXml(ACCOUNTS);
+    expectImportEnvelope(xml, 'All Masters');
+    // One TALLYMESSAGE per master -- Tally ignores a <LEDGER> that is not
+    // inside one.
+    expect(xml.match(/<TALLYMESSAGE xmlns:UDF="TallyUDF">/g) ?? []).toHaveLength(2);
+    expect(xml).toContain('<LEDGER NAME="Cash" ACTION="Create">');
+  });
+
+  it('wraps day-book vouchers in the documented Vouchers import envelope', async () => {
+    const db = await freshMigratedDb();
+    await postJournalEntry(db, 'a posting', [
+      { accountId: 'bank', direction: 'debit', amount: '100.00' },
+      { accountId: 'cash', direction: 'credit', amount: '100.00' },
+    ], { postedAt: '2026-06-15T12:00:00Z' });
+
+    const xml = buildDayBookVouchersXml(await getPostingsInPeriod(db, '2026-06-01', '2026-06-30'));
+    expectImportEnvelope(xml, 'Vouchers');
+    expect(xml.match(/<TALLYMESSAGE xmlns:UDF="TallyUDF">/g) ?? []).toHaveLength(1);
+  });
+
+  // The VCHTYPE attribute alone does not tell Tally the voucher type on
+  // import; the <VOUCHERTYPENAME> child is what it reads.
+  it('gives every voucher a VOUCHERTYPENAME child, not just the VCHTYPE attribute', async () => {
+    const db = await freshMigratedDb();
+    await postJournalEntry(db, 'a posting', [
+      { accountId: 'bank', direction: 'debit', amount: '100.00' },
+      { accountId: 'cash', direction: 'credit', amount: '100.00' },
+    ], { postedAt: '2026-06-15T12:00:00Z' });
+
+    const xml = buildDayBookVouchersXml(await getPostingsInPeriod(db, '2026-06-01', '2026-06-30'));
+    expect(xml).toContain('<VOUCHER VCHTYPE="Journal" ACTION="Create">');
+    expect(xml).toContain('<VOUCHERTYPENAME>Journal</VOUCHERTYPENAME>');
+  });
+
+  // The whole point of the fix: the single stored artifact is ONE
+  // well-formed document, with masters ahead of the vouchers that
+  // reference them (Tally applies TALLYMESSAGE blocks in order, and
+  // rejects a voucher naming a ledger it does not yet know).
+  it('builds the combined export as one well-formed envelope, masters before vouchers', async () => {
+    const db = await freshMigratedDb();
+    await postJournalEntry(db, 'a posting', [
+      { accountId: 'bank', direction: 'debit', amount: '100.00' },
+      { accountId: 'cash', direction: 'credit', amount: '100.00' },
+    ], { postedAt: '2026-06-15T12:00:00Z' });
+
+    const accounts = await getLedgerAccountsForPeriod(db, '2026-06-01', '2026-06-30');
+    const postings = await getPostingsInPeriod(db, '2026-06-01', '2026-06-30');
+    const xml = buildTallyExportXml(accounts, postings);
+
+    expectImportEnvelope(xml, 'Vouchers');
+    expect(xml.indexOf('<LEDGER ')).toBeLessThan(xml.indexOf('<VOUCHER '));
+    expect(xml.match(/<LEDGER /g) ?? []).toHaveLength(2);
+    expect(xml.match(/<VOUCHER /g) ?? []).toHaveLength(1);
   });
 });

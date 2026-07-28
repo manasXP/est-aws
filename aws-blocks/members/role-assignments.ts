@@ -180,6 +180,23 @@ export async function vacateRole(
   return toRoleAssignment(row!);
 }
 
+/**
+ * STR-131: true if `memberId` currently holds any open EC office -- the
+ * society bulletin board's posting-authority predicate (Communication: "any
+ * EC member may post to the society board"), and the EC half of the
+ * eligibility pair whose PC half is asset-visibility.ts's `isPcMember`.
+ * Lives here, beside EC_OFFICES, so STR-132's HTTP layer reuses it as-is
+ * rather than re-deriving "current EC office" from role_assignments.
+ *
+ * "Current" is the open-interval rule STR-044 already established for
+ * capability claims: only `effective_to IS NULL` rows count, so a vacated
+ * office drops posting rights immediately with no separate revocation.
+ */
+export async function hasCurrentEcOffice(db: Database, memberId: string): Promise<boolean> {
+  const openRoles = (await listRoleAssignments(db, { memberId })).filter(r => r.effectiveTo === null);
+  return openRoles.some(r => EC_OFFICES.includes(r.role));
+}
+
 export interface ListRoleAssignmentsOptions {
   memberId?: string;
   role?: ManagementRole;

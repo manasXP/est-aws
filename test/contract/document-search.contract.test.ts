@@ -65,6 +65,19 @@ describe('STR-115 T-C1 — document search endpoint contract', () => {
     expect(() => op.expectValidResponse(all.status, all.body)).not.toThrow();
   });
 
+  it('GET /v1/documents with an empty q treats it as no filter, not match-nothing', async () => {
+    await runLocalMigrations(db, MIGRATIONS_DIR);
+    const documentId = await registerWithTitle(`Empty-q fixture ${uniqueToken()}`);
+
+    const response = await dispatchRequest('GET', '/v1/documents?q=');
+
+    const op = await contractTest('admin', '/documents', 'get');
+    expect(response.status).toBe(200);
+    expect((response.body as { items: { document_id: string }[] }).items.map(d => d.document_id))
+      .toContain(documentId);
+    expect(() => op.expectValidResponse(response.status, response.body)).not.toThrow();
+  });
+
   it('PATCH /v1/documents/{documentId} with member_visible conforms to the Document shape and flips the flag', async () => {
     await runLocalMigrations(db, MIGRATIONS_DIR);
     const documentId = await registerWithTitle(`Visibility ${uniqueToken()}`);

@@ -63,7 +63,10 @@ export function registerDocumentRoutes(scope: Scope, db: Database, bucket: FileB
           level: (level as DocumentLevel | null) ?? undefined,
           projectId: params.get('project_id') ?? undefined,
           memberId: params.get('member_id') ?? undefined,
-          q: params.get('q') ?? undefined,
+          // `|| undefined`, not `??`: `?q=` (empty string) must mean "no
+          // filter" — plainto_tsquery('') is the empty tsquery, which
+          // matches nothing and would silently empty the whole registry.
+          q: params.get('q') || undefined,
           category: params.get('category') ?? undefined,
           uploadedFrom: params.get('uploaded_from') ?? undefined,
           uploadedTo: params.get('uploaded_to') ?? undefined,

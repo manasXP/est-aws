@@ -1,4 +1,4 @@
-import { Scope, Database, FileBucket, RawRoute, CronJob, Logger, Metrics } from '@aws-blocks/blocks';
+import { Scope, Database, FileBucket, RawRoute, CronJob, AsyncJob, Logger, Metrics } from '@aws-blocks/blocks';
 import { SCOPE_ID, DB_BLOCK_ID, DOCUMENTS_BLOCK_ID } from './block-ids';
 import { runMaintenanceChargeRun, runLateFeeSweep, chargeRunPeriodFromScheduledTime } from './payments/charges';
 import { dispatchDueDateReminders } from './payments/reminders';
@@ -8,6 +8,7 @@ import type { PaymentProvider } from './payments/payment-provider';
 import { FakePaymentProvider } from './payments/fake-payment-provider';
 import { initiatePayment, getPaymentStatus, ChargeNotPayableError, ChargeAlreadyLockedError } from './payments/payment-initiation';
 import { settleWebhookEvent, InvalidWebhookSignatureError } from './payments/webhook-settlement';
+import { findLingeringIntents, reconcileIntent } from './payments/reconciliation';
 import { linkDocumentToEntry, DocumentLinkError } from './finance/documents';
 import { problemResponse, sendUnauthorized, sendNotFound, sendValidationError, ValidationError } from './http/problem-response';
 import { registerBookRoutes } from './finance/books-routes';
@@ -291,6 +292,36 @@ new RawRoute(scope, 'razorpay-webhook', {
     // acking 200 there avoids a Razorpay retry storm; the flagged intent
     // carries the unresolved state forward (STR-096).
     ctx.response.send({ status: 'ok' });
+  },
+});
+
+// STR-096: reconciliation of intents a lost or delayed webhook left stuck.
+// Split into a CronJob that only *finds* work and an AsyncJob that does one
+// intent's worth of it, so a provider-status lookup failing for one intent
+// retries (and eventually DLQs) on its own rather than failing a whole
+// batch sweep -- AsyncJob's `queued -> running -> completed | failed`
+// lifecycle is exactly what E10 asks for here. `maxRetries` is deliberately
+// left at the framework default (3).
+const paymentReconciliationJob = new AsyncJob(scope, 'payment-reconciliation', {
+  handler: async (payload: { paymentIntentId: string }) => {
+    await reconcileIntent(db, documents, paymentProvider, payload.paymentIntentId);
+  },
+});
+
+// A gateway webhook normally lands within seconds, so 15 minutes without one
+// is already well past "delayed" -- and re-sweeping on the same interval
+// costs nothing, since an intent settled in the meantime no longer matches
+// the query.
+const RECONCILIATION_STALE_AFTER_MINUTES = 15;
+
+new CronJob(scope, 'payment-reconciliation-sweep', {
+  schedule: 'rate(15 minutes)',
+  description: 'Reconcile payment intents left unsettled by a lost or delayed webhook',
+  handler: async () => {
+    const lingering = await findLingeringIntents(db, RECONCILIATION_STALE_AFTER_MINUTES);
+    for (const intent of lingering) {
+      await paymentReconciliationJob.submit({ paymentIntentId: intent.paymentIntentId });
+    }
   },
 });
 

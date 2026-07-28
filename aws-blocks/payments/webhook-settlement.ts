@@ -110,6 +110,7 @@ interface PaymentIntentRow {
   member_id: string;
   charge_ids: string[];
   amount: string;
+  status: string;
 }
 
 /**
@@ -168,10 +169,21 @@ export async function settleWebhookEvent(
     }
 
     const row = await tx.queryOne<PaymentIntentRow>(
-      sql`SELECT id, member_id, charge_ids, amount::text AS amount FROM payment_intents WHERE provider_intent_id = ${event.providerIntentId} FOR UPDATE`,
+      sql`SELECT id, member_id, charge_ids, amount::text AS amount, status FROM payment_intents WHERE provider_intent_id = ${event.providerIntentId} FOR UPDATE`,
     );
     if (!row) {
       throw new UnknownPaymentIntentError(event.providerIntentId);
+    }
+    // STR-096: event-level dedup above only stops a *replay* of the same
+    // delivery. It cannot stop a genuine first-time webhook for an intent
+    // STR-096's reconciliation job already settled -- that webhook carries a
+    // never-seen event id, so it would sail past the dedup and post a second
+    // journal entry and receipt for one payment. Terminal status, re-read
+    // under this same FOR UPDATE lock, is the per-intent guard that makes
+    // settlement idempotent across *both* paths in either order (E10's
+    // "double settlement across paths" risk).
+    if (row.status === 'succeeded' || row.status === 'failed') {
+      return;
     }
     const intent: LockedPaymentIntent = { id: row.id, memberId: row.member_id, chargeIds: row.charge_ids, amount: row.amount };
 

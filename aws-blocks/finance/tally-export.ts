@@ -17,47 +17,16 @@ export interface LedgerAccount {
   kind: string;
 }
 
-/** One `journal_lines` row, plus its parent entry's header fields and its account's masters fields. */
+/** One `journal_lines` row, plus its parent entry's header fields and its account's name. */
 interface JournalPostingRow {
   entry_id: string;
   description: string;
   /** IST calendar date (YYYY-MM-DD) of the entry's `posted_at` -- computed once here, never re-derived from a UTC timestamp in JS. */
   ist_date: string;
-  line_id: string;
   account_id: string;
   account_name: string;
-  account_kind: string;
   direction: PostingDirection;
   amount: string;
-}
-
-/**
- * STR-101/STR-102: the single query joining `journal_entries` +
- * `journal_lines` + `ledger_accounts`, scoped to the IST-calendar-date
- * period window `[from, to]` (STR-024's convention: `(posted_at AT TIME
- * ZONE 'Asia/Kolkata')::date BETWEEN`, never raw UTC) -- both
- * `getLedgerAccountsForPeriod` (STR-101) and `getPostingsInPeriod`
- * (STR-102) build on this one query rather than each duplicating the
- * predicate. The `sql` tag has no fragment-composition support (any `${}`
- * interpolation -- even of another query object -- becomes an opaque bound
- * parameter, never literal SQL text; see assets-api.ts's own note on this
- * same limitation), so sharing happens by having both callers reuse this
- * one query's rows, not by splicing WHERE-clause text across two queries.
- * One row per `journal_lines` row, ordered by `posted_at` then `jl.id` for
- * a deterministic, stable result.
- */
-async function getJournalPostingRowsInPeriod(db: Database, from: string, to: string): Promise<JournalPostingRow[]> {
-  return db.query<JournalPostingRow>(
-    sql`SELECT je.id AS entry_id, je.description,
-               (je.posted_at AT TIME ZONE 'Asia/Kolkata')::date::text AS ist_date,
-               jl.id AS line_id, jl.account_id, la.name AS account_name, la.kind AS account_kind,
-               jl.direction, jl.amount::text AS amount
-        FROM journal_entries je
-        JOIN journal_lines jl ON jl.entry_id = je.id
-        JOIN ledger_accounts la ON la.id = jl.account_id
-        WHERE (je.posted_at AT TIME ZONE 'Asia/Kolkata')::date BETWEEN ${from}::date AND ${to}::date
-        ORDER BY je.posted_at, jl.id`,
-  );
 }
 
 /**
@@ -66,16 +35,25 @@ async function getJournalPostingRowsInPeriod(db: Database, from: string, to: str
  * (inclusive, YYYY-MM-DD). An account touched only outside the window is
  * excluded entirely — this is period filtering of referenced accounts, not
  * a chart-of-accounts sync.
+ *
+ * The IST window predicate is deliberately duplicated between this query
+ * and `getPostingsInPeriod`'s (the STR-102 Refactor asked for a shared
+ * helper, but the `sql` tag has no fragment composition -- any `${}`
+ * interpolation becomes an opaque bound parameter, never literal SQL text;
+ * see assets-api.ts's note on the same limitation -- and funneling this
+ * one-row-per-account query through the one-row-per-line postings query
+ * just to dedup in JS would materialize the whole period's journal for a
+ * handful of accounts).
  */
 export async function getLedgerAccountsForPeriod(db: Database, from: string, to: string): Promise<LedgerAccount[]> {
-  const rows = await getJournalPostingRowsInPeriod(db, from, to);
-  const accountsById = new Map<string, LedgerAccount>();
-  for (const row of rows) {
-    if (!accountsById.has(row.account_id)) {
-      accountsById.set(row.account_id, { id: row.account_id, name: row.account_name, kind: row.account_kind });
-    }
-  }
-  return [...accountsById.values()].sort((a, b) => a.id.localeCompare(b.id));
+  return db.query<LedgerAccount>(
+    sql`SELECT DISTINCT la.id, la.name, la.kind
+        FROM ledger_accounts la
+        JOIN journal_lines jl ON jl.account_id = la.id
+        JOIN journal_entries je ON je.id = jl.entry_id
+        WHERE (je.posted_at AT TIME ZONE 'Asia/Kolkata')::date BETWEEN ${from}::date AND ${to}::date
+        ORDER BY la.id`,
+  );
 }
 
 /** One `<ALLLEDGERENTRIES.LIST>` line of a day-book voucher. */
@@ -97,14 +75,25 @@ export interface Posting {
 
 /**
  * STR-102: every `journal_entries` posting whose `posted_at` falls, on the
- * IST calendar date, within `[from, to]` (inclusive) -- each with its full
- * array of lines, grouped back from the flat rows of
- * `getJournalPostingRowsInPeriod`. Ordered by `posted_at` (via the shared
- * query) for a deterministic file; applies no special-casing to
+ * IST calendar date, within `[from, to]` (inclusive; STR-024's IST-window
+ * convention, see getLedgerAccountsForPeriod's note on the deliberate
+ * predicate duplication) -- each with its full array of lines, grouped
+ * back from one flat row per `journal_lines` row. Ordered by `posted_at`
+ * then `jl.id` for a deterministic file; applies no special-casing to
  * `reverses_entry_id` -- a reversing entry is just another posting here.
  */
 export async function getPostingsInPeriod(db: Database, from: string, to: string): Promise<Posting[]> {
-  const rows = await getJournalPostingRowsInPeriod(db, from, to);
+  const rows = await db.query<JournalPostingRow>(
+    sql`SELECT je.id AS entry_id, je.description,
+               (je.posted_at AT TIME ZONE 'Asia/Kolkata')::date::text AS ist_date,
+               jl.account_id, la.name AS account_name,
+               jl.direction, jl.amount::text AS amount
+        FROM journal_entries je
+        JOIN journal_lines jl ON jl.entry_id = je.id
+        JOIN ledger_accounts la ON la.id = jl.account_id
+        WHERE (je.posted_at AT TIME ZONE 'Asia/Kolkata')::date BETWEEN ${from}::date AND ${to}::date
+        ORDER BY je.posted_at, jl.id`,
+  );
   const postingsByEntryId = new Map<string, Posting>();
   for (const row of rows) {
     let posting = postingsByEntryId.get(row.entry_id);

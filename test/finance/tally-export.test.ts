@@ -232,8 +232,10 @@ describe('STR-102 Tally day-book vouchers (TC-FIN-040)', () => {
 
     await reverseJournalEntry(db, entryId, 'reversal of original posting');
     // reverseJournalEntry doesn't accept an explicit postedAt, so it lands
-    // at the real `now()` -- pin the period wide enough to cover both.
-    const postings = await getPostingsInPeriod(db, '2026-01-01', '2027-12-31');
+    // at the real `now()` -- pin the period wide enough to cover both, with
+    // a far-future `to` so this test doesn't start failing when the real
+    // clock passes a nearer bound (review finding on the original window).
+    const postings = await getPostingsInPeriod(db, '2026-01-01', '2099-12-31');
 
     expect(postings).toHaveLength(2);
     const xml = buildDayBookVouchersXml(postings);
@@ -277,5 +279,24 @@ describe('STR-102 Tally day-book vouchers (TC-FIN-040)', () => {
 
     const postings = await getPostingsInPeriod(db, '2026-06-10', '2026-06-20');
     expect(postings.some(p => p.description === 'IST-midnight-straddling posting')).toBe(true);
+  });
+
+  // T-U4 mirror (review finding): the same skew on the `to` bound must
+  // EXCLUDE -- a UTC-evening posting on `to`'s calendar date is already
+  // IST the next day, so it falls outside the window. A UTC-date
+  // implementation would wrongly include it.
+  it('excludes a UTC-evening posting on the to bound that is already IST the next day', async () => {
+    const db = await freshMigratedDb();
+
+    // 2026-06-20T19:00:00Z is 2026-06-21T00:30 IST -- outside a
+    // 2026-06-10..2026-06-20 period by the IST calendar date, even though
+    // its UTC calendar date (2026-06-20) is the `to` bound itself.
+    await postJournalEntry(db, 'IST-next-day posting on to bound', [
+      { accountId: 'bank', direction: 'debit', amount: '100.00' },
+      { accountId: 'cash', direction: 'credit', amount: '100.00' },
+    ], { postedAt: '2026-06-20T19:00:00Z' });
+
+    const postings = await getPostingsInPeriod(db, '2026-06-10', '2026-06-20');
+    expect(postings.some(p => p.description === 'IST-next-day posting on to bound')).toBe(false);
   });
 });

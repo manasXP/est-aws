@@ -69,11 +69,13 @@ describe('STR-102 property: day-book voucher export reconciliation (TC-FIN-040)'
     const RANGE_DAYS = 60;
     const POSTING_COUNT = 40;
 
+    let postedCount = 0;
     for (let i = 0; i < POSTING_COUNT; i++) {
       const { balanced, lines } = generatePosting(rand);
       const postedAt = randomTimestamp(rand, BASE_DATE, RANGE_DAYS);
       if (!balanced) continue; // only valid postings ever reach journal_entries
       await postJournalEntry(db, `property posting ${i}`, lines, { postedAt });
+      postedCount++;
     }
 
     const fromOffset = Math.floor(rand() * RANGE_DAYS);
@@ -121,8 +123,11 @@ describe('STR-102 property: day-book voucher export reconciliation (TC-FIN-040)'
 
     // Sanity: the window actually excluded at least one posting and
     // included at least one -- otherwise this run degenerated to a trivial
-    // all-or-nothing window and didn't exercise the boundary.
+    // all-or-nothing window and didn't exercise the boundary. Compares
+    // against the number of postings actually WRITTEN (balanced only),
+    // not POSTING_COUNT, which the unbalanced-skip makes strictly larger
+    // (review finding: the old guard could hold vacuously).
     expect(expectedCount).toBeGreaterThan(0);
-    expect(expectedCount).toBeLessThan(POSTING_COUNT);
+    expect(expectedCount).toBeLessThan(postedCount);
   });
 });

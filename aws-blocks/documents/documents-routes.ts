@@ -5,9 +5,9 @@
 // delegates to documents-api.ts for everything else.
 import { RawRoute } from '@aws-blocks/blocks';
 import type { Database, FileBucket, Scope } from '@aws-blocks/blocks';
-import { registerDocument, getDocument, getDownloadUrl, updateDocument, DocumentValidationError, DOWNLOAD_URL_EXPIRES_IN_SECONDS } from './documents-api';
+import { registerDocument, getDocument, getDownloadUrl, updateDocument, listCategories, replaceCategories, DocumentValidationError, DocumentCategoryConflictError, DOWNLOAD_URL_EXPIRES_IN_SECONDS } from './documents-api';
 import type { DocumentRecord } from './documents-api';
-import { sendNotFound, sendValidationError, sendUnauthorized, problemResponse } from '../http/problem-response';
+import { sendNotFound, sendValidationError, sendUnauthorized, sendConflictError, problemResponse } from '../http/problem-response';
 import { resolveActor } from '../http/capability-gate';
 
 // The Admin OpenAPI's Document schema types `size_bytes` as a plain
@@ -135,6 +135,38 @@ export function registerDocumentRoutes(scope: Scope, db: Database, bucket: FileB
             ctx.response.send(problemResponse('unknown_category', e.message));
             return;
           }
+          sendValidationError(ctx, e);
+          return;
+        }
+        throw e;
+      }
+    },
+  });
+
+  // STR-113: the category list's own CRUD surface — GET/PUT with
+  // replace-the-whole-set semantics (the STR-057/STR-043 precedent).
+  new RawRoute(scope, 'list-document-categories', {
+    method: 'GET',
+    path: '/v1/document-categories',
+    handler: async ctx => {
+      ctx.response.send({ categories: await listCategories(db) });
+    },
+  });
+
+  new RawRoute(scope, 'replace-document-categories', {
+    method: 'PUT',
+    path: '/v1/document-categories',
+    handler: async ctx => {
+      const body = await ctx.request.json();
+      try {
+        const categories = await replaceCategories(db, body?.categories);
+        ctx.response.send({ categories });
+      } catch (e) {
+        if (e instanceof DocumentCategoryConflictError) {
+          sendConflictError(ctx, e);
+          return;
+        }
+        if (e instanceof DocumentValidationError) {
           sendValidationError(ctx, e);
           return;
         }

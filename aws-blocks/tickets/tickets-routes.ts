@@ -13,6 +13,8 @@ import {
   withdrawTicket,
   TicketLifecycleConflictError,
 } from './lifecycle';
+import { addComment } from './comments';
+import type { TicketCommentRecord } from './comments';
 import type { PushAdapter } from '../notifications/push-adapter';
 import { sendUnauthorized, sendValidationError, sendConflictError } from '../http/problem-response';
 
@@ -30,6 +32,19 @@ function toTicketResponse(ticket: TicketRecord): Record<string, unknown> {
     resolved_at: ticket.resolvedAt,
     closed_at: ticket.closedAt,
     resolution_note: ticket.resolutionNote,
+  };
+}
+
+// STR-123: the shared TicketComment wire shape -- one schema regardless of
+// which surface wrote the row. `author_id` stays internal (the OpenAPI
+// exposes kind and name only).
+function toCommentResponse(comment: TicketCommentRecord): Record<string, unknown> {
+  return {
+    comment_id: comment.commentId,
+    author_kind: comment.authorKind,
+    author_name: comment.authorName,
+    body: comment.body,
+    created_at: comment.createdAt,
   };
 }
 
@@ -164,6 +179,65 @@ export function registerTicketRoutes(scope: Scope, db: Database, pushAdapter: Pu
       try {
         const ticket = await reopenTicket(db, ctx.request.params.ticketId, memberId, new Date());
         ctx.response.send(toTicketResponse(ticket));
+      } catch (e) {
+        sendLifecycleError(ctx, e);
+      }
+    },
+  });
+
+  // STR-123: the two comment endpoints. Both are thin adapters over
+  // comments.ts, which owns the terminal-ticket and ownership guards.
+
+  new RawRoute(scope, 'add-ticket-comment-member', {
+    method: 'POST',
+    path: '/v1/me/tickets/{ticketId}/comments',
+    handler: async ctx => {
+      const memberId = ctx.request.headers.get('X-Actor-Member-Id');
+      if (!memberId) {
+        sendUnauthorized(ctx, 'X-Actor-Member-Id header is required.');
+        return;
+      }
+
+      const body = await ctx.request.json().catch(() => null);
+      try {
+        const comment = await addComment(
+          db,
+          pushAdapter,
+          ctx.request.params.ticketId,
+          'member',
+          memberId,
+          body?.body,
+        );
+        ctx.response.status = 201;
+        ctx.response.send(toCommentResponse(comment));
+      } catch (e) {
+        sendLifecycleError(ctx, e);
+      }
+    },
+  });
+
+  new RawRoute(scope, 'add-ticket-comment-staff', {
+    method: 'POST',
+    path: '/v1/tickets/{ticketId}/comments',
+    handler: async ctx => {
+      const actorId = ctx.request.headers.get('X-Actor-Employee-Id');
+      if (!actorId) {
+        sendUnauthorized(ctx, 'X-Actor-Employee-Id header is required.');
+        return;
+      }
+
+      const body = await ctx.request.json().catch(() => null);
+      try {
+        const comment = await addComment(
+          db,
+          pushAdapter,
+          ctx.request.params.ticketId,
+          'staff',
+          actorId,
+          body?.body,
+        );
+        ctx.response.status = 201;
+        ctx.response.send(toCommentResponse(comment));
       } catch (e) {
         sendLifecycleError(ctx, e);
       }

@@ -76,11 +76,19 @@ async function appendAction(
   );
 }
 
+/** The states in which a ticket still accepts writes -- the complement of
+ * the terminal pair. STR-123's comment thread guards on exactly this set,
+ * so "terminal" is defined once for status transitions and thread writes
+ * alike. */
+export const NON_TERMINAL_TICKET_STATUSES: TicketStatus[] = ['open', 'in_progress', 'resolved'];
+
 /** Loads the ticket under `FOR UPDATE` and rejects unless its status is one
  * of `allowed` -- the single guard every transition below routes through,
  * so `closed`/`withdrawn` are unreachable as a source state everywhere at
- * once. */
-async function lockInState(
+ * once. Exported for STR-123, whose comment writes are not transitions but
+ * must honour the same terminal rule (the epic Risks section's
+ * shared-state-machine mitigation). */
+export async function lockInState(
   tx: { queryOne: <T>(query: ReturnType<typeof sql>) => Promise<T | null> },
   ticketId: string,
   allowed: TicketStatus[],

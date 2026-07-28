@@ -13,7 +13,10 @@ import {
   withdrawTicket,
   TicketLifecycleConflictError,
 } from './lifecycle';
+import { setTicketWorkOrder } from './work-order-link';
 import { addComment } from './comments';
+import { getMember } from '../members/members-api';
+import { getEmployee } from '../employees/employees-api';
 import type { TicketCommentRecord } from './comments';
 import { createAttachmentUploadSlot, getAttachmentDownloadUrl } from './attachments';
 import { DOWNLOAD_URL_EXPIRES_IN_SECONDS } from '../documents/documents-api';
@@ -35,6 +38,33 @@ function toTicketResponse(ticket: TicketRecord): Record<string, unknown> {
     resolved_at: ticket.resolvedAt,
     closed_at: ticket.closedAt,
     resolution_note: ticket.resolutionNote,
+  };
+}
+
+// STR-125: the admin Ticket schema -- the full triage view, which unlike
+// the member-facing one carries the member and assignee (by id *and* name),
+// `entered_by`, and the work-order link. The two name lookups are why this
+// one needs the db; STR-126's triage queue is the next consumer.
+async function toAdminTicketResponse(db: Database, ticket: TicketRecord): Promise<Record<string, unknown>> {
+  const member = await getMember(db, ticket.memberId);
+  const assignee = ticket.assigneeId === null ? null : await getEmployee(db, ticket.assigneeId);
+  return {
+    ticket_id: ticket.ticketId,
+    member_id: ticket.memberId,
+    member_name: member!.name,
+    category: ticket.category,
+    subject: ticket.subject,
+    description: ticket.description,
+    status: ticket.status,
+    assignee_id: ticket.assigneeId,
+    assignee_name: assignee?.name ?? null,
+    entered_by: ticket.enteredBy,
+    work_order_id: ticket.workOrderId,
+    resolution_note: ticket.resolutionNote,
+    created_at: ticket.createdAt,
+    updated_at: ticket.updatedAt,
+    resolved_at: ticket.resolvedAt,
+    closed_at: ticket.closedAt,
   };
 }
 
@@ -94,6 +124,60 @@ export function registerTicketRoutes(
           return;
         }
         throw e;
+      }
+    },
+  });
+
+  // STR-125: on-behalf entry for a member who phoned or walked in -- the
+  // same creation core as the mobile route above, with the acting admin
+  // recorded as `entered_by` (the offline-payment pattern the spec's
+  // Decisions name).
+
+  new RawRoute(scope, 'create-ticket-on-behalf', {
+    method: 'POST',
+    path: '/v1/tickets',
+    handler: async ctx => {
+      const actorId = ctx.request.headers.get('X-Actor-Employee-Id');
+      if (!actorId) {
+        sendUnauthorized(ctx, 'X-Actor-Employee-Id header is required.');
+        return;
+      }
+
+      const body = await ctx.request.json().catch(() => null);
+      try {
+        const ticket = await raiseTicket(db, body?.member_id, body?.category, body?.subject, body?.description, actorId);
+        ctx.response.status = 201;
+        ctx.response.send(await toAdminTicketResponse(db, ticket));
+      } catch (e) {
+        if (e instanceof TicketValidationError) {
+          sendValidationError(ctx, e);
+          return;
+        }
+        throw e;
+      }
+    },
+  });
+
+  new RawRoute(scope, 'set-ticket-work-order', {
+    method: 'PUT',
+    path: '/v1/tickets/{ticketId}/work-order',
+    handler: async ctx => {
+      const body = await ctx.request.json().catch(() => null);
+      if (body === null || !('work_order_id' in body)) {
+        sendValidationError(ctx, new TicketValidationError('work_order_id is required (null clears the link).'));
+        return;
+      }
+
+      const { ticketId } = ctx.request.params;
+      try {
+        const ticket = await setTicketWorkOrder(db, ticketId, body.work_order_id);
+        if (!ticket) {
+          sendNotFound(ctx, `No ticket ${ticketId}`);
+          return;
+        }
+        ctx.response.send(await toAdminTicketResponse(db, ticket));
+      } catch (e) {
+        sendLifecycleError(ctx, e);
       }
     },
   });

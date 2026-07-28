@@ -7,7 +7,7 @@
 import { randomUUID, createHash } from 'node:crypto';
 import { sql } from '@aws-blocks/blocks';
 import type { Database, FileBucket, Transaction } from '@aws-blocks/blocks';
-import { ValidationError } from '../http/problem-response';
+import { ValidationError, ConflictError } from '../http/problem-response';
 import { getMember } from '../members/members-api';
 import { getProject } from '../projects/projects-api';
 import { pgTextArray } from '../sql-array';
@@ -92,6 +92,66 @@ function toDocument(row: DocumentRow): DocumentRecord {
     uploadedBy: row.uploaded_by,
     uploadedAt: toIso(row.uploaded_at),
   };
+}
+
+/** STR-113: domain rejection for a category-list replace that would drop a
+ * category still referenced by any document, active or archived (AC3).
+ * Nothing is written when this is thrown. */
+export class DocumentCategoryConflictError extends ConflictError {
+  constructor(message: string) {
+    super(message);
+    this.name = 'DocumentCategoryConflictError';
+  }
+}
+
+/** `GET /v1/document-categories` (STR-113, AC1): the society's current
+ * category list, seeded by migrations/032_documents.sql. */
+export async function listCategories(db: Database): Promise<string[]> {
+  const rows = await db.query<{ name: string }>(sql`SELECT name FROM document_categories ORDER BY name`);
+  return rows.map(row => row.name);
+}
+
+/**
+ * `PUT /v1/document-categories` business logic (STR-113, AC2/AC3): replaces
+ * the whole set — the STR-057/STR-043 replace-semantics precedent. Runs in
+ * one transaction: rejects 409 (writing nothing) if any removed category is
+ * still referenced by a document, active or archived; otherwise deletes the
+ * removed names and inserts the added ones. Kept rows are left in place
+ * rather than delete-and-reinsert-everything because documents.category's
+ * FK REFERENCES document_categories(name) — deleting a kept, in-use row
+ * would violate it even transiently inside the transaction.
+ */
+export async function replaceCategories(db: Database, categories: unknown): Promise<string[]> {
+  if (!Array.isArray(categories) || !categories.every(c => typeof c === 'string' && c.trim().length > 0)) {
+    throw new DocumentValidationError('categories must be an array of non-empty strings.');
+  }
+  const incoming = [...new Set(categories as string[])];
+
+  await db.transaction(async tx => {
+    const current = (await tx.query<{ name: string }>(sql`SELECT name FROM document_categories`)).map(r => r.name);
+    const removed = current.filter(name => !incoming.includes(name));
+    const added = incoming.filter(name => !current.includes(name));
+
+    if (removed.length > 0) {
+      const inUse = await tx.query<{ category: string }>(
+        sql`SELECT DISTINCT category FROM documents WHERE category = ANY(${pgTextArray(removed)}::text[])`,
+      );
+      if (inUse.length > 0) {
+        throw new DocumentCategoryConflictError(
+          `Cannot remove categories still in use by documents: ${inUse.map(r => r.category).join(', ')}.`,
+        );
+      }
+      await tx.execute(sql`DELETE FROM document_categories WHERE name = ANY(${pgTextArray(removed)}::text[])`);
+    }
+    for (const name of added) {
+      await tx.execute(sql`INSERT INTO document_categories (name) VALUES (${name})`);
+    }
+  });
+
+  // Re-read rather than echoing `incoming` so PUT's response body carries
+  // the same ordering GET does (review finding: request-order vs ORDER BY
+  // name would otherwise disagree between the two).
+  return listCategories(db);
 }
 
 /** Whether `category` is in the (management-editable, STR-112/113) seeded

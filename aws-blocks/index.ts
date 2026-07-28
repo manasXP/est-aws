@@ -38,6 +38,7 @@ import { registerInvoiceApprovalRoutes } from './vendors/invoice-approvals-route
 import { registerInvoicePaymentRoutes } from './vendors/invoice-payments-routes';
 import { registerEcInvoiceRoutes } from './vendors/ec-invoices-routes';
 import { registerDocumentRoutes } from './documents/documents-routes';
+import { registerPcDocumentRoutes } from './documents/pc-documents-routes';
 // STR-041 code review: no HTTP surface of its own -- imported for its
 // module-load side effect (registering vacateRolesOnStatusChange with
 // members-api.ts's memberStatusTransitionListeners). Without this import,
@@ -452,3 +453,4 @@ registerEcInvoiceRoutes(scope, db, documents);
 // verification from the real uploaded bytes. Reuses the shared `documents`
 // FileBucket STR-025 already wired -- no second bucket.
 registerDocumentRoutes(scope, db, documents);
+registerPcDocumentRoutes(scope, db, documents);

@@ -40,6 +40,7 @@ import { registerEcInvoiceRoutes } from './vendors/ec-invoices-routes';
 import { registerDocumentRoutes } from './documents/documents-routes';
 import { registerPcDocumentRoutes } from './documents/pc-documents-routes';
 import { registerTicketRoutes } from './tickets/tickets-routes';
+import { autoCloseResolvedTickets } from './tickets/lifecycle';
 // STR-041 code review: no HTTP surface of its own -- imported for its
 // module-load side effect (registering vacateRolesOnStatusChange with
 // members-api.ts's memberStatusTransitionListeners). Without this import,
@@ -139,10 +140,11 @@ registerOwnershipRoutes(scope, db);
 const chargeRunLog = new Logger(scope, 'charge-run-log');
 const chargeRunMetrics = new Metrics(scope, 'charge-run-metrics');
 
-// STR-067: the due-date reminder push dispatch's adapter -- the real
-// provider joins with the mobile milestone (E16/E17); swapping it in is a
-// one-line change here, no run-logic edit needed (AC4).
-const dueDateReminderAdapter: PushAdapter = new FakePushAdapter();
+// STR-067: the push dispatch adapter -- the real provider joins with the
+// mobile milestone (E16/E17); swapping it in is a one-line change here, no
+// run-logic edit needed (AC4). STR-122's ticket-resolution push sends
+// through this same interface (its own copy, not the reminder's).
+const pushAdapter: PushAdapter = new FakePushAdapter();
 
 // STR-092: the payment initiation provider -- the real RazorpayTestModeAdapter
 // needs AppSetting-sourced credentials no story has wired yet (STR-091's own
@@ -164,7 +166,7 @@ new CronJob(scope, 'maintenance-charge-run', {
     // STR-065: the overdue sweep inside the same scheduled run -- raises
     // per-society-configured late fees for charges past their grace period.
     await runLateFeeSweep(db, periodKey, dueDate, { log: chargeRunLog, metrics: chargeRunMetrics });
-    await dispatchDueDateReminders(db, dueDateReminderAdapter, raisedCharges);
+    await dispatchDueDateReminders(db, pushAdapter, raisedCharges);
   },
 });
 
@@ -457,5 +459,21 @@ registerDocumentRoutes(scope, db, documents);
 registerPcDocumentRoutes(scope, db, documents);
 
 // STR-121: ticket creation (mobile) and category-routing config (admin) --
-// the E13 member-requests foundation.
-registerTicketRoutes(scope, db);
+// the E13 member-requests foundation. STR-122 adds the four lifecycle
+// transitions (assign/resolve on the admin surface, reopen/withdraw on the
+// mobile one), whose resolve path pushes through the shared adapter.
+registerTicketRoutes(scope, db, pushAdapter);
+
+// STR-122: the ticket auto-close run -- daily at 03:30 IST, just after the
+// charge run's window. Closes every ticket resolved more than 7 days ago.
+// The handler reads no clock of its own: it passes the CronJob's own
+// `scheduledTime` into the pure isPastAutoCloseWindow predicate (the
+// STR-061 split, and this story's Definition of Done).
+new CronJob(scope, 'ticket-auto-close', {
+  schedule: 'cron(30 3 * * ? *)',
+  timezone: 'Asia/Kolkata',
+  description: 'Daily ticket auto-close run (7 days after resolution)',
+  handler: async (event) => {
+    await autoCloseResolvedTickets(db, new Date(event.scheduledTime));
+  },
+});

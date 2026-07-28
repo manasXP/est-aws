@@ -172,8 +172,16 @@ describe('STR-115 T-U3 (TC-DOC-041) — member_visible defaults false, PATCH fli
 
 describe('STR-115 T-U4 (TC-DOC-042) — no member-at-large document endpoint exists', () => {
   it('no /v1/me/* route in the registry touches documents in any form', () => {
+    // STR-133: the Mobile OpenAPI declares exactly one `/v1/me/*` path
+    // carrying a document id -- the presigned download of a bulletin post's
+    // attachment. It is not a registry endpoint: it 404s unless the document
+    // is attached to a post on one of the caller's own boards, so the
+    // registry itself stays admin-panel-only and TC-DOC-042 still holds.
+    // Named exactly rather than loosening the regex, so any *other*
+    // member-facing document route still fails this test.
+    const BULLETIN_ATTACHMENT = '/v1/me/bulletin/{postId}/attachments/{documentId}';
     const memberFacing = getRegisteredRoutes().filter(r => r.path.startsWith('/v1/me/'));
-    const offenders = memberFacing.filter(r => /document/i.test(r.path));
+    const offenders = memberFacing.filter(r => /document/i.test(r.path) && r.path !== BULLETIN_ATTACHMENT);
     expect(offenders.map(r => `${r.method} ${r.path}`)).toEqual([]);
   });
 });

@@ -248,7 +248,10 @@ describe('STR-112 T-C1 — document metadata edit endpoint contract', () => {
     expect(() => op.expectValidResponse(response.status, response.body)).not.toThrow();
   });
 
-  it('PATCH attempting member_visible leaves the flag unchanged — not writable until STR-115', async () => {
+  // STR-112 originally pinned member_visible as silently dropped; STR-115
+  // made it writable (TC-DOC-041), so the pin inverted. The full
+  // writable-flag contract case lives in document-search.contract.test.ts.
+  it('PATCH with member_visible applies the flag — writable since STR-115', async () => {
     await runLocalMigrations(db, MIGRATIONS_DIR);
     const documentId = await registeredDocumentId();
 
@@ -258,12 +261,12 @@ describe('STR-112 T-C1 — document metadata edit endpoint contract', () => {
     }, { 'X-Actor-Employee-Id': 'emp-1' });
 
     expect(response.status).toBe(200);
-    expect(response.body).toMatchObject({ member_visible: false });
+    expect(response.body).toMatchObject({ member_visible: true });
 
     const row = await db.queryOne<{ member_visible: boolean }>(
       sql`SELECT member_visible FROM documents WHERE id = ${documentId}`,
     );
-    expect(row!.member_visible).toBe(false);
+    expect(row!.member_visible).toBe(true);
   });
 
   it('rejects with 401 when no X-Actor-* header is present', async () => {

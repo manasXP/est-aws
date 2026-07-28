@@ -289,15 +289,15 @@ export async function getDocument(db: Database, bucket: FileBucket, documentId: 
   return toDocument(row);
 }
 
-// STR-112: exactly the four fields the story's user story allows -- the
-// OpenAPI DocumentPatch also carries `member_visible`, but mutating that
-// flag is STR-115's deliverable (which extends this set, not a second
-// PATCH handler).
+// STR-112: exactly the four fields the story's user story allows;
+// `member_visible` joined the set in STR-115 (TC-DOC-041) — one more
+// audited column, no second PATCH handler.
 export interface DocumentMetadataPatch {
   title?: string;
   category?: string;
   tags?: string[];
   notes?: string | null;
+  memberVisible?: boolean;
 }
 
 /**
@@ -342,16 +342,17 @@ export async function updateDocument(
     const category = patch.category ?? row.category;
     const tags = patch.tags ?? row.tags;
     const notes = patch.notes !== undefined ? patch.notes : row.notes;
+    const memberVisible = patch.memberVisible ?? row.member_visible;
 
     await tx.execute(
-      sql`UPDATE documents SET title = ${title}, category = ${category}, tags = ${pgTextArray(tags)}::text[], notes = ${notes} WHERE id = ${documentId}`,
+      sql`UPDATE documents SET title = ${title}, category = ${category}, tags = ${pgTextArray(tags)}::text[], notes = ${notes}, member_visible = ${memberVisible} WHERE id = ${documentId}`,
     );
     await tx.execute(
-      sql`INSERT INTO document_metadata_audits (id, document_id, actor_member_id, actor_employee_id, before_title, after_title, before_category, after_category, before_tags, after_tags, before_notes, after_notes)
-          VALUES (${randomUUID()}, ${documentId}, ${'memberId' in actor ? actor.memberId : null}, ${'employeeId' in actor ? actor.employeeId : null}, ${row.title}, ${title}, ${row.category}, ${category}, ${JSON.stringify(row.tags)}, ${JSON.stringify(tags)}, ${row.notes}, ${notes})`,
+      sql`INSERT INTO document_metadata_audits (id, document_id, actor_member_id, actor_employee_id, before_title, after_title, before_category, after_category, before_tags, after_tags, before_notes, after_notes, before_member_visible, after_member_visible)
+          VALUES (${randomUUID()}, ${documentId}, ${'memberId' in actor ? actor.memberId : null}, ${'employeeId' in actor ? actor.employeeId : null}, ${row.title}, ${title}, ${row.category}, ${category}, ${JSON.stringify(row.tags)}, ${JSON.stringify(tags)}, ${row.notes}, ${notes}, ${row.member_visible}, ${memberVisible})`,
     );
 
-    return toDocument({ ...row, title, category, tags, notes });
+    return toDocument({ ...row, title, category, tags, notes, member_visible: memberVisible });
   });
 }
 
@@ -372,14 +373,19 @@ export interface ListDocumentsFilters {
   level?: DocumentLevel;
   projectId?: string;
   memberId?: string;
+  q?: string;
+  category?: string;
+  uploadedFrom?: string;
+  uploadedTo?: string;
 }
 
 /**
- * The base document listing (STR-114, TC-DOC-020): `status` defaults to
- * `active`, so archived documents are excluded unless asked for
- * (`archived` or `all`). STR-115 extends this signature with `q`/category/
- * date filters and wires it to `GET /v1/documents` — this story ships only
- * what the archive-exclusion proof needs.
+ * The document listing behind `GET /v1/documents` (STR-114 base, STR-115
+ * search): `status` defaults to `active`, so archived documents are
+ * excluded unless asked for (`archived` or `all`). `q` is Postgres FTS
+ * (plainto_tsquery) against migrations/038's generated `search_vector` —
+ * metadata only, never file content (TC-DOC-040). `uploaded_to` is a
+ * date-only bound made inclusive of its whole day.
  */
 export async function listDocuments(db: Database, filters: ListDocumentsFilters): Promise<DocumentRecord[]> {
   const status = filters.status ?? 'active';
@@ -389,6 +395,10 @@ export async function listDocuments(db: Database, filters: ListDocumentsFilters)
       AND (${filters.level ?? null}::text IS NULL OR level = ${filters.level ?? null})
       AND (${filters.projectId ?? null}::text IS NULL OR project_id = ${filters.projectId ?? null})
       AND (${filters.memberId ?? null}::text IS NULL OR member_id = ${filters.memberId ?? null})
+      AND (${filters.q ?? null}::text IS NULL OR search_vector @@ plainto_tsquery('english', ${filters.q ?? null}))
+      AND (${filters.category ?? null}::text IS NULL OR category = ${filters.category ?? null})
+      AND (${filters.uploadedFrom ?? null}::date IS NULL OR uploaded_at >= ${filters.uploadedFrom ?? null}::date)
+      AND (${filters.uploadedTo ?? null}::date IS NULL OR uploaded_at < ${filters.uploadedTo ?? null}::date + 1)
     ORDER BY uploaded_at DESC, id`);
   return rows.map(toDocument);
 }

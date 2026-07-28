@@ -8,6 +8,7 @@ import { sql } from '@aws-blocks/blocks';
 import type { Database } from '@aws-blocks/blocks';
 import { ValidationError } from '../http/problem-response';
 import { getEmployee } from '../employees/employees-api';
+import { getMember } from '../members/members-api';
 
 // The fixed v1 category enum (a management-editable list is a spec-named
 // fast-follow). Single source of truth for STR-122..126's handlers; the
@@ -35,6 +36,7 @@ export interface TicketRecord {
   status: TicketStatus;
   assigneeId: string | null;
   enteredBy: string | null;
+  workOrderId: string | null;
   resolutionNote: string | null;
   createdAt: string;
   updatedAt: string;
@@ -53,6 +55,7 @@ export interface TicketRow {
   status: TicketStatus;
   assignee_id: string | null;
   entered_by: string | null;
+  work_order_id: string | null;
   resolution_note: string | null;
   created_at: string | Date;
   updated_at: string | Date;
@@ -76,6 +79,7 @@ export function toTicket(row: TicketRow): TicketRecord {
     status: row.status,
     assigneeId: row.assignee_id,
     enteredBy: row.entered_by,
+    workOrderId: row.work_order_id,
     resolutionNote: row.resolution_note,
     createdAt: toIso(row.created_at),
     updatedAt: toIso(row.updated_at),
@@ -89,8 +93,12 @@ export function toTicket(row: TicketRow): TicketRecord {
  * the fixed category enum and the subject/description, resolves the
  * category's default assignee from ticket_routing (`null` when unrouted --
  * a triage-visibility gap, never a blocked creation, T-U3), and inserts
- * the ticket `open`. `entered_by` stays NULL on this surface (STR-125
- * owns the on-behalf path).
+ * the ticket `open`.
+ *
+ * STR-125: also the admin `POST /v1/tickets` on-behalf path -- one extra
+ * `enteredBy` argument, one shared insert, rather than a second creation
+ * path that could drift on routing or status. `enteredBy` stays `null` on
+ * the member-raised mobile surface.
  */
 export async function raiseTicket(
   db: Database,
@@ -98,6 +106,7 @@ export async function raiseTicket(
   category: string,
   subject: string,
   description: string,
+  enteredBy: string | null = null,
 ): Promise<TicketRecord> {
   if (!(TICKET_CATEGORIES as readonly string[]).includes(category)) {
     throw new TicketValidationError(`category must be one of ${TICKET_CATEGORIES.join(', ')}.`);
@@ -112,6 +121,15 @@ export async function raiseTicket(
     throw new TicketValidationError('description is required.');
   }
 
+  // STR-125 T-U2: on the on-behalf path the member is named in the request
+  // body rather than proven by the caller's own session, so an unknown id
+  // must be a clean rejection, not the raw FK violation the insert would
+  // otherwise raise.
+  const member = await getMember(db, memberId);
+  if (!member) {
+    throw new TicketValidationError(`No member ${memberId}.`);
+  }
+
   const routed = await db.queryOne<{ assignee_id: string }>(
     sql`SELECT assignee_id FROM ticket_routing WHERE category = ${category}`,
   );
@@ -123,8 +141,8 @@ export async function raiseTicket(
   // audit entry.
   const row = await db.transaction(async tx => {
     const inserted = await tx.queryOne<TicketRow>(
-      sql`INSERT INTO tickets (id, member_id, category, subject, description, assignee_id)
-          VALUES (${ticketId}, ${memberId}, ${category}, ${subject}, ${description}, ${routed?.assignee_id ?? null})
+      sql`INSERT INTO tickets (id, member_id, category, subject, description, assignee_id, entered_by)
+          VALUES (${ticketId}, ${memberId}, ${category}, ${subject}, ${description}, ${routed?.assignee_id ?? null}, ${enteredBy})
           RETURNING *`,
     );
     await tx.execute(

@@ -6,6 +6,7 @@ import { db, documents } from '../../aws-blocks/index';
 import { runLocalMigrations, MIGRATIONS_DIR } from '../../aws-blocks/migrations-runner';
 import { setProjectCommittee } from '../../aws-blocks/projects/committees-api';
 import { dispatchRequest } from '../support/dispatch';
+import { asAnyStaff, asMember, asNewEmployee } from '../support/cognito-token';
 
 // STR-116 — PC project document read surface, unit cases (T-U1..T-U3).
 // These routes are thin gates over STR-111/114/115's document functions, so
@@ -22,14 +23,14 @@ beforeAll(async () => {
 });
 
 async function createProject(): Promise<string> {
-  const response = await dispatchRequest('POST', '/v1/projects', { name: `STR-116 Project ${randomUUID()}` });
+  const response = await dispatchRequest('POST', '/v1/projects', { name: `STR-116 Project ${randomUUID()}` }, await asAnyStaff(db));
   return (response.body as { project_id: string }).project_id;
 }
 
 async function createActiveMember(): Promise<string> {
-  const response = await dispatchRequest('POST', '/v1/members', { name: `STR-116 Member ${randomUUID()}` });
+  const response = await dispatchRequest('POST', '/v1/members', { name: `STR-116 Member ${randomUUID()}` }, await asAnyStaff(db));
   const memberId = (response.body as { member_id: string }).member_id;
-  await dispatchRequest('POST', `/v1/members/${memberId}/admit`);
+  await dispatchRequest('POST', `/v1/members/${memberId}/admit`, {}, await asAnyStaff(db));
   return memberId;
 }
 
@@ -63,7 +64,7 @@ async function registerDoc(options: RegisterDocOptions = {}): Promise<string> {
     ...(options.memberVisible !== undefined && { member_visible: options.memberVisible }),
     filename: 'fixture.pdf',
     content_type: 'application/pdf',
-  }, { 'X-Actor-Employee-Id': 'emp-1' });
+  }, { ...(await asNewEmployee(db)) });
   expect(response.status).toBe(201);
   const documentId = (response.body as { document_id: string }).document_id;
   if (options.upload) {
@@ -84,7 +85,7 @@ describe('STR-116 T-U1 (TC-DOC-044) — PC download gate', () => {
     await seatPc(projectId, [pcMember]);
     const documentId = await registerDoc({ projectId, upload: true });
 
-    const response = await dispatchRequest('GET', `/v1/pc/documents/${documentId}/download`, {}, { 'X-Actor-Member-Id': pcMember });
+    const response = await dispatchRequest('GET', `/v1/pc/documents/${documentId}/download`, {}, { ...(await asMember(db, pcMember)) });
 
     expect(response.status).toBe(200);
     expect(response.body).toMatchObject({ url: expect.any(String), expires_at: expect.any(String) });
@@ -97,7 +98,7 @@ describe('STR-116 T-U1 (TC-DOC-044) — PC download gate', () => {
     await seatPc(projectId, [pcMember]);
     const documentId = await registerDoc({ projectId, upload: true });
 
-    const response = await dispatchRequest('GET', `/v1/pc/documents/${documentId}/download`, {}, { 'X-Actor-Member-Id': outsider });
+    const response = await dispatchRequest('GET', `/v1/pc/documents/${documentId}/download`, {}, { ...(await asMember(db, outsider)) });
 
     expect(response.status).toBe(403);
   });
@@ -111,7 +112,7 @@ describe('STR-116 T-U1 (TC-DOC-044) — PC download gate', () => {
     await seatPc(otherProjectId, [otherPcMember]);
     const documentId = await registerDoc({ projectId, upload: true });
 
-    const response = await dispatchRequest('GET', `/v1/pc/documents/${documentId}/download`, {}, { 'X-Actor-Member-Id': otherPcMember });
+    const response = await dispatchRequest('GET', `/v1/pc/documents/${documentId}/download`, {}, { ...(await asMember(db, otherPcMember)) });
 
     expect(response.status).toBe(403);
   });
@@ -122,7 +123,7 @@ describe('STR-116 T-U1 (TC-DOC-044) — PC download gate', () => {
     await seatPc(projectId, [pcMember]);
     const documentId = await registerDoc({ level: 'society', upload: true });
 
-    const response = await dispatchRequest('GET', `/v1/pc/documents/${documentId}/download`, {}, { 'X-Actor-Member-Id': pcMember });
+    const response = await dispatchRequest('GET', `/v1/pc/documents/${documentId}/download`, {}, { ...(await asMember(db, pcMember)) });
 
     expect(response.status).toBe(403);
   });
@@ -130,7 +131,7 @@ describe('STR-116 T-U1 (TC-DOC-044) — PC download gate', () => {
   it('404s for a nonexistent document', async () => {
     const pcMember = await createActiveMember();
 
-    const response = await dispatchRequest('GET', '/v1/pc/documents/no-such-document/download', {}, { 'X-Actor-Member-Id': pcMember });
+    const response = await dispatchRequest('GET', '/v1/pc/documents/no-such-document/download', {}, { ...(await asMember(db, pcMember)) });
 
     expect(response.status).toBe(404);
   });
@@ -149,7 +150,7 @@ describe('STR-116 T-U2 — the PC listing is scoped to the project own project-l
     await registerDoc({ level: 'member', memberId: someMember });
     await registerDoc({ projectId: otherProjectId });
 
-    const response = await dispatchRequest('GET', `/v1/pc/projects/${projectId}/documents`, {}, { 'X-Actor-Member-Id': pcMember });
+    const response = await dispatchRequest('GET', `/v1/pc/projects/${projectId}/documents`, {}, { ...(await asMember(db, pcMember)) });
 
     expect(response.status).toBe(200);
     expect(listedIds(response.body)).toEqual([own]);
@@ -163,9 +164,9 @@ describe('STR-116 T-U3 — archived documents are invisible on the PC surface', 
     await seatPc(projectId, [pcMember]);
     const kept = await registerDoc({ projectId });
     const archived = await registerDoc({ projectId });
-    await dispatchRequest('POST', `/v1/documents/${archived}/archive`);
+    await dispatchRequest('POST', `/v1/documents/${archived}/archive`, {}, await asAnyStaff(db));
 
-    const response = await dispatchRequest('GET', `/v1/pc/projects/${projectId}/documents`, {}, { 'X-Actor-Member-Id': pcMember });
+    const response = await dispatchRequest('GET', `/v1/pc/projects/${projectId}/documents`, {}, { ...(await asMember(db, pcMember)) });
 
     expect(listedIds(response.body)).toEqual([kept]);
   });
@@ -178,9 +179,9 @@ describe('STR-116 T-U3 — archived documents are invisible on the PC surface', 
     const pcMember = await createActiveMember();
     await seatPc(projectId, [pcMember]);
     const archived = await registerDoc({ projectId, upload: true });
-    await dispatchRequest('POST', `/v1/documents/${archived}/archive`);
+    await dispatchRequest('POST', `/v1/documents/${archived}/archive`, {}, await asAnyStaff(db));
 
-    const response = await dispatchRequest('GET', `/v1/pc/documents/${archived}/download`, {}, { 'X-Actor-Member-Id': pcMember });
+    const response = await dispatchRequest('GET', `/v1/pc/documents/${archived}/download`, {}, { ...(await asMember(db, pcMember)) });
 
     expect(response.status).toBe(404);
   });

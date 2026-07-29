@@ -83,13 +83,13 @@ export function registerInvoiceApprovalRoutes(scope: Scope, db: Database): void 
       // branch (an employee's own `capabilities` column), never the
       // memberId branch -- so resolveActor is guaranteed to be an
       // { employeeId } actor once this gate passes.
-      if (!(await requireCapability(ctx, db, 'designated-verifier'))) {
+      const actor = (await requireCapability(ctx, db, 'designated-verifier')) as { employeeId: string } | null;
+      if (!actor) {
         return;
       }
 
       const { invoiceId } = ctx.request.params;
       const { notes } = await ctx.request.json();
-      const actor = resolveActor(ctx) as { employeeId: string };
 
       try {
         const invoice = await verifyInvoice(db, invoiceId, actor.employeeId, notes ?? null);
@@ -120,11 +120,12 @@ export function registerInvoiceApprovalRoutes(scope: Scope, db: Database): void 
       // (recordApproval) unchanged.
       const invoice = await getInvoice(db, invoiceId);
       if (invoice?.status === 'rejected') {
-        const actor = resolveActor(ctx);
-        if (!actor || !('memberId' in actor)) {
+        const resolution = await resolveActor(ctx, db);
+        if ('failure' in resolution || !('memberId' in resolution.actor)) {
           sendCapabilityRequired(ctx, 'ec-member');
           return;
         }
+        const actor = resolution.actor;
 
         try {
           const { invoice: updated, approvalProgress } = await recordOverrideApproval(db, invoiceId, actor.memberId, notes ?? null);
@@ -152,12 +153,11 @@ export function registerInvoiceApprovalRoutes(scope: Scope, db: Database): void 
 
       // Same reasoning as verify-invoice above, mirrored: designated-approver
       // is only ever granted via the memberId branch of buildClaims, so
-      // resolveActor is guaranteed to be an { memberId } actor here.
-      if (!(await requireCapability(ctx, db, 'designated-approver'))) {
+      // the gate is guaranteed to return an { memberId } actor here.
+      const actor = (await requireCapability(ctx, db, 'designated-approver')) as { memberId: string } | null;
+      if (!actor) {
         return;
       }
-
-      const actor = resolveActor(ctx) as { memberId: string };
 
       try {
         const { invoice: updated, approvalProgress } = await recordApproval(db, invoiceId, actor.memberId, notes ?? null);

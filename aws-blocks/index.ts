@@ -1,5 +1,5 @@
-import { Scope, Database, FileBucket, RawRoute, CronJob, AsyncJob, Logger, Metrics } from '@aws-blocks/blocks';
-import { SCOPE_ID, DB_BLOCK_ID, DOCUMENTS_BLOCK_ID } from './block-ids';
+import { Scope, Database, FileBucket, RawRoute, CronJob, AsyncJob, Logger, Metrics, AuthCognito } from '@aws-blocks/blocks';
+import { SCOPE_ID, DB_BLOCK_ID, DOCUMENTS_BLOCK_ID, AUTH_BLOCK_ID } from './block-ids';
 import { runMaintenanceChargeRun, runLateFeeSweep, chargeRunPeriodFromScheduledTime } from './payments/charges';
 import { dispatchDueDateReminders } from './payments/reminders';
 import type { PushAdapter } from './notifications/push-adapter';
@@ -14,11 +14,9 @@ import { linkDocumentToEntry, DocumentLinkError } from './finance/documents';
 import { processTallyExport } from './finance/tally-export-jobs';
 import { registerTallyExportRoutes } from './finance/tally-export-routes';
 import { JournalError } from './finance/journal';
-import { requireCapability, resolveActor } from './http/capability-gate';
-import type { Actor } from './members/capabilities';
+import { requireAuthenticated, requireCapability, requireMember } from './http/capability-gate';
 import {
   problemResponse,
-  sendUnauthorized,
   sendNotFound,
   sendValidationError,
   sendConflictError,
@@ -61,11 +59,27 @@ import './members/role-assignments';
 const scope = new Scope(SCOPE_ID);
 
 // The two stateful Blocks, fixed from commit one (IDs are immutable — see
-// block-ids.ts). Other mapped Blocks (AuthCognito, CronJob, AsyncJob,
-// EmailClient, AppSetting, Logger/Metrics/Dashboard) join when their consuming
-// stories arrive — no speculative declarations.
+// block-ids.ts). Other mapped Blocks (CronJob, AsyncJob, EmailClient,
+// AppSetting, Logger/Metrics/Dashboard) join when their consuming stories
+// arrive — no speculative declarations.
 export const db = new Database(scope, DB_BLOCK_ID);
 export const documents = new FileBucket(scope, DOCUMENTS_BLOCK_ID);
+
+// STR-045: this deployment's admin/mobile user pool. Every protected route
+// verifies its bearer token against this pool
+// (aws-blocks/http/token-verifier.ts reads the pool and client ids straight
+// off this Block); index.cdk.ts publishes {user_pool_id, client_id, region}
+// as stack outputs for directory registration (Provisioning Runbook §5).
+//
+// No self-sign-up: admin accounts are created by the provisioning run, not
+// claimed (Governance & Roles — "a designated subset get admin-panel
+// accounts"). MFA is required by the Provisioning Runbook §4 ("MFA policy
+// on"); TOTP only, since SMS needs a SNS-wired pool per society.
+export const auth = new AuthCognito(scope, AUTH_BLOCK_ID, {
+  selfSignUp: false,
+  mfa: 'required',
+  mfaTypes: ['TOTP'],
+});
 
 // STR-005: the walking-skeleton endpoint — proves the full delivery loop
 // (contract, handler, tests, CI) before any domain story starts. Served
@@ -93,6 +107,8 @@ new RawRoute(scope, 'link-book-entry-document', {
   method: 'POST',
   path: '/v1/books/{book}/entries/{entryId}/documents',
   handler: async (ctx) => {
+    if (!(await requireAuthenticated(ctx, db))) return;
+
     const { entryId } = ctx.request.params;
     const body = await ctx.request.json();
     const documentId: string = body?.document_id ?? '';
@@ -181,16 +197,15 @@ registerPcAssetRoutes(scope, db);
 
 // STR-092: the mobile self-service payment-initiation surface -- locks the
 // named due charges and returns a provider-neutral payment intent for the
-// gateway SDK. Caller identity comes from the same X-Actor-Member-Id stub
-// header registerMeOwnershipRoutes established; Idempotency-Key is required
-// by the Mobile Public API's conventions table for this endpoint specifically.
+// gateway SDK. Caller identity comes from the bearer token's subject
+// (STR-045); Idempotency-Key is required by the Mobile Public API's
+// conventions table for this endpoint specifically.
 new RawRoute(scope, 'initiate-payment', {
   method: 'POST',
   path: '/v1/me/payments',
   handler: async ctx => {
-    const memberId = ctx.request.headers.get('X-Actor-Member-Id');
+    const memberId = await requireMember(ctx, db);
     if (!memberId) {
-      sendUnauthorized(ctx, 'X-Actor-Member-Id header is required.');
       return;
     }
     // Idempotency-Key presence check (422) -- presence-only, same as
@@ -266,9 +281,8 @@ new RawRoute(scope, 'get-payment-status', {
   method: 'GET',
   path: '/v1/me/payments/{paymentId}',
   handler: async ctx => {
-    const memberId = ctx.request.headers.get('X-Actor-Member-Id');
+    const memberId = await requireMember(ctx, db);
     if (!memberId) {
-      sendUnauthorized(ctx, 'X-Actor-Member-Id header is required.');
       return;
     }
     const { paymentId } = ctx.request.params;
@@ -372,7 +386,11 @@ new RawRoute(scope, 'record-offline-payment', {
   method: 'POST',
   path: '/v1/charges/{chargeId}/offline-payment',
   handler: async ctx => {
-    if (!(await requireCapability(ctx, db, 'finance-recorder'))) {
+    // finance-recorder is grantable to either a member (the default, the
+    // current Treasurer) or a delegated employee, so this stays the full
+    // Actor union.
+    const actor = await requireCapability(ctx, db, 'finance-recorder');
+    if (!actor) {
       return;
     }
 
@@ -386,11 +404,6 @@ new RawRoute(scope, 'record-offline-payment', {
 
     const { chargeId } = ctx.request.params;
     const { method, amount, received_on, reference } = await ctx.request.json();
-    // Guaranteed non-null once requireCapability passes -- an unresolvable
-    // actor has no claims, so the gate would already have returned.
-    // finance-recorder is grantable to either a member (the default, the
-    // current Treasurer) or a delegated employee, so this stays the full union.
-    const actor = resolveActor(ctx) as Actor;
 
     try {
       const result = await recordOfflinePayment(

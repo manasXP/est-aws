@@ -19,13 +19,15 @@ import {
 import { getAssetViewGrants, setAssetViewGrants, AssetViewGrantValidationError } from './asset-view-grants-api';
 import { JournalError } from '../finance/journal';
 import { sendNotFound, sendValidationError, problemResponse, ValidationError } from '../http/problem-response';
-import { requireCapability, resolveActor } from '../http/capability-gate';
+import { requireAuthenticated, requireCapability } from '../http/capability-gate';
 
 export function registerEmployeeRoutes(scope: Scope, db: Database): void {
   new RawRoute(scope, 'list-employees', {
     method: 'GET',
     path: '/v1/employees',
     handler: async ctx => {
+      if (!(await requireAuthenticated(ctx, db))) return;
+
       const items = await listEmployees(db);
       ctx.response.send({ items, next_cursor: null });
     },
@@ -35,6 +37,8 @@ export function registerEmployeeRoutes(scope: Scope, db: Database): void {
     method: 'POST',
     path: '/v1/employees',
     handler: async ctx => {
+      if (!(await requireAuthenticated(ctx, db))) return;
+
       const input = await ctx.request.json();
       try {
         const employee = await createEmployee(db, input);
@@ -54,6 +58,8 @@ export function registerEmployeeRoutes(scope: Scope, db: Database): void {
     method: 'GET',
     path: '/v1/employees/{employeeId}',
     handler: async ctx => {
+      if (!(await requireAuthenticated(ctx, db))) return;
+
       const employee = await getEmployee(db, ctx.request.params.employeeId);
       if (!employee) {
         sendNotFound(ctx, `No employee ${ctx.request.params.employeeId}`);
@@ -67,6 +73,8 @@ export function registerEmployeeRoutes(scope: Scope, db: Database): void {
     method: 'PATCH',
     path: '/v1/employees/{employeeId}',
     handler: async ctx => {
+      if (!(await requireAuthenticated(ctx, db))) return;
+
       const input = await ctx.request.json();
       try {
         const employee = await updateEmployee(db, ctx.request.params.employeeId, input);
@@ -89,6 +97,8 @@ export function registerEmployeeRoutes(scope: Scope, db: Database): void {
     method: 'PUT',
     path: '/v1/employees/{employeeId}/capabilities',
     handler: async ctx => {
+      if (!(await requireAuthenticated(ctx, db))) return;
+
       const { capabilities } = await ctx.request.json();
       try {
         const employee = await setEmployeeCapabilities(db, ctx.request.params.employeeId, capabilities);
@@ -158,6 +168,8 @@ export function registerEmployeeRoutes(scope: Scope, db: Database): void {
     method: 'GET',
     path: '/v1/employees/{employeeId}/asset-view-grants',
     handler: async ctx => {
+      if (!(await requireAuthenticated(ctx, db))) return;
+
       const { employeeId } = ctx.request.params;
       const employee = await getEmployee(db, employeeId);
       if (!employee) {
@@ -175,7 +187,8 @@ export function registerEmployeeRoutes(scope: Scope, db: Database): void {
     handler: async ctx => {
       const { employeeId } = ctx.request.params;
       const { project_ids } = await ctx.request.json();
-      const actor = resolveActor(ctx);
+      const actor = await requireAuthenticated(ctx, db);
+      if (!actor) return;
       try {
         const projectIds = await setAssetViewGrants(db, employeeId, project_ids, actor);
         if (projectIds === null) {

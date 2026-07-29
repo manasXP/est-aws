@@ -7,6 +7,7 @@ import { runLocalMigrations, MIGRATIONS_DIR } from '../../aws-blocks/migrations-
 import { setEmployeeCapabilities } from '../../aws-blocks/employees/employees-api';
 import { contractTest } from './harness';
 import { dispatchRequest } from '../support/dispatch';
+import { asAnyStaff, asEmployee, asMember } from '../support/cognito-token';
 
 // STR-123 T-C1 (BE-C, covers TC-TKT-008/TC-TKT-020) — the two comment
 // endpoints against the shared TicketComment schema: mobile
@@ -20,14 +21,14 @@ beforeAll(async () => {
 });
 
 async function createActiveMember(): Promise<string> {
-  const response = await dispatchRequest('POST', '/v1/members', { name: `STR-123 Member ${randomUUID()}` });
+  const response = await dispatchRequest('POST', '/v1/members', { name: `STR-123 Member ${randomUUID()}` }, await asAnyStaff(db));
   const memberId = (response.body as { member_id: string }).member_id;
-  await dispatchRequest('POST', `/v1/members/${memberId}/admit`);
+  await dispatchRequest('POST', `/v1/members/${memberId}/admit`, {}, await asAnyStaff(db));
   return memberId;
 }
 
 async function adminEmployee(): Promise<string> {
-  const response = await dispatchRequest('POST', '/v1/employees', { name: `STR-123 Admin ${randomUUID()}` });
+  const response = await dispatchRequest('POST', '/v1/employees', { name: `STR-123 Admin ${randomUUID()}` }, await asAnyStaff(db));
   const employeeId = (response.body as { employee_id: string }).employee_id;
   await setEmployeeCapabilities(db, employeeId, ['finance-recorder']);
   return employeeId;
@@ -38,7 +39,7 @@ async function openTicket(memberId: string): Promise<string> {
     category: 'general',
     subject: 'Query',
     description: 'Details.',
-  }, { 'X-Actor-Member-Id': memberId });
+  }, { ...(await asMember(db, memberId)) });
   expect(response.status).toBe(201);
   return (response.body as { ticket_id: string }).ticket_id;
 }
@@ -50,7 +51,7 @@ describe('STR-123 T-C1 — ticket comment contracts on both surfaces', () => {
 
     const response = await dispatchRequest('POST', `/v1/me/tickets/${ticketId}/comments`, {
       body: 'Any update?',
-    }, { 'X-Actor-Member-Id': memberId });
+    }, { ...(await asMember(db, memberId)) });
 
     const op = await contractTest('mobile', '/me/tickets/{ticketId}/comments', 'post');
     expect(response.status).toBe(201);
@@ -65,7 +66,7 @@ describe('STR-123 T-C1 — ticket comment contracts on both surfaces', () => {
 
     const response = await dispatchRequest('POST', `/v1/tickets/${ticketId}/comments`, {
       body: 'Technician booked.',
-    }, { 'X-Actor-Employee-Id': staffId });
+    }, { ...(await asEmployee(db, staffId)) });
 
     const op = await contractTest('admin', '/tickets/{ticketId}/comments', 'post');
     expect(response.status).toBe(201);
@@ -77,13 +78,13 @@ describe('STR-123 T-C1 — ticket comment contracts on both surfaces', () => {
     const memberId = await createActiveMember();
     const ticketId = await openTicket(memberId);
     const withdrawn = await dispatchRequest('POST', `/v1/me/tickets/${ticketId}/withdraw`, undefined, {
-      'X-Actor-Member-Id': memberId,
+      ...(await asMember(db, memberId)),
     });
     expect(withdrawn.status).toBe(200);
 
     const response = await dispatchRequest('POST', `/v1/me/tickets/${ticketId}/comments`, {
       body: 'Hello?',
-    }, { 'X-Actor-Member-Id': memberId });
+    }, { ...(await asMember(db, memberId)) });
 
     const op = await contractTest('mobile', '/me/tickets/{ticketId}/comments', 'post');
     expect(response.status).toBe(409);
@@ -97,12 +98,12 @@ describe('STR-123 T-C1 — ticket comment contracts on both surfaces', () => {
     const staffId = await adminEmployee();
     const ticketId = await openTicket(memberId);
     await dispatchRequest('POST', `/v1/me/tickets/${ticketId}/withdraw`, undefined, {
-      'X-Actor-Member-Id': memberId,
+      ...(await asMember(db, memberId)),
     });
 
     const response = await dispatchRequest('POST', `/v1/tickets/${ticketId}/comments`, {
       body: 'Hello?',
-    }, { 'X-Actor-Employee-Id': staffId });
+    }, { ...(await asEmployee(db, staffId)) });
 
     const op = await contractTest('admin', '/tickets/{ticketId}/comments', 'post');
     expect(response.status).toBe(409);
@@ -127,7 +128,7 @@ describe('STR-123 T-C1 — ticket comment contracts on both surfaces', () => {
 
     const response = await dispatchRequest('POST', `/v1/me/tickets/${ticketId}/comments`, {
       body: 'Nosy.',
-    }, { 'X-Actor-Member-Id': intruder });
+    }, { ...(await asMember(db, intruder)) });
 
     const op = await contractTest('mobile', '/me/tickets/{ticketId}/comments', 'post');
     expect([403, 404, 409]).toContain(response.status);

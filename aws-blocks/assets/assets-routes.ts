@@ -4,6 +4,7 @@
 // Admin OpenAPI's `AssetDetail`, with `owner_history`). Thin HTTP adapter:
 // parses path/body, then delegates to assets-api.ts for everything else.
 import { RawRoute } from '@aws-blocks/blocks';
+import { requireAuthenticated } from '../http/capability-gate';
 import type { Database, Scope } from '@aws-blocks/blocks';
 import { createAsset, listAssets, updateAsset, getAssetDetail, AssetValidationError, AssetConflictError, type AssetType, type AssetStatus } from './assets-api';
 import { ASSET_TYPES, WRITABLE_STATUSES } from './asset-types';
@@ -27,6 +28,8 @@ export function registerAssetRoutes(scope: Scope, db: Database): void {
     method: 'GET',
     path: '/v1/assets',
     handler: async ctx => {
+      if (!(await requireAuthenticated(ctx, db))) return;
+
       const projectId = ctx.request.url.searchParams.get('project_id') ?? undefined;
       const type = ctx.request.url.searchParams.get('type') ?? undefined;
       const status = ctx.request.url.searchParams.get('status') ?? 'all';
@@ -43,6 +46,8 @@ export function registerAssetRoutes(scope: Scope, db: Database): void {
     method: 'GET',
     path: '/v1/assets/{assetId}',
     handler: async ctx => {
+      if (!(await requireAuthenticated(ctx, db))) return;
+
       const { assetId } = ctx.request.params;
       const detail = await getAssetDetail(db, assetId);
       if (!detail) {
@@ -57,6 +62,8 @@ export function registerAssetRoutes(scope: Scope, db: Database): void {
     method: 'POST',
     path: '/v1/assets',
     handler: async ctx => {
+      if (!(await requireAuthenticated(ctx, db))) return;
+
       const input = await ctx.request.json();
       try {
         const asset = await createAsset(db, input);
@@ -76,6 +83,8 @@ export function registerAssetRoutes(scope: Scope, db: Database): void {
     method: 'PATCH',
     path: '/v1/assets/{assetId}',
     handler: async ctx => {
+      if (!(await requireAuthenticated(ctx, db))) return;
+
       const input = await ctx.request.json();
       try {
         const asset = await updateAsset(db, ctx.request.params.assetId, input);

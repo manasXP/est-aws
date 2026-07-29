@@ -6,6 +6,7 @@ import { db } from '../../aws-blocks/index';
 import { runLocalMigrations, MIGRATIONS_DIR } from '../../aws-blocks/migrations-runner';
 import { contractTest } from './harness';
 import { dispatchRequest } from '../support/dispatch';
+import { asAnyStaff } from '../support/cognito-token';
 
 // STR-031 — Admin API member CRUD contract cases. Uses the real `db`
 // singleton the registered RawRoutes read from (aws-blocks/index.ts), the
@@ -24,7 +25,7 @@ describe('STR-031 T-C1 — admin member CRUD API contract', () => {
       email: 'contract@example.com',
       phone: '9000000000',
       address: '1 Test Lane',
-    });
+    }, await asAnyStaff(db));
 
     expect(response.status).toBe(201);
     const body = response.body as Record<string, unknown>;
@@ -57,11 +58,11 @@ describe('STR-031 T-C1 — admin member CRUD API contract', () => {
       sql`INSERT INTO members (id, name, member_status, joining_date) VALUES (${id}, 'Seeded Active Member', 'active', '2026-01-15')`,
     );
 
-    const getResponse = await dispatchRequest('GET', `/v1/members/${id}`);
+    const getResponse = await dispatchRequest('GET', `/v1/members/${id}`, {}, await asAnyStaff(db));
     const getOp = await contractTest('admin', '/members/{memberId}', 'get');
     expect(() => getOp.expectValidResponse(getResponse.status, getResponse.body)).not.toThrow();
 
-    const patchResponse = await dispatchRequest('PATCH', `/v1/members/${id}`, { phone: '9111111111' });
+    const patchResponse = await dispatchRequest('PATCH', `/v1/members/${id}`, { phone: '9111111111' }, await asAnyStaff(db));
     const patchOp = await contractTest('admin', '/members/{memberId}', 'patch');
     expect(() => patchOp.expectValidResponse(patchResponse.status, patchResponse.body)).not.toThrow();
     expect((patchResponse.body as Record<string, unknown>).phone).toBe('9111111111');
@@ -73,7 +74,7 @@ describe('STR-031 T-C1 — admin member CRUD API contract', () => {
       sql`INSERT INTO members (id, name, member_status, joining_date) VALUES (${id}, 'Seeded Active Member For List', 'active', '2026-02-01')`,
     );
 
-    const response = await dispatchRequest('GET', '/v1/members?status=active');
+    const response = await dispatchRequest('GET', '/v1/members?status=active', {}, await asAnyStaff(db));
     const op = await contractTest('admin', '/members', 'get');
     expect(() => op.expectValidResponse(response.status, response.body)).not.toThrow();
     expect((response.body as { items: { member_id: string }[] }).items.some(m => m.member_id === id)).toBe(true);
@@ -87,7 +88,7 @@ describe('STR-032 T-C1 — admit/suspend/reinstate contract', () => {
     const id = randomUUID();
     await db.execute(sql`INSERT INTO members (id, name, member_status) VALUES (${id}, 'Contract Admit Member', 'pending')`);
 
-    const response = await dispatchRequest('POST', `/v1/members/${id}/admit`);
+    const response = await dispatchRequest('POST', `/v1/members/${id}/admit`, {}, await asAnyStaff(db));
     expect(response.status).toBe(200);
 
     const op = await contractTest('admin', '/members/{memberId}/admit', 'post');
@@ -103,12 +104,12 @@ describe('STR-032 T-C1 — admit/suspend/reinstate contract', () => {
       sql`INSERT INTO members (id, name, member_status, joining_date) VALUES (${id}, 'Contract Suspend Member', 'active', '2026-03-01')`,
     );
 
-    const suspendResponse = await dispatchRequest('POST', `/v1/members/${id}/suspend`, { actor: 'ec-member-1' });
+    const suspendResponse = await dispatchRequest('POST', `/v1/members/${id}/suspend`, { actor: 'ec-member-1' }, await asAnyStaff(db));
     expect(suspendResponse.status).toBe(200);
     const suspendOp = await contractTest('admin', '/members/{memberId}/suspend', 'post');
     expect(() => suspendOp.expectValidResponse(suspendResponse.status, suspendResponse.body)).not.toThrow();
 
-    const reinstateResponse = await dispatchRequest('POST', `/v1/members/${id}/reinstate`, { actor: 'ec-member-2' });
+    const reinstateResponse = await dispatchRequest('POST', `/v1/members/${id}/reinstate`, { actor: 'ec-member-2' }, await asAnyStaff(db));
     expect(reinstateResponse.status).toBe(200);
     const reinstateOp = await contractTest('admin', '/members/{memberId}/reinstate', 'post');
     expect(() => reinstateOp.expectValidResponse(reinstateResponse.status, reinstateResponse.body)).not.toThrow();
@@ -118,7 +119,7 @@ describe('STR-032 T-C1 — admit/suspend/reinstate contract', () => {
     const id = randomUUID();
     await db.execute(sql`INSERT INTO members (id, name, member_status) VALUES (${id}, 'Contract Pending Member', 'pending')`);
 
-    const response = await dispatchRequest('POST', `/v1/members/${id}/suspend`, { actor: 'ec-member-1' });
+    const response = await dispatchRequest('POST', `/v1/members/${id}/suspend`, { actor: 'ec-member-1' }, await asAnyStaff(db));
     expect(response.status).toBe(409);
 
     const op = await contractTest('admin', '/members/{memberId}/suspend', 'post');
@@ -137,7 +138,7 @@ describe('STR-032 T-C1 — admit/suspend/reinstate contract', () => {
       sql`INSERT INTO members (id, name, member_status, joining_date) VALUES (${id}, 'Contract Missing Actor Member', 'active', '2026-01-20')`,
     );
 
-    const response = await dispatchRequest('POST', `/v1/members/${id}/suspend`, {});
+    const response = await dispatchRequest('POST', `/v1/members/${id}/suspend`, {}, await asAnyStaff(db));
     expect(response.status).toBe(422);
 
     const op = await contractTest('admin', '/members/{memberId}/suspend', 'post');
@@ -147,7 +148,7 @@ describe('STR-032 T-C1 — admit/suspend/reinstate contract', () => {
 
 describe('STR-031 code review — POST /v1/members rejects a missing name', () => {
   it('returns 422 conforming to the Admin OpenAPI Invalid response', async () => {
-    const response = await dispatchRequest('POST', '/v1/members', { email: 'noname@example.com' });
+    const response = await dispatchRequest('POST', '/v1/members', { email: 'noname@example.com' }, await asAnyStaff(db));
     expect(response.status).toBe(422);
 
     const op = await contractTest('admin', '/members', 'post');
@@ -160,7 +161,7 @@ describe('STR-031 T-C3 — member_status is lifecycle-only; PATCH rejects it', (
     const id = randomUUID();
     await db.execute(sql`INSERT INTO members (id, name, member_status) VALUES (${id}, 'Reject Status Patch Member', 'pending')`);
 
-    const response = await dispatchRequest('PATCH', `/v1/members/${id}`, { member_status: 'active' });
+    const response = await dispatchRequest('PATCH', `/v1/members/${id}`, { member_status: 'active' }, await asAnyStaff(db));
     expect(response.status).toBe(422);
 
     const op = await contractTest('admin', '/members/{memberId}', 'patch');

@@ -7,6 +7,7 @@ import { runLocalMigrations, MIGRATIONS_DIR } from '../../aws-blocks/migrations-
 import { setEmployeeCapabilities } from '../../aws-blocks/employees/employees-api';
 import { contractTest } from './harness';
 import { dispatchRequest } from '../support/dispatch';
+import { asAnyStaff, asMember } from '../support/cognito-token';
 
 // STR-121 T-C1 (BE-C, covers TC-TKT-001) — mobile POST /me/tickets against
 // the Ticket schema, plus the admin GET/PUT /ticket-routing pair. Real-
@@ -23,14 +24,14 @@ beforeAll(async () => {
 });
 
 async function createActiveMember(): Promise<string> {
-  const response = await dispatchRequest('POST', '/v1/members', { name: `STR-121 Member ${randomUUID()}` });
+  const response = await dispatchRequest('POST', '/v1/members', { name: `STR-121 Member ${randomUUID()}` }, await asAnyStaff(db));
   const memberId = (response.body as { member_id: string }).member_id;
-  await dispatchRequest('POST', `/v1/members/${memberId}/admit`);
+  await dispatchRequest('POST', `/v1/members/${memberId}/admit`, {}, await asAnyStaff(db));
   return memberId;
 }
 
 async function adminEmployee(): Promise<string> {
-  const response = await dispatchRequest('POST', '/v1/employees', { name: `STR-121 Admin ${randomUUID()}` });
+  const response = await dispatchRequest('POST', '/v1/employees', { name: `STR-121 Admin ${randomUUID()}` }, await asAnyStaff(db));
   const employeeId = (response.body as { employee_id: string }).employee_id;
   await setEmployeeCapabilities(db, employeeId, ['finance-recorder']);
   return employeeId;
@@ -43,7 +44,7 @@ async function configureFullRouting(): Promise<Record<string, string>> {
     records: await adminEmployee(),
     general: await adminEmployee(),
   };
-  const response = await dispatchRequest('PUT', '/v1/ticket-routing', routing);
+  const response = await dispatchRequest('PUT', '/v1/ticket-routing', routing, await asAnyStaff(db));
   expect(response.status).toBe(200);
   return routing;
 }
@@ -57,7 +58,7 @@ describe('STR-121 T-C1 — ticket creation and routing contracts (covers TC-TKT-
       category: 'finance',
       subject: 'Wrong charge',
       description: 'July maintenance billed twice.',
-    }, { 'X-Actor-Member-Id': memberId });
+    }, { ...(await asMember(db, memberId)) });
 
     const op = await contractTest('mobile', '/me/tickets', 'post');
     expect(response.status).toBe(201);
@@ -80,7 +81,7 @@ describe('STR-121 T-C1 — ticket creation and routing contracts (covers TC-TKT-
       category: 'plumbing',
       subject: 'x',
       description: 'y',
-    }, { 'X-Actor-Member-Id': memberId });
+    }, { ...(await asMember(db, memberId)) });
 
     const op = await contractTest('mobile', '/me/tickets', 'post');
     expect(response.status).toBe(422);
@@ -102,7 +103,7 @@ describe('STR-121 T-C1 — ticket creation and routing contracts (covers TC-TKT-
   it('GET /v1/ticket-routing conforms to the TicketRouting schema once fully configured', async () => {
     const routing = await configureFullRouting();
 
-    const response = await dispatchRequest('GET', '/v1/ticket-routing');
+    const response = await dispatchRequest('GET', '/v1/ticket-routing', {}, await asAnyStaff(db));
 
     const op = await contractTest('admin', '/ticket-routing', 'get');
     expect(response.status).toBe(200);
@@ -112,15 +113,15 @@ describe('STR-121 T-C1 — ticket creation and routing contracts (covers TC-TKT-
 
   it('PUT /v1/ticket-routing naming an employee with no admin account is 422 per the Error schema, config unchanged', async () => {
     const before = await configureFullRouting();
-    const plainResponse = await dispatchRequest('POST', '/v1/employees', { name: `STR-121 Plain ${randomUUID()}` });
+    const plainResponse = await dispatchRequest('POST', '/v1/employees', { name: `STR-121 Plain ${randomUUID()}` }, await asAnyStaff(db));
     const plainId = (plainResponse.body as { employee_id: string }).employee_id;
 
-    const response = await dispatchRequest('PUT', '/v1/ticket-routing', { ...before, records: plainId });
+    const response = await dispatchRequest('PUT', '/v1/ticket-routing', { ...before, records: plainId }, await asAnyStaff(db));
 
     const op = await contractTest('admin', '/ticket-routing', 'put');
     expect(response.status).toBe(422);
     expect(() => op.expectValidResponse(response.status, response.body)).not.toThrow();
-    const after = await dispatchRequest('GET', '/v1/ticket-routing');
+    const after = await dispatchRequest('GET', '/v1/ticket-routing', {}, await asAnyStaff(db));
     expect(after.body).toEqual(before);
   });
 });

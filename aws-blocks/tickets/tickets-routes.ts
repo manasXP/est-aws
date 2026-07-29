@@ -1,5 +1,5 @@
 // STR-121: the HTTP surfaces for ticket creation and routing config --
-// mobile `POST /v1/me/tickets` (X-Actor-Member-Id stub header, the
+// mobile `POST /v1/me/tickets` (the raising member's own bearer token, the
 // me-ownerships-routes convention) and admin `GET`/`PUT /v1/ticket-routing`.
 // Thin adapters delegating to tickets.ts.
 import { RawRoute } from '@aws-blocks/blocks';
@@ -29,7 +29,8 @@ import { createAttachmentUploadSlot, getAttachmentDownloadUrl } from './attachme
 import { DOWNLOAD_URL_EXPIRES_IN_SECONDS } from '../documents/documents-api';
 import type { PushAdapter } from '../notifications/push-adapter';
 import type { FileBucket } from '@aws-blocks/blocks';
-import { sendUnauthorized, sendValidationError, sendConflictError, sendNotFound } from '../http/problem-response';
+import { sendValidationError, sendConflictError, sendNotFound } from '../http/problem-response';
+import { requireMember, requireEmployee, requireAuthenticated } from '../http/capability-gate';
 
 // The mobile Ticket schema: member-facing -- no member_id/assignee_id/
 // entered_by exposure (the assignee is STR-126's triage-queue concern).
@@ -140,9 +141,8 @@ export function registerTicketRoutes(
     method: 'POST',
     path: '/v1/me/tickets',
     handler: async ctx => {
-      const memberId = ctx.request.headers.get('X-Actor-Member-Id');
+      const memberId = await requireMember(ctx, db);
       if (!memberId) {
-        sendUnauthorized(ctx, 'X-Actor-Member-Id header is required.');
         return;
       }
 
@@ -170,9 +170,8 @@ export function registerTicketRoutes(
     method: 'POST',
     path: '/v1/tickets',
     handler: async ctx => {
-      const actorId = ctx.request.headers.get('X-Actor-Employee-Id');
+      const actorId = await requireEmployee(ctx, db);
       if (!actorId) {
-        sendUnauthorized(ctx, 'X-Actor-Employee-Id header is required.');
         return;
       }
 
@@ -195,6 +194,8 @@ export function registerTicketRoutes(
     method: 'PUT',
     path: '/v1/tickets/{ticketId}/work-order',
     handler: async ctx => {
+      if (!(await requireAuthenticated(ctx, db))) return;
+
       const body = await ctx.request.json().catch(() => null);
       if (body === null || !('work_order_id' in body)) {
         sendValidationError(ctx, new TicketValidationError('work_order_id is required (null clears the link).'));
@@ -225,6 +226,7 @@ export function registerTicketRoutes(
     method: 'GET',
     path: '/v1/tickets',
     handler: async ctx => {
+      if (!(await requireAuthenticated(ctx, db))) return;
       const params = ctx.request.url.searchParams;
       // The Admin OpenAPI defaults this queue to `open` -- the triage view
       // is the work still to be done, not the whole history.
@@ -248,6 +250,7 @@ export function registerTicketRoutes(
     method: 'GET',
     path: '/v1/tickets/{ticketId}',
     handler: async ctx => {
+      if (!(await requireAuthenticated(ctx, db))) return;
       const { ticketId } = ctx.request.params;
       const detail = await getTicketDetail(db, ticketId);
       if (!detail) {
@@ -272,11 +275,8 @@ export function registerTicketRoutes(
     method: 'GET',
     path: '/v1/me/tickets',
     handler: async ctx => {
-      const memberId = ctx.request.headers.get('X-Actor-Member-Id');
-      if (!memberId) {
-        sendUnauthorized(ctx, 'X-Actor-Member-Id header is required.');
-        return;
-      }
+      const memberId = await requireMember(ctx, db);
+      if (!memberId) return;
 
       // The mobile contract defaults to every status -- a member tracks
       // their whole history, not just what is still open.
@@ -289,11 +289,8 @@ export function registerTicketRoutes(
     method: 'GET',
     path: '/v1/me/tickets/{ticketId}',
     handler: async ctx => {
-      const memberId = ctx.request.headers.get('X-Actor-Member-Id');
-      if (!memberId) {
-        sendUnauthorized(ctx, 'X-Actor-Member-Id header is required.');
-        return;
-      }
+      const memberId = await requireMember(ctx, db);
+      if (!memberId) return;
 
       const { ticketId } = ctx.request.params;
       // 404 rather than 403: "absent" and "someone else's" must be
@@ -316,6 +313,8 @@ export function registerTicketRoutes(
     method: 'GET',
     path: '/v1/ticket-routing',
     handler: async ctx => {
+      if (!(await requireAuthenticated(ctx, db))) return;
+
       ctx.response.send(await getTicketRouting(db));
     },
   });
@@ -324,6 +323,8 @@ export function registerTicketRoutes(
     method: 'PUT',
     path: '/v1/ticket-routing',
     handler: async ctx => {
+      if (!(await requireAuthenticated(ctx, db))) return;
+
       const body = await ctx.request.json();
       try {
         ctx.response.send(await replaceTicketRouting(db, body));
@@ -339,16 +340,15 @@ export function registerTicketRoutes(
 
   // STR-122's four lifecycle transitions -- each a thin adapter over
   // lifecycle.ts, which owns every status guard. The admin pair acts as an
-  // employee (X-Actor-Employee-Id); the mobile pair acts as the raising
-  // member (X-Actor-Member-Id), whose ownership lifecycle.ts re-checks.
+  // employee (an employee-subject token); the mobile pair acts as the
+  // raising member, whose ownership lifecycle.ts re-checks.
 
   new RawRoute(scope, 'assign-ticket', {
     method: 'POST',
     path: '/v1/tickets/{ticketId}/assign',
     handler: async ctx => {
-      const actorId = ctx.request.headers.get('X-Actor-Employee-Id');
+      const actorId = await requireEmployee(ctx, db);
       if (!actorId) {
-        sendUnauthorized(ctx, 'X-Actor-Employee-Id header is required.');
         return;
       }
 
@@ -366,9 +366,8 @@ export function registerTicketRoutes(
     method: 'POST',
     path: '/v1/tickets/{ticketId}/resolve',
     handler: async ctx => {
-      const actorId = ctx.request.headers.get('X-Actor-Employee-Id');
+      const actorId = await requireEmployee(ctx, db);
       if (!actorId) {
-        sendUnauthorized(ctx, 'X-Actor-Employee-Id header is required.');
         return;
       }
 
@@ -392,9 +391,8 @@ export function registerTicketRoutes(
     method: 'POST',
     path: '/v1/me/tickets/{ticketId}/reopen',
     handler: async ctx => {
-      const memberId = ctx.request.headers.get('X-Actor-Member-Id');
+      const memberId = await requireMember(ctx, db);
       if (!memberId) {
-        sendUnauthorized(ctx, 'X-Actor-Member-Id header is required.');
         return;
       }
 
@@ -414,9 +412,8 @@ export function registerTicketRoutes(
     method: 'POST',
     path: '/v1/me/tickets/{ticketId}/comments',
     handler: async ctx => {
-      const memberId = ctx.request.headers.get('X-Actor-Member-Id');
+      const memberId = await requireMember(ctx, db);
       if (!memberId) {
-        sendUnauthorized(ctx, 'X-Actor-Member-Id header is required.');
         return;
       }
 
@@ -442,9 +439,8 @@ export function registerTicketRoutes(
     method: 'POST',
     path: '/v1/tickets/{ticketId}/comments',
     handler: async ctx => {
-      const actorId = ctx.request.headers.get('X-Actor-Employee-Id');
+      const actorId = await requireEmployee(ctx, db);
       if (!actorId) {
-        sendUnauthorized(ctx, 'X-Actor-Employee-Id header is required.');
         return;
       }
 
@@ -475,9 +471,8 @@ export function registerTicketRoutes(
     method: 'POST',
     path: '/v1/me/tickets/{ticketId}/attachments',
     handler: async ctx => {
-      const memberId = ctx.request.headers.get('X-Actor-Member-Id');
+      const memberId = await requireMember(ctx, db);
       if (!memberId) {
-        sendUnauthorized(ctx, 'X-Actor-Member-Id header is required.');
         return;
       }
 
@@ -507,9 +502,8 @@ export function registerTicketRoutes(
     method: 'GET',
     path: '/v1/me/tickets/{ticketId}/attachments/{attachmentId}',
     handler: async ctx => {
-      const memberId = ctx.request.headers.get('X-Actor-Member-Id');
+      const memberId = await requireMember(ctx, db);
       if (!memberId) {
-        sendUnauthorized(ctx, 'X-Actor-Member-Id header is required.');
         return;
       }
 
@@ -530,9 +524,8 @@ export function registerTicketRoutes(
     method: 'GET',
     path: '/v1/tickets/{ticketId}/attachments/{attachmentId}',
     handler: async ctx => {
-      const actorId = ctx.request.headers.get('X-Actor-Employee-Id');
+      const actorId = await requireEmployee(ctx, db);
       if (!actorId) {
-        sendUnauthorized(ctx, 'X-Actor-Employee-Id header is required.');
         return;
       }
 
@@ -553,9 +546,8 @@ export function registerTicketRoutes(
     method: 'POST',
     path: '/v1/me/tickets/{ticketId}/withdraw',
     handler: async ctx => {
-      const memberId = ctx.request.headers.get('X-Actor-Member-Id');
+      const memberId = await requireMember(ctx, db);
       if (!memberId) {
-        sendUnauthorized(ctx, 'X-Actor-Member-Id header is required.');
         return;
       }
 

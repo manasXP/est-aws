@@ -4,8 +4,8 @@
 // The read-only exception to v1's admin-panel-only document access
 // (Document Management spec, Access): PC members read ALL of their
 // project's documents -- member_visible does not gate PC reads. Follows
-// aws-blocks/assets/pc-assets-routes.ts unchanged: X-Actor-Member-Id stub
-// header, isPcMember (STR-057) for the gate, thin delegation to
+// aws-blocks/assets/pc-assets-routes.ts unchanged: token-derived member
+// identity (STR-045), isPcMember (STR-057) for the gate, thin delegation to
 // documents-api.ts for the reads.
 import { RawRoute } from '@aws-blocks/blocks';
 import type { Database, FileBucket, Scope } from '@aws-blocks/blocks';
@@ -14,6 +14,7 @@ import type { DocumentRecord } from './documents-api';
 import { isPcMember } from '../assets/asset-visibility';
 import { getProject } from '../projects/projects-api';
 import { sendCapabilityRequired, sendNotFound } from '../http/problem-response';
+import { requireMember } from '../http/capability-gate';
 
 /** Whether `memberId` sits on the PC of `doc`'s own project — the STR-116
  * download gate, extracted per the story's Refactor step so E14's project
@@ -56,8 +57,11 @@ export function registerPcDocumentRoutes(scope: Scope, db: Database, bucket: Fil
         return;
       }
 
-      const memberId = ctx.request.headers.get('X-Actor-Member-Id');
-      if (!memberId || !(await isPcMember(db, projectId, memberId))) {
+      const memberId = await requireMember(ctx, db);
+      if (!memberId) {
+        return;
+      }
+      if (!(await isPcMember(db, projectId, memberId))) {
         sendCapabilityRequired(ctx, 'pc-member');
         return;
       }
@@ -94,8 +98,11 @@ export function registerPcDocumentRoutes(scope: Scope, db: Database, bucket: Fil
       // observable through this route (review finding). PC members still
       // see archived docs 404 — invisible on this surface, like the
       // listing (T-U3).
-      const memberId = ctx.request.headers.get('X-Actor-Member-Id');
-      if (!memberId || !(await isPcMemberOfDocument(db, doc, memberId))) {
+      const memberId = await requireMember(ctx, db);
+      if (!memberId) {
+        return;
+      }
+      if (!(await isPcMemberOfDocument(db, doc, memberId))) {
         sendCapabilityRequired(ctx, 'pc-member');
         return;
       }

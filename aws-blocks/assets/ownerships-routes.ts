@@ -4,6 +4,7 @@
 // `POST /v1/ownerships/{ownershipId}/transfer`. Thin HTTP adapter: parses
 // path/body, then delegates to ownerships-api.ts for everything else.
 import { RawRoute } from '@aws-blocks/blocks';
+import { requireAuthenticated } from '../http/capability-gate';
 import type { Database, Scope } from '@aws-blocks/blocks';
 import {
   createOwnership,
@@ -21,6 +22,8 @@ export function registerOwnershipRoutes(scope: Scope, db: Database): void {
     method: 'GET',
     path: '/v1/members/{memberId}/ownerships',
     handler: async ctx => {
+      if (!(await requireAuthenticated(ctx, db))) return;
+
       const { memberId } = ctx.request.params;
       const member = await getMember(db, memberId);
       if (!member) {
@@ -36,6 +39,8 @@ export function registerOwnershipRoutes(scope: Scope, db: Database): void {
     method: 'POST',
     path: '/v1/members/{memberId}/ownerships',
     handler: async ctx => {
+      if (!(await requireAuthenticated(ctx, db))) return;
+
       const { memberId } = ctx.request.params;
       const input = await ctx.request.json();
       try {
@@ -60,6 +65,8 @@ export function registerOwnershipRoutes(scope: Scope, db: Database): void {
     method: 'PATCH',
     path: '/v1/ownerships/{ownershipId}',
     handler: async ctx => {
+      if (!(await requireAuthenticated(ctx, db))) return;
+
       const { ownershipId } = ctx.request.params;
       const input = await ctx.request.json();
       try {
@@ -83,6 +90,8 @@ export function registerOwnershipRoutes(scope: Scope, db: Database): void {
     method: 'POST',
     path: '/v1/ownerships/{ownershipId}/transfer',
     handler: async ctx => {
+      if (!(await requireAuthenticated(ctx, db))) return;
+
       const { ownershipId } = ctx.request.params;
       const input = await ctx.request.json();
       try {

@@ -5,6 +5,7 @@ import { db } from '../../aws-blocks/index';
 import { runLocalMigrations, MIGRATIONS_DIR } from '../../aws-blocks/migrations-runner';
 import { contractTest } from './harness';
 import { dispatchRequest } from '../support/dispatch';
+import { asAnyStaff, asNewEmployee } from '../support/cognito-token';
 
 // STR-113 T-C1 (BE-C) — GET/PUT /v1/document-categories against the Admin
 // OpenAPI, following the same real-handler dispatchRequest template as the
@@ -14,7 +15,7 @@ import { dispatchRequest } from '../support/dispatch';
 // may reference in the shared .bb-data store.
 
 async function currentCategories(): Promise<string[]> {
-  const response = await dispatchRequest('GET', '/v1/document-categories');
+  const response = await dispatchRequest('GET', '/v1/document-categories', {}, await asAnyStaff(db));
   return (response.body as { categories: string[] }).categories;
 }
 
@@ -22,7 +23,7 @@ describe('STR-113 T-C1 — document-categories endpoint contract', () => {
   it('GET /v1/document-categories conforms to the declared 200 shape and includes the seeded categories', async () => {
     await runLocalMigrations(db, MIGRATIONS_DIR);
 
-    const response = await dispatchRequest('GET', '/v1/document-categories');
+    const response = await dispatchRequest('GET', '/v1/document-categories', {}, await asAnyStaff(db));
 
     const op = await contractTest('admin', '/document-categories', 'get');
     expect(response.status).toBe(200);
@@ -38,7 +39,7 @@ describe('STR-113 T-C1 — document-categories endpoint contract', () => {
 
     const response = await dispatchRequest('PUT', '/v1/document-categories', {
       categories: [...(await currentCategories()), added],
-    });
+    }, await asAnyStaff(db));
 
     const op = await contractTest('admin', '/document-categories', 'put');
     expect(response.status).toBe(200);
@@ -56,13 +57,13 @@ describe('STR-113 T-C1 — document-categories endpoint contract', () => {
       category: 'Bye-laws',
       filename: 'byelaws.pdf',
       content_type: 'application/pdf',
-    }, { 'X-Actor-Employee-Id': 'emp-1' });
+    }, { ...(await asNewEmployee(db)) });
     expect(registerResponse.status).toBe(201);
 
     const before = await currentCategories();
     const response = await dispatchRequest('PUT', '/v1/document-categories', {
       categories: before.filter(c => c !== 'Bye-laws'),
-    });
+    }, await asAnyStaff(db));
 
     const op = await contractTest('admin', '/document-categories', 'put');
     expect(response.status).toBe(409);
@@ -74,7 +75,7 @@ describe('STR-113 T-C1 — document-categories endpoint contract', () => {
     await runLocalMigrations(db, MIGRATIONS_DIR);
     const before = await currentCategories();
 
-    const response = await dispatchRequest('PUT', '/v1/document-categories', { categories: 'not-a-list' });
+    const response = await dispatchRequest('PUT', '/v1/document-categories', { categories: 'not-a-list' }, await asAnyStaff(db));
 
     const op = await contractTest('admin', '/document-categories', 'put');
     expect(response.status).toBe(422);

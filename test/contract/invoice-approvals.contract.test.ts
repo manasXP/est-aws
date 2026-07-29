@@ -12,6 +12,7 @@ import { createEmployee, setEmployeeCapabilities } from '../../aws-blocks/employ
 import { createMember, admitMember } from '../../aws-blocks/members/members-api';
 import { assignRole } from '../../aws-blocks/members/role-assignments';
 import { designateApprover } from '../../aws-blocks/members/capabilities';
+import { asEmployee, asMember } from '../support/cognito-token';
 
 // STR-083 T-U2/T-C1 -- HTTP-level capability-gate and OpenAPI contract cases
 // for `POST /v1/invoices/{invoiceId}/verify` and `/approve`. Uses the real
@@ -57,7 +58,7 @@ describe('STR-083 T-U2 (TC-VEN-021) -- a non-designated employee attempts verifi
       'POST',
       `/v1/invoices/${invoiceId}/verify`,
       {},
-      { 'X-Actor-Employee-Id': employee.employee_id },
+      { ...(await asEmployee(db, employee.employee_id)) },
     );
 
     expect(response.status).toBe(403);
@@ -76,7 +77,7 @@ describe('STR-083 T-C1 -- POST /v1/invoices/{invoiceId}/verify and /approve conf
       'POST',
       `/v1/invoices/${invoiceId}/verify`,
       { notes: 'Checked against PO' },
-      { 'X-Actor-Employee-Id': employee.employee_id },
+      { ...(await asEmployee(db, employee.employee_id)) },
     );
 
     expect(response.status).toBe(200);
@@ -88,7 +89,7 @@ describe('STR-083 T-C1 -- POST /v1/invoices/{invoiceId}/verify and /approve conf
     const invoiceId = await submittedInvoiceId();
     const employee = await createEmployee(db, { name: 'Contract Verifier 2' });
     await setEmployeeCapabilities(db, employee.employee_id, ['designated-verifier']);
-    await dispatchRequest('POST', `/v1/invoices/${invoiceId}/verify`, {}, { 'X-Actor-Employee-Id': employee.employee_id });
+    await dispatchRequest('POST', `/v1/invoices/${invoiceId}/verify`, {}, { ...(await asEmployee(db, employee.employee_id)) });
 
     const member = await createMember(db, { name: 'Contract Approver' });
     await admitMember(db, member.member_id);
@@ -100,7 +101,7 @@ describe('STR-083 T-C1 -- POST /v1/invoices/{invoiceId}/verify and /approve conf
       'POST',
       `/v1/invoices/${invoiceId}/approve`,
       { notes: 'Approved' },
-      { 'X-Actor-Member-Id': member.member_id },
+      { ...(await asMember(db, member.member_id)) },
     );
 
     expect(response.status).toBe(200);
@@ -114,7 +115,7 @@ describe("STR-084 (HTTP dispatch, not in the story's own Red list -- Green secti
     const invoiceId = await submittedInvoiceId();
     const employee = await createEmployee(db, { name: 'Contract Verifier 3' });
     await setEmployeeCapabilities(db, employee.employee_id, ['designated-verifier']);
-    await dispatchRequest('POST', `/v1/invoices/${invoiceId}/verify`, {}, { 'X-Actor-Employee-Id': employee.employee_id });
+    await dispatchRequest('POST', `/v1/invoices/${invoiceId}/verify`, {}, { ...(await asEmployee(db, employee.employee_id)) });
 
     // Reject directly against the service layer -- there's no /reject HTTP
     // route in this story (deferred to STR-085 per the story's own
@@ -136,7 +137,7 @@ describe("STR-084 (HTTP dispatch, not in the story's own Red list -- Green secti
       'POST',
       `/v1/invoices/${invoiceId}/approve`,
       { notes: 'Override vote' },
-      { 'X-Actor-Member-Id': ecOne.member_id },
+      { ...(await asMember(db, ecOne.member_id)) },
     );
 
     expect(response.status).toBe(200);

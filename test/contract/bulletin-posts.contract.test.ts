@@ -10,6 +10,7 @@ import { assignRole } from '../../aws-blocks/members/role-assignments';
 import { createProject } from '../../aws-blocks/projects/projects-api';
 import { setProjectCommittee, type ProjectOwnershipLookupPort } from '../../aws-blocks/projects/committees-api';
 import { createBulletinPost } from '../../aws-blocks/communication/bulletin-posts';
+import { asAnyStaff, asMember } from '../support/cognito-token';
 
 // STR-132 T-C1 -- the five Admin bulletin-post endpoints against the Admin
 // OpenAPI document, dispatched through the real handlers (the
@@ -50,7 +51,7 @@ describe('STR-132 T-C1 -- the admin bulletin-post surface conforms to the Admin 
     const ecId = await ecMember('Contract EC Lister');
     await societyPostId(ecId);
 
-    const response = await dispatchRequest('GET', '/v1/bulletin-posts?scope=all&include_archived=true');
+    const response = await dispatchRequest('GET', '/v1/bulletin-posts?scope=all&include_archived=true', {}, await asAnyStaff(db));
     expect(response.status).toBe(200);
     const op = await contractTest('admin', '/bulletin-posts', 'get');
     expect(() => op.expectValidResponse(200, response.body)).not.toThrow();
@@ -63,7 +64,7 @@ describe('STR-132 T-C1 -- the admin bulletin-post surface conforms to the Admin 
       'POST',
       '/v1/bulletin-posts',
       { title: 'Contract compose', body: 'Body.', pinned: true },
-      { 'X-Actor-Member-Id': ecId },
+      { ...(await asMember(db, ecId)) },
     );
     expect(response.status).toBe(201);
     const op = await contractTest('admin', '/bulletin-posts', 'post');
@@ -77,7 +78,7 @@ describe('STR-132 T-C1 -- the admin bulletin-post surface conforms to the Admin 
       'POST',
       '/v1/bulletin-posts',
       { title: 'Refused', body: 'Body.' },
-      { 'X-Actor-Member-Id': atLargeId },
+      { ...(await asMember(db, atLargeId)) },
     );
     expect(response.status).toBe(403);
     const op = await contractTest('admin', '/bulletin-posts', 'post');
@@ -88,7 +89,7 @@ describe('STR-132 T-C1 -- the admin bulletin-post surface conforms to the Admin 
     const ecId = await ecMember('Contract EC Reader');
     const postId = await societyPostId(ecId);
 
-    const response = await dispatchRequest('GET', `/v1/bulletin-posts/${postId}`);
+    const response = await dispatchRequest('GET', `/v1/bulletin-posts/${postId}`, {}, await asAnyStaff(db));
     expect(response.status).toBe(200);
     const op = await contractTest('admin', '/bulletin-posts/{postId}', 'get');
     expect(() => op.expectValidResponse(200, response.body)).not.toThrow();
@@ -102,7 +103,7 @@ describe('STR-132 T-C1 -- the admin bulletin-post surface conforms to the Admin 
       'PATCH',
       `/v1/bulletin-posts/${postId}`,
       { body: 'Amended body.' },
-      { 'X-Actor-Member-Id': ecId },
+      { ...(await asMember(db, ecId)) },
     );
     expect(edit.status).toBe(200);
     const op = await contractTest('admin', '/bulletin-posts/{postId}', 'patch');
@@ -127,7 +128,7 @@ describe('STR-132 T-C1 -- the admin bulletin-post surface conforms to the Admin 
       'PATCH',
       `/v1/bulletin-posts/${projectPost.postId}`,
       { body: 'Admin rewrite.' },
-      { 'X-Actor-Member-Id': ecId },
+      { ...(await asMember(db, ecId)) },
     );
     expect(refused.status).toBe(409);
     expect(() => op.expectValidResponse(409, refused.body)).not.toThrow();
@@ -141,7 +142,7 @@ describe('STR-132 T-C1 -- the admin bulletin-post surface conforms to the Admin 
       'POST',
       `/v1/bulletin-posts/${postId}/archive`,
       {},
-      { 'X-Actor-Member-Id': ecId },
+      { ...(await asMember(db, ecId)) },
     );
     expect(response.status).toBe(200);
     const op = await contractTest('admin', '/bulletin-posts/{postId}/archive', 'post');
@@ -149,7 +150,7 @@ describe('STR-132 T-C1 -- the admin bulletin-post surface conforms to the Admin 
   });
 
   it('GET /v1/bulletin-posts/{postId} 404s an unknown post in the declared shape', async () => {
-    const response = await dispatchRequest('GET', `/v1/bulletin-posts/${randomUUID()}`);
+    const response = await dispatchRequest('GET', `/v1/bulletin-posts/${randomUUID()}`, {}, await asAnyStaff(db));
     expect(response.status).toBe(404);
     const op = await contractTest('admin', '/bulletin-posts/{postId}', 'get');
     expect(() => op.expectValidResponse(404, response.body)).not.toThrow();

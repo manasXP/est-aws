@@ -34,7 +34,8 @@ import {
   sendCapabilityRequired,
   ConflictError,
 } from '../http/problem-response';
-import { requireCapability, resolveActor } from '../http/capability-gate';
+import { requireCapability, requireAuthenticated } from '../http/capability-gate';
+import type { Actor } from '../members/capabilities';
 
 // The Admin OpenAPI's BulletinPost schema carries the author's name and each
 // attachment's title -- neither is on the entity itself (STR-131 stores ids,
@@ -63,15 +64,14 @@ async function toBulletinPostResponse(db: Database, post: BulletinPostRecord): P
 }
 
 /**
- * The acting member for a write. `requireCapability` has already passed by
- * the time this is consulted, so the only caller it turns away is an
- * employee holding the capability: authorship and the edit audit are member
- * identities (`author_member_id`/`editor_member_id` are FKs into `members`),
- * which an employee account has none of.
+ * The acting member for a write. The gate has already passed by the time
+ * this is consulted, so the only caller it turns away is an employee holding
+ * the capability: authorship and the edit audit are member identities
+ * (`author_member_id`/`editor_member_id` are FKs into `members`), which an
+ * employee account has none of.
  */
-function actingMemberId(ctx: Parameters<typeof resolveActor>[0]): string | null {
-  const actor = resolveActor(ctx);
-  return actor && 'memberId' in actor ? actor.memberId : null;
+function actingMemberId(actor: Actor): string | null {
+  return 'memberId' in actor ? actor.memberId : null;
 }
 
 export function registerBulletinPostRoutes(scope: Scope, db: Database): void {
@@ -82,6 +82,8 @@ export function registerBulletinPostRoutes(scope: Scope, db: Database): void {
     method: 'GET',
     path: '/v1/bulletin-posts',
     handler: async ctx => {
+      if (!(await requireAuthenticated(ctx, db))) return;
+
       const params = ctx.request.url.searchParams;
       const scopeParam = params.get('scope') ?? 'all';
       try {
@@ -115,8 +117,9 @@ export function registerBulletinPostRoutes(scope: Scope, db: Database): void {
     method: 'POST',
     path: '/v1/bulletin-posts',
     handler: async ctx => {
-      if (!(await requireCapability(ctx, db, 'bulletin_compose'))) return;
-      const authorMemberId = actingMemberId(ctx);
+      const composer = await requireCapability(ctx, db, 'bulletin_compose');
+      if (!composer) return;
+      const authorMemberId = actingMemberId(composer);
       if (!authorMemberId) {
         sendCapabilityRequired(ctx, 'bulletin_compose');
         return;
@@ -157,6 +160,8 @@ export function registerBulletinPostRoutes(scope: Scope, db: Database): void {
     method: 'GET',
     path: '/v1/bulletin-posts/{postId}',
     handler: async ctx => {
+      if (!(await requireAuthenticated(ctx, db))) return;
+
       const { postId } = ctx.request.params;
       const post = await getBulletinPost(db, postId);
       if (!post) {
@@ -171,8 +176,9 @@ export function registerBulletinPostRoutes(scope: Scope, db: Database): void {
     method: 'PATCH',
     path: '/v1/bulletin-posts/{postId}',
     handler: async ctx => {
-      if (!(await requireCapability(ctx, db, 'bulletin_compose'))) return;
-      const editorMemberId = actingMemberId(ctx);
+      const editor = await requireCapability(ctx, db, 'bulletin_compose');
+      if (!editor) return;
+      const editorMemberId = actingMemberId(editor);
       if (!editorMemberId) {
         sendCapabilityRequired(ctx, 'bulletin_compose');
         return;

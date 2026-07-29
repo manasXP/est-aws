@@ -5,13 +5,14 @@ import { db } from '../../aws-blocks/index';
 import { runLocalMigrations, MIGRATIONS_DIR } from '../../aws-blocks/migrations-runner';
 import { contractTest } from './harness';
 import { dispatchRequest } from '../support/dispatch';
+import { asAnyStaff, asMember } from '../support/cognito-token';
 
 // STR-057 T-C1 (covers TC-AST-040) — mobile GET /me/ownerships contract
 // cases. Same approach as test/contract/ownerships.contract.test.ts:
 // dispatch the real handler against the singleton `db`, feed its response
 // through the harness. This is the first mobile self-service (`/me`)
 // endpoint built in this repo -- caller identity is resolved from the
-// X-Actor-Member-Id stub header, the same convention capability-gate.ts
+// caller's own bearer token (STR-045), the same convention capability-gate.ts
 // established for the Admin API.
 
 beforeAll(async () => {
@@ -19,17 +20,17 @@ beforeAll(async () => {
 });
 
 async function createTestProject(): Promise<string> {
-  const response = await dispatchRequest('POST', '/v1/projects', { name: `Contract Test Project ${randomUUID()}` });
+  const response = await dispatchRequest('POST', '/v1/projects', { name: `Contract Test Project ${randomUUID()}` }, await asAnyStaff(db));
   return (response.body as { project_id: string }).project_id;
 }
 
 async function createTestMember(): Promise<string> {
-  const response = await dispatchRequest('POST', '/v1/members', { name: `Contract Test Member ${randomUUID()}` });
+  const response = await dispatchRequest('POST', '/v1/members', { name: `Contract Test Member ${randomUUID()}` }, await asAnyStaff(db));
   return (response.body as { member_id: string }).member_id;
 }
 
 async function createTestAsset(projectId: string, type = 'flat'): Promise<string> {
-  const response = await dispatchRequest('POST', '/v1/assets', { project_id: projectId, type, label: 'A-1' });
+  const response = await dispatchRequest('POST', '/v1/assets', { project_id: projectId, type, label: 'A-1' }, await asAnyStaff(db));
   return (response.body as { asset_id: string }).asset_id;
 }
 
@@ -40,10 +41,10 @@ describe('STR-057 T-C1 — GET /v1/me/ownerships (covers TC-AST-040)', () => {
     const memberB = await createTestMember();
     const assetA = await createTestAsset(projectId, 'flat');
     const assetB = await createTestAsset(projectId, 'plot');
-    await dispatchRequest('POST', `/v1/members/${memberA}/ownerships`, { asset_id: assetA });
-    await dispatchRequest('POST', `/v1/members/${memberB}/ownerships`, { asset_id: assetB });
+    await dispatchRequest('POST', `/v1/members/${memberA}/ownerships`, { asset_id: assetA }, await asAnyStaff(db));
+    await dispatchRequest('POST', `/v1/members/${memberB}/ownerships`, { asset_id: assetB }, await asAnyStaff(db));
 
-    const response = await dispatchRequest('GET', '/v1/me/ownerships', {}, { 'X-Actor-Member-Id': memberA });
+    const response = await dispatchRequest('GET', '/v1/me/ownerships', {}, { ...(await asMember(db, memberA)) });
 
     expect(response.status).toBe(200);
     const op = await contractTest('mobile', '/me/ownerships', 'get');
@@ -60,7 +61,7 @@ describe('STR-057 T-C1 — GET /v1/me/ownerships (covers TC-AST-040)', () => {
   // Genuine Red gap: no TC covers unauthenticated access, but this is the
   // first mobile self-service endpoint built in this repo -- a defined
   // 401, not a crash or a leaked empty list, is the only safe default for
-  // a missing X-Actor-Member-Id header.
+  // a request carrying no bearer token.
   it('returns 401 when no caller identity is presented', async () => {
     const response = await dispatchRequest('GET', '/v1/me/ownerships');
     expect(response.status).toBe(401);

@@ -8,6 +8,7 @@ import { postJournalEntry, type CounterpartyType, type PostingLine } from '../..
 import { createEmployee, setEmployeeCapabilities } from '../../aws-blocks/employees/employees-api';
 import { contractTest } from './harness';
 import { dispatchRequest } from '../support/dispatch';
+import { asAnyStaff, asEmployee } from '../support/cognito-token';
 
 // STR-026 -- `POST /v1/books/{book}/entries/{entryId}/reversal`, the one write
 // the Admin contract documents against a book entry. Uses the real `db`
@@ -48,7 +49,7 @@ async function financeRecorderEmployeeId(): Promise<string> {
 
 /** The headers a permitted correction carries: the capability actor plus the contract's required Idempotency-Key. */
 async function correctionHeaders(): Promise<Record<string, string>> {
-  return { 'Idempotency-Key': randomUUID(), 'X-Actor-Employee-Id': await financeRecorderEmployeeId() };
+  return { 'Idempotency-Key': randomUUID(), ...(await asEmployee(db, await financeRecorderEmployeeId())) };
 }
 
 interface JournalLineRow {
@@ -100,8 +101,8 @@ describe('STR-026 T-C1 -- POST /v1/books/{book}/entries/{entryId}/reversal confo
 
     // Both entries remain readable through the book-read surface — a
     // correction hides nothing.
-    const originalRead = await dispatchRequest('GET', `/v1/books/bank/entries/${entryId}`);
-    const reversalRead = await dispatchRequest('GET', `/v1/books/bank/entries/${reversalId}`);
+    const originalRead = await dispatchRequest('GET', `/v1/books/bank/entries/${entryId}`, {}, await asAnyStaff(db));
+    const reversalRead = await dispatchRequest('GET', `/v1/books/bank/entries/${reversalId}`, {}, await asAnyStaff(db));
     expect(originalRead.status).toBe(200);
     expect(reversalRead.status).toBe(200);
     expect((originalRead.body as { reversed_by_entry_id: string | null }).reversed_by_entry_id).toBe(reversalId);
@@ -123,7 +124,7 @@ describe('STR-026 T-C2 -- the original entry is untouched by the correction (cov
   it('re-reads identical postings after the correction, with no mutation and no edit timestamp', async () => {
     const entryId = await postEntryForBook('cash', '410.50');
 
-    const before = await dispatchRequest('GET', `/v1/books/cash/entries/${entryId}`);
+    const before = await dispatchRequest('GET', `/v1/books/cash/entries/${entryId}`, {}, await asAnyStaff(db));
     const linesBefore = await journalLinesFor(entryId);
     const postedAtBefore = await db.queryOne<{ posted_at: string }>(
       sql`SELECT posted_at::text AS posted_at FROM journal_entries WHERE id = ${entryId}`,
@@ -137,7 +138,7 @@ describe('STR-026 T-C2 -- the original entry is untouched by the correction (cov
     );
     expect(reversalResponse.status).toBe(201);
 
-    const after = await dispatchRequest('GET', `/v1/books/cash/entries/${entryId}`);
+    const after = await dispatchRequest('GET', `/v1/books/cash/entries/${entryId}`, {}, await asAnyStaff(db));
     const beforeBody = before.body as Record<string, unknown>;
     const afterBody = after.body as Record<string, unknown>;
 
@@ -190,7 +191,12 @@ describe('STR-026 T-C3 -- an entry cannot be corrected twice', () => {
 });
 
 describe('STR-026 T-U1 -- the correction endpoint is capability-gated on finance-recorder', () => {
-  it('rejects a caller with no resolvable actor: 403 capability_required', async () => {
+  // STR-045 changed what this case means. Under the header stand-in an
+  // anonymous caller was an actor with no capabilities (403); now the gate
+  // cannot identify the caller at all, which is 401 -- the capability
+  // question is never reached. The case below, an actor holding some *other*
+  // capability, is what still exercises the 403.
+  it('rejects a caller with no bearer token: 401 unauthorized', async () => {
     const entryId = await postEntryForBook('bank', '60.00');
 
     const response = await dispatchRequest(
@@ -200,8 +206,8 @@ describe('STR-026 T-U1 -- the correction endpoint is capability-gated on finance
       { 'Idempotency-Key': randomUUID() },
     );
 
-    expect(response.status).toBe(403);
-    expect((response.body as { error: { code: string } }).error.code).toBe('capability_required');
+    expect(response.status).toBe(401);
+    expect((response.body as { error: { code: string } }).error.code).toBe('unauthorized');
     // The gate denies before anything is written.
     const reversals = await db.query(sql`SELECT id FROM journal_entries WHERE reverses_entry_id = ${entryId}`);
     expect(reversals).toHaveLength(0);
@@ -216,7 +222,7 @@ describe('STR-026 T-U1 -- the correction endpoint is capability-gated on finance
       'POST',
       `/v1/books/bank/entries/${entryId}/reversal`,
       { reason: 'Not permitted' },
-      { 'Idempotency-Key': randomUUID(), 'X-Actor-Employee-Id': employee.employee_id },
+      { 'Idempotency-Key': randomUUID(), ...(await asEmployee(db, employee.employee_id)) },
     );
 
     expect(response.status).toBe(403);
@@ -246,7 +252,7 @@ describe('STR-026 T-U2 -- the contract-required request fields are enforced', ()
       'POST',
       `/v1/books/bank/entries/${entryId}/reversal`,
       { reason: 'No key' },
-      { 'X-Actor-Employee-Id': await financeRecorderEmployeeId() },
+      await asEmployee(db, await financeRecorderEmployeeId()),
     );
 
     expect(response.status).toBe(422);

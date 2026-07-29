@@ -4,6 +4,7 @@
 // index.ts). Thin HTTP adapter: parses path/query/body, then delegates to
 // members-api.ts for everything else.
 import { RawRoute } from '@aws-blocks/blocks';
+import { requireAuthenticated } from '../http/capability-gate';
 import type { Database, Scope } from '@aws-blocks/blocks';
 import {
   createMember,
@@ -29,6 +30,8 @@ export function registerMemberRoutes(scope: Scope, db: Database): void {
     method: 'GET',
     path: '/v1/members',
     handler: async ctx => {
+      if (!(await requireAuthenticated(ctx, db))) return;
+
       const status = ctx.request.url.searchParams.get('status') ?? 'all';
       const items = await listMembers(db, { status: status !== 'all' && isMemberStatus(status) ? status : undefined });
       ctx.response.send({ items, next_cursor: null });
@@ -39,6 +42,8 @@ export function registerMemberRoutes(scope: Scope, db: Database): void {
     method: 'POST',
     path: '/v1/members',
     handler: async ctx => {
+      if (!(await requireAuthenticated(ctx, db))) return;
+
       const input = await ctx.request.json();
       try {
         const member = await createMember(db, input);
@@ -58,6 +63,8 @@ export function registerMemberRoutes(scope: Scope, db: Database): void {
     method: 'GET',
     path: '/v1/members/{memberId}',
     handler: async ctx => {
+      if (!(await requireAuthenticated(ctx, db))) return;
+
       const member = await getMember(db, ctx.request.params.memberId);
       if (!member) {
         sendNotFound(ctx, `No member ${ctx.request.params.memberId}`);
@@ -71,6 +78,8 @@ export function registerMemberRoutes(scope: Scope, db: Database): void {
     method: 'PATCH',
     path: '/v1/members/{memberId}',
     handler: async ctx => {
+      if (!(await requireAuthenticated(ctx, db))) return;
+
       const input = await ctx.request.json();
       try {
         const member = await updateMember(db, ctx.request.params.memberId, input);
@@ -93,6 +102,8 @@ export function registerMemberRoutes(scope: Scope, db: Database): void {
     method: 'POST',
     path: '/v1/members/{memberId}/admit',
     handler: async ctx => {
+      if (!(await requireAuthenticated(ctx, db))) return;
+
       try {
         const member = await admitMember(db, ctx.request.params.memberId);
         if (!member) {
@@ -114,6 +125,8 @@ export function registerMemberRoutes(scope: Scope, db: Database): void {
     method: 'POST',
     path: '/v1/members/{memberId}/suspend',
     handler: async ctx => {
+      if (!(await requireAuthenticated(ctx, db))) return;
+
       const { actor } = await ctx.request.json();
       try {
         const member = await suspendMember(db, ctx.request.params.memberId, actor);
@@ -140,6 +153,8 @@ export function registerMemberRoutes(scope: Scope, db: Database): void {
     method: 'POST',
     path: '/v1/members/{memberId}/reinstate',
     handler: async ctx => {
+      if (!(await requireAuthenticated(ctx, db))) return;
+
       const { actor } = await ctx.request.json();
       try {
         const member = await reinstateMember(db, ctx.request.params.memberId, actor);

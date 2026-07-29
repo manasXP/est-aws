@@ -16,7 +16,8 @@ import { listMemberBulletinFeed, resolveBulletinBoardAudience } from './bulletin
 import { getMember } from '../members/members-api';
 import { getProject } from '../projects/projects-api';
 import { getDocumentMetadata, getDownloadUrl, DOWNLOAD_URL_EXPIRES_IN_SECONDS } from '../documents/documents-api';
-import { sendNotFound, sendUnauthorized } from '../http/problem-response';
+import { sendNotFound } from '../http/problem-response';
+import { requireMember } from '../http/capability-gate';
 
 // The Mobile OpenAPI's BulletinPost schema: the author's name, the project's
 // name and each attachment's registry title/file name are all resolved at
@@ -68,11 +69,8 @@ export function registerMeBulletinRoutes(scope: Scope, db: Database, bucket: Fil
     method: 'GET',
     path: '/v1/me/bulletin',
     handler: async ctx => {
-      const memberId = ctx.request.headers.get('X-Actor-Member-Id');
-      if (!memberId) {
-        sendUnauthorized(ctx, 'X-Actor-Member-Id header is required.');
-        return;
-      }
+      const memberId = await requireMember(ctx, db);
+      if (!memberId) return;
 
       const params = ctx.request.url.searchParams;
       const scopeParam = params.get('scope') ?? 'all';
@@ -95,11 +93,8 @@ export function registerMeBulletinRoutes(scope: Scope, db: Database, bucket: Fil
     method: 'GET',
     path: '/v1/me/bulletin/{postId}',
     handler: async ctx => {
-      const memberId = ctx.request.headers.get('X-Actor-Member-Id');
-      if (!memberId) {
-        sendUnauthorized(ctx, 'X-Actor-Member-Id header is required.');
-        return;
-      }
+      const memberId = await requireMember(ctx, db);
+      if (!memberId) return;
 
       const { postId } = ctx.request.params;
       const post = await visiblePost(db, memberId, postId);
@@ -115,11 +110,8 @@ export function registerMeBulletinRoutes(scope: Scope, db: Database, bucket: Fil
     method: 'GET',
     path: '/v1/me/bulletin/{postId}/attachments/{documentId}',
     handler: async ctx => {
-      const memberId = ctx.request.headers.get('X-Actor-Member-Id');
-      if (!memberId) {
-        sendUnauthorized(ctx, 'X-Actor-Member-Id header is required.');
-        return;
-      }
+      const memberId = await requireMember(ctx, db);
+      if (!memberId) return;
 
       const { postId, documentId } = ctx.request.params;
       // Presign only after the post is established as visible AND the

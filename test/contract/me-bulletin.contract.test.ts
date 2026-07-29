@@ -13,6 +13,7 @@ import { setProjectCommittee } from '../../aws-blocks/projects/committees-api';
 import { createAsset } from '../../aws-blocks/assets/assets-api';
 import { createOwnership } from '../../aws-blocks/assets/ownerships-api';
 import { createBulletinPost } from '../../aws-blocks/communication/bulletin-posts';
+import { asAnyStaff, asMember } from '../support/cognito-token';
 
 // STR-133 T-C1 (BE-C, covers TC-COM-002) — the three mobile bulletin
 // endpoints against the Mobile OpenAPI document, dispatched through the real
@@ -57,7 +58,7 @@ async function attachableDocument(projectId: string): Promise<string> {
       filename: 'circular.pdf',
       content_type: 'application/pdf',
     },
-    { 'X-Actor-Employee-Id': 'emp-1' },
+    await asAnyStaff(db),
   );
   const documentId = (response.body as { document_id: string }).document_id;
   const row = await db.queryOne<{ file_key: string }>(sql`SELECT file_key FROM documents WHERE id = ${documentId}`);
@@ -71,7 +72,7 @@ describe('STR-133 T-C1 — the mobile bulletin surface conforms to the Mobile Op
     const memberId = await activeMember('Contract Feed Reader');
     await createBulletinPost(db, ecId, { scope: 'society', title: 'Contract notice', body: 'Body.' });
 
-    const response = await dispatchRequest('GET', '/v1/me/bulletin?scope=all', {}, { 'X-Actor-Member-Id': memberId });
+    const response = await dispatchRequest('GET', '/v1/me/bulletin?scope=all', {}, await asMember(db, memberId));
     expect(response.status).toBe(200);
     const op = await contractTest('mobile', '/me/bulletin', 'get');
     expect(() => op.expectValidResponse(200, response.body)).not.toThrow();
@@ -104,7 +105,7 @@ describe('STR-133 T-C1 — the mobile bulletin surface conforms to the Mobile Op
       attachments: [documentId],
     });
 
-    const response = await dispatchRequest('GET', `/v1/me/bulletin/${post.postId}`, {}, { 'X-Actor-Member-Id': memberId });
+    const response = await dispatchRequest('GET', `/v1/me/bulletin/${post.postId}`, {}, await asMember(db, memberId));
     expect(response.status).toBe(200);
     const op = await contractTest('mobile', '/me/bulletin/{postId}', 'get');
     expect(() => op.expectValidResponse(200, response.body)).not.toThrow();
@@ -114,7 +115,7 @@ describe('STR-133 T-C1 — the mobile bulletin surface conforms to the Mobile Op
       'GET',
       `/v1/me/bulletin/${post.postId}`,
       {},
-      { 'X-Actor-Member-Id': outsiderId },
+      await asMember(db, outsiderId),
     );
     expect(refused.status).toBe(404);
     expect(() => op.expectValidResponse(404, refused.body)).not.toThrow();
@@ -142,12 +143,12 @@ describe('STR-133 T-C1 — the mobile bulletin surface conforms to the Mobile Op
     const path = `/v1/me/bulletin/${post.postId}/attachments/${documentId}`;
     const op = await contractTest('mobile', '/me/bulletin/{postId}/attachments/{documentId}', 'get');
 
-    const response = await dispatchRequest('GET', path, {}, { 'X-Actor-Member-Id': memberId });
+    const response = await dispatchRequest('GET', path, {}, await asMember(db, memberId));
     expect(response.status).toBe(200);
     expect(() => op.expectValidResponse(200, response.body)).not.toThrow();
 
     const outsiderId = await activeMember('Contract Attachment Outsider');
-    const refused = await dispatchRequest('GET', path, {}, { 'X-Actor-Member-Id': outsiderId });
+    const refused = await dispatchRequest('GET', path, {}, await asMember(db, outsiderId));
     expect(refused.status).toBe(404);
     expect(() => op.expectValidResponse(404, refused.body)).not.toThrow();
 
@@ -158,7 +159,7 @@ describe('STR-133 T-C1 — the mobile bulletin surface conforms to the Mobile Op
       'GET',
       `/v1/me/bulletin/${post.postId}/attachments/${unattached}`,
       {},
-      { 'X-Actor-Member-Id': memberId },
+      await asMember(db, memberId),
     );
     expect(wrongDoc.status).toBe(404);
     expect(() => op.expectValidResponse(404, wrongDoc.body)).not.toThrow();

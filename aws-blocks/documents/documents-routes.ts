@@ -8,7 +8,7 @@ import type { Database, FileBucket, Scope } from '@aws-blocks/blocks';
 import { registerDocument, getDocument, getDownloadUrl, updateDocument, listDocuments, listCategories, replaceCategories, archiveDocument, restoreDocument, DocumentValidationError, DocumentCategoryConflictError, DocumentLifecycleConflictError, DOWNLOAD_URL_EXPIRES_IN_SECONDS } from './documents-api';
 import type { DocumentRecord, DocumentLevel, DocumentStatus } from './documents-api';
 import { sendNotFound, sendValidationError, sendConflictError, problemResponse } from '../http/problem-response';
-import { resolveActor, sendActorRefusal, requireAuthenticated } from '../http/capability-gate';
+import { requireAuthenticated } from '../http/capability-gate';
 
 // The Admin OpenAPI's Document schema types `size_bytes` as a plain
 // non-nullable integer, absent from `required` -- so when it's still `null`
@@ -88,12 +88,8 @@ export function registerDocumentRoutes(scope: Scope, db: Database, bucket: FileB
     method: 'POST',
     path: '/v1/documents',
     handler: async ctx => {
-      const resolution = await resolveActor(ctx, db);
-      if ('failure' in resolution) {
-        sendActorRefusal(ctx, resolution.failure);
-        return;
-      }
-      const actor = resolution.actor;
+      const actor = await requireAuthenticated(ctx, db);
+      if (!actor) return;
       const uploadedBy = 'employeeId' in actor ? actor.employeeId : actor.memberId;
 
       const body = await ctx.request.json();
@@ -152,12 +148,8 @@ export function registerDocumentRoutes(scope: Scope, db: Database, bucket: FileB
     method: 'PATCH',
     path: '/v1/documents/{documentId}',
     handler: async ctx => {
-      const resolution = await resolveActor(ctx, db);
-      if ('failure' in resolution) {
-        sendActorRefusal(ctx, resolution.failure);
-        return;
-      }
-      const actor = resolution.actor;
+      const actor = await requireAuthenticated(ctx, db);
+      if (!actor) return;
 
       const body = await ctx.request.json();
       try {

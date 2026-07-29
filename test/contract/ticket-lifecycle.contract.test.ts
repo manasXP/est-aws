@@ -6,6 +6,7 @@ import { runLocalMigrations, MIGRATIONS_DIR } from '../../aws-blocks/migrations-
 import { setEmployeeCapabilities } from '../../aws-blocks/employees/employees-api';
 import { contractTest } from './harness';
 import { dispatchRequest } from '../support/dispatch';
+import { asAnyStaff, asEmployee, asMember } from '../support/cognito-token';
 
 // Contract coverage for STR-122's two ADMIN lifecycle transitions, which
 // no test had ever validated against the Admin OpenAPI. Both declare a
@@ -21,14 +22,14 @@ beforeAll(async () => {
 });
 
 async function createActiveMember(): Promise<string> {
-  const response = await dispatchRequest('POST', '/v1/members', { name: `Lifecycle Member ${randomUUID()}` });
+  const response = await dispatchRequest('POST', '/v1/members', { name: `Lifecycle Member ${randomUUID()}` }, await asAnyStaff(db));
   const memberId = (response.body as { member_id: string }).member_id;
-  await dispatchRequest('POST', `/v1/members/${memberId}/admit`);
+  await dispatchRequest('POST', `/v1/members/${memberId}/admit`, {}, await asAnyStaff(db));
   return memberId;
 }
 
 async function adminEmployee(): Promise<string> {
-  const response = await dispatchRequest('POST', '/v1/employees', { name: `Lifecycle Admin ${randomUUID()}` });
+  const response = await dispatchRequest('POST', '/v1/employees', { name: `Lifecycle Admin ${randomUUID()}` }, await asAnyStaff(db));
   const employeeId = (response.body as { employee_id: string }).employee_id;
   await setEmployeeCapabilities(db, employeeId, ['finance-recorder']);
   return employeeId;
@@ -39,7 +40,7 @@ async function openTicket(memberId: string): Promise<string> {
     'POST',
     '/v1/me/tickets',
     { category: 'general', subject: 'Gate light', description: 'Out since Monday.' },
-    { 'X-Actor-Member-Id': memberId },
+    await asMember(db, memberId),
   );
   expect(response.status).toBe(201);
   return (response.body as { ticket_id: string }).ticket_id;
@@ -55,7 +56,7 @@ describe('admin ticket transitions conform to the Admin OpenAPI Ticket schema', 
       'POST',
       `/v1/tickets/${ticketId}/assign`,
       { assignee_id: staffId },
-      { 'X-Actor-Employee-Id': staffId },
+      await asEmployee(db, staffId),
     );
 
     const op = await contractTest('admin', '/tickets/{ticketId}/assign', 'post');
@@ -73,14 +74,14 @@ describe('admin ticket transitions conform to the Admin OpenAPI Ticket schema', 
       'POST',
       `/v1/tickets/${ticketId}/assign`,
       { assignee_id: staffId },
-      { 'X-Actor-Employee-Id': staffId },
+      await asEmployee(db, staffId),
     );
 
     const response = await dispatchRequest(
       'POST',
       `/v1/tickets/${ticketId}/resolve`,
       { resolution_note: 'Bulb replaced.' },
-      { 'X-Actor-Employee-Id': staffId },
+      await asEmployee(db, staffId),
     );
 
     const op = await contractTest('admin', '/tickets/{ticketId}/resolve', 'post');
@@ -98,20 +99,20 @@ describe('admin ticket transitions conform to the Admin OpenAPI Ticket schema', 
       'POST',
       `/v1/tickets/${ticketId}/assign`,
       { assignee_id: staffId },
-      { 'X-Actor-Employee-Id': staffId },
+      await asEmployee(db, staffId),
     );
     await dispatchRequest(
       'POST',
       `/v1/tickets/${ticketId}/resolve`,
       { resolution_note: 'Bulb replaced.' },
-      { 'X-Actor-Employee-Id': staffId },
+      await asEmployee(db, staffId),
     );
 
     const response = await dispatchRequest(
       'POST',
       `/v1/me/tickets/${ticketId}/reopen`,
       {},
-      { 'X-Actor-Member-Id': memberId },
+      await asMember(db, memberId),
     );
 
     const op = await contractTest('mobile', '/me/tickets/{ticketId}/reopen', 'post');

@@ -19,7 +19,7 @@ import {
 import { getAssetViewGrants, setAssetViewGrants, AssetViewGrantValidationError } from './asset-view-grants-api';
 import { JournalError } from '../finance/journal';
 import { sendNotFound, sendValidationError, problemResponse, ValidationError } from '../http/problem-response';
-import { requireCapability, resolveActor, sendActorRefusal, requireAuthenticated } from '../http/capability-gate';
+import { requireAuthenticated, requireCapability } from '../http/capability-gate';
 
 export function registerEmployeeRoutes(scope: Scope, db: Database): void {
   new RawRoute(scope, 'list-employees', {
@@ -187,12 +187,8 @@ export function registerEmployeeRoutes(scope: Scope, db: Database): void {
     handler: async ctx => {
       const { employeeId } = ctx.request.params;
       const { project_ids } = await ctx.request.json();
-      const resolution = await resolveActor(ctx, db);
-      if ('failure' in resolution) {
-        sendActorRefusal(ctx, resolution.failure);
-        return;
-      }
-      const actor = resolution.actor;
+      const actor = await requireAuthenticated(ctx, db);
+      if (!actor) return;
       try {
         const projectIds = await setAssetViewGrants(db, employeeId, project_ids, actor);
         if (projectIds === null) {

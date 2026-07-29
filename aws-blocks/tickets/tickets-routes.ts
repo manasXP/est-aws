@@ -226,6 +226,7 @@ export function registerTicketRoutes(
     method: 'GET',
     path: '/v1/tickets',
     handler: async ctx => {
+      if (!(await requireAuthenticated(ctx, db))) return;
       const params = ctx.request.url.searchParams;
       // The Admin OpenAPI defaults this queue to `open` -- the triage view
       // is the work still to be done, not the whole history.
@@ -249,6 +250,7 @@ export function registerTicketRoutes(
     method: 'GET',
     path: '/v1/tickets/{ticketId}',
     handler: async ctx => {
+      if (!(await requireAuthenticated(ctx, db))) return;
       const { ticketId } = ctx.request.params;
       const detail = await getTicketDetail(db, ticketId);
       if (!detail) {
@@ -273,11 +275,8 @@ export function registerTicketRoutes(
     method: 'GET',
     path: '/v1/me/tickets',
     handler: async ctx => {
-      const memberId = ctx.request.headers.get('X-Actor-Member-Id');
-      if (!memberId) {
-        sendUnauthorized(ctx, 'X-Actor-Member-Id header is required.');
-        return;
-      }
+      const memberId = await requireMember(ctx, db);
+      if (!memberId) return;
 
       // The mobile contract defaults to every status -- a member tracks
       // their whole history, not just what is still open.
@@ -290,11 +289,8 @@ export function registerTicketRoutes(
     method: 'GET',
     path: '/v1/me/tickets/{ticketId}',
     handler: async ctx => {
-      const memberId = ctx.request.headers.get('X-Actor-Member-Id');
-      if (!memberId) {
-        sendUnauthorized(ctx, 'X-Actor-Member-Id header is required.');
-        return;
-      }
+      const memberId = await requireMember(ctx, db);
+      if (!memberId) return;
 
       const { ticketId } = ctx.request.params;
       // 404 rather than 403: "absent" and "someone else's" must be

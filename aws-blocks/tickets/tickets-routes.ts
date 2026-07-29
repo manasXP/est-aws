@@ -355,7 +355,7 @@ export function registerTicketRoutes(
       const body = await ctx.request.json().catch(() => null);
       try {
         const ticket = await pickupTicket(db, ctx.request.params.ticketId, actorId, body?.assignee_id ?? null);
-        ctx.response.send(toTicketResponse(ticket));
+        ctx.response.send(await toAdminTicketResponse(db, ticket));
       } catch (e) {
         sendLifecycleError(ctx, e);
       }
@@ -381,7 +381,7 @@ export function registerTicketRoutes(
           body?.resolution_note,
           pushAdapter,
         );
-        ctx.response.send(toTicketResponse(ticket));
+        ctx.response.send(await toAdminTicketResponse(db, ticket));
       } catch (e) {
         sendLifecycleError(ctx, e);
       }

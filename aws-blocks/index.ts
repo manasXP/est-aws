@@ -42,6 +42,7 @@ import { registerPcDocumentRoutes } from './documents/pc-documents-routes';
 import { registerTicketRoutes } from './tickets/tickets-routes';
 import { registerBulletinPostRoutes } from './communication/bulletin-posts-routes';
 import { registerMeBulletinRoutes } from './communication/bulletin-mobile-api';
+import { registerPcBulletinRoutes } from './communication/pc-bulletin-api';
 import { registerBulletinPushListener } from './communication/bulletin-push';
 import { autoCloseResolvedTickets } from './tickets/lifecycle';
 // STR-041 code review: no HTTP surface of its own -- imported for its
@@ -476,6 +477,11 @@ registerBulletinPostRoutes(scope, db);
 // belong to, the single-post deep-link target of the new-post push, and the
 // presigned attachment download.
 registerMeBulletinRoutes(scope, db, documents);
+
+// STR-134: the `/pc` surface's single write -- create and edit on the PC's
+// own project board. Gated on a current PC seat directly, never on a
+// capability (Governance & Roles: PC seats confer no admin-panel capability).
+registerPcBulletinRoutes(scope, db);
 
 // STR-133: the new-post push. Registered on STR-131's publish event, so
 // STR-132's EC compose and STR-134's PC compose both push without either

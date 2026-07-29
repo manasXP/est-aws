@@ -20,8 +20,12 @@ import { sendNotFound, sendUnauthorized } from '../http/problem-response';
 
 // The Mobile OpenAPI's BulletinPost schema: the author's name, the project's
 // name and each attachment's registry title/file name are all resolved at
-// read time -- the entity itself stores only ids (STR-131).
-async function toBulletinPostResponse(db: Database, post: BulletinPostRecord): Promise<Record<string, unknown>> {
+// read time -- the entity itself stores only ids (STR-131). Exported for
+// STR-134's `/pc` write, which answers with the same schema.
+export async function toMobileBulletinPostResponse(
+  db: Database,
+  post: BulletinPostRecord,
+): Promise<Record<string, unknown>> {
   // Non-null: `author_member_id` is a NOT NULL FK into `members`.
   const author = (await getMember(db, post.authorMemberId))!;
   const project = post.projectId === null ? null : await getProject(db, post.projectId);
@@ -82,7 +86,7 @@ export function registerMeBulletinRoutes(scope: Scope, db: Database, bucket: Fil
       });
       const items = [];
       for (const post of posts) {
-        items.push(await toBulletinPostResponse(db, post));
+        items.push(await toMobileBulletinPostResponse(db, post));
       }
       // `cursor`/`limit` are accepted per the contract but `next_cursor` is
       // always null -- the STR-051 precedent; no story has built real
@@ -107,7 +111,7 @@ export function registerMeBulletinRoutes(scope: Scope, db: Database, bucket: Fil
         sendNotFound(ctx, `No bulletin post ${postId}`);
         return;
       }
-      ctx.response.send(await toBulletinPostResponse(db, post));
+      ctx.response.send(await toMobileBulletinPostResponse(db, post));
     },
   });
 

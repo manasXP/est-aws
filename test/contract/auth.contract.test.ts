@@ -5,7 +5,6 @@ import { db } from '../../aws-blocks/index';
 import { runLocalMigrations, MIGRATIONS_DIR } from '../../aws-blocks/migrations-runner';
 import { documents } from './harness';
 import { dispatchRequest } from '../support/dispatch';
-import { installJwksStub } from '../support/cognito-token';
 
 // STR-045 T-C1 -- the Admin OpenAPI declares `bearerAuth` globally
 // (`security: [{bearerAuth: []}]`, no per-operation override anywhere), so
@@ -26,7 +25,6 @@ const ADMIN_BASE_PATH = '/v1';
 
 beforeAll(async () => {
   await runLocalMigrations(db, MIGRATIONS_DIR);
-  installJwksStub();
 });
 
 type Verb = 'get' | 'post' | 'put' | 'patch' | 'delete';

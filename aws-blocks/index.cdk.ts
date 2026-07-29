@@ -3,6 +3,8 @@ import { RemovalPolicies, Mixins } from 'aws-cdk-lib';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 
 import { BlocksStack, SandboxDisableDeletionProtection } from '@aws-blocks/blocks/cdk';
+import { getSdkIdentifiers } from '@aws-blocks/blocks';
+import { SCOPE_ID, AUTH_BLOCK_ID } from './block-ids';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { getStackName } from '@aws-blocks/blocks/scripts';
@@ -38,6 +40,14 @@ blocksStack.handler.addLayers(migrationsLayer);
 
 new cdk.CfnOutput(blocksStack, 'HandlerFunctionName', { value: blocksStack.handler.functionName });
 new cdk.CfnOutput(blocksStack, 'GatewayUrl', { value: blocksStack.gateway.url });
+
+// STR-045: the triple the Provisioning Runbook §4/§5 tells an operator to
+// capture and register with the Society Directory, and that the admin panel
+// reads as public config to sign in against this deployment's pool.
+const { userPoolId, clientId } = getSdkIdentifiers({ fullId: `${SCOPE_ID}-${AUTH_BLOCK_ID}` });
+new cdk.CfnOutput(blocksStack, 'CognitoUserPoolId', { value: userPoolId });
+new cdk.CfnOutput(blocksStack, 'CognitoClientId', { value: clientId });
+new cdk.CfnOutput(blocksStack, 'CognitoRegion', { value: blocksStack.region });
 
 if (sandboxMode) {
   // Make all resources deletable so sandbox:destroy can clean up the entire stack.

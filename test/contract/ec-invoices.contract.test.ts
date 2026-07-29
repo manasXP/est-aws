@@ -12,6 +12,7 @@ import { createEmployee, setEmployeeCapabilities } from '../../aws-blocks/employ
 import { createMember, admitMember } from '../../aws-blocks/members/members-api';
 import { assignRole } from '../../aws-blocks/members/role-assignments';
 import { designateApprover } from '../../aws-blocks/members/capabilities';
+import { asEmployee, asMember } from '../support/cognito-token';
 
 // STR-085 -- the Mobile Public API's EC approval inbox (`/ec/invoices*`),
 // thin adapters over STR-083/084's shared invoice-approvals.ts functions.
@@ -46,7 +47,7 @@ async function verifiedInvoiceId(): Promise<string> {
   });
   const employee = await createEmployee(db, { name: 'EC Contract Verifier' });
   await setEmployeeCapabilities(db, employee.employee_id, ['designated-verifier']);
-  await dispatchRequest('POST', `/v1/invoices/${invoice.id}/verify`, {}, { 'X-Actor-Employee-Id': employee.employee_id });
+  await dispatchRequest('POST', `/v1/invoices/${invoice.id}/verify`, {}, { ...(await asEmployee(db, employee.employee_id)) });
   return invoice.id;
 }
 
@@ -83,7 +84,7 @@ describe('STR-085 T-C1 (TC-VEN-029) -- mobile /ec and the shared workflow state 
       'POST',
       `/v1/ec/invoices/${invoiceId}/approve`,
       { notes: 'Looks correct' },
-      { 'X-Actor-Member-Id': approverId },
+      { ...(await asMember(db, approverId)) },
     );
     expect(approveResponse.status).toBe(200);
 
@@ -107,7 +108,7 @@ describe('STR-085 T-C1 (TC-VEN-029) -- mobile /ec and the shared workflow state 
     const rejecterId = await designatedApproverMember('EC Admin-Side Rejecter');
     await rejectInvoice(db, invoiceId, rejecterId, 'Amount does not match the work order');
 
-    const mobileGetResponse = await dispatchRequest('GET', `/v1/ec/invoices/${invoiceId}`, {}, { 'X-Actor-Member-Id': rejecterId });
+    const mobileGetResponse = await dispatchRequest('GET', `/v1/ec/invoices/${invoiceId}`, {}, { ...(await asMember(db, rejecterId)) });
     expect(mobileGetResponse.status).toBe(200);
     const body = mobileGetResponse.body as { status: string; actions: { action: string; notes?: string }[] };
     expect(body.status).toBe('rejected');
@@ -119,7 +120,7 @@ describe('STR-085 T-C2 -- mobile /ec routes conform to the Mobile OpenAPI', () =
   it('GET /v1/ec/invoices conforms', async () => {
     await verifiedInvoiceId();
     const approverId = await designatedApproverMember('EC List Approver');
-    const response = await dispatchRequest('GET', '/v1/ec/invoices?status=verified', {}, { 'X-Actor-Member-Id': approverId });
+    const response = await dispatchRequest('GET', '/v1/ec/invoices?status=verified', {}, { ...(await asMember(db, approverId)) });
     expect(response.status).toBe(200);
     const op = await contractTest('mobile', '/ec/invoices', 'get');
     expect(() => op.expectValidResponse(200, response.body)).not.toThrow();
@@ -128,7 +129,7 @@ describe('STR-085 T-C2 -- mobile /ec routes conform to the Mobile OpenAPI', () =
   it('GET /v1/ec/invoices/{invoiceId} conforms', async () => {
     const invoiceId = await verifiedInvoiceId();
     const approverId = await designatedApproverMember('EC Get Approver');
-    const response = await dispatchRequest('GET', `/v1/ec/invoices/${invoiceId}`, {}, { 'X-Actor-Member-Id': approverId });
+    const response = await dispatchRequest('GET', `/v1/ec/invoices/${invoiceId}`, {}, { ...(await asMember(db, approverId)) });
     expect(response.status).toBe(200);
     const op = await contractTest('mobile', '/ec/invoices/{invoiceId}', 'get');
     expect(() => op.expectValidResponse(200, response.body)).not.toThrow();
@@ -137,7 +138,7 @@ describe('STR-085 T-C2 -- mobile /ec routes conform to the Mobile OpenAPI', () =
   it('GET /v1/ec/invoices/{invoiceId}/document conforms', async () => {
     const invoiceId = await verifiedInvoiceId();
     const approverId = await designatedApproverMember('EC Document Approver');
-    const response = await dispatchRequest('GET', `/v1/ec/invoices/${invoiceId}/document`, {}, { 'X-Actor-Member-Id': approverId });
+    const response = await dispatchRequest('GET', `/v1/ec/invoices/${invoiceId}/document`, {}, { ...(await asMember(db, approverId)) });
     expect(response.status).toBe(200);
     const op = await contractTest('mobile', '/ec/invoices/{invoiceId}/document', 'get');
     expect(() => op.expectValidResponse(200, response.body)).not.toThrow();
@@ -150,7 +151,7 @@ describe('STR-085 T-C2 -- mobile /ec routes conform to the Mobile OpenAPI', () =
       'POST',
       `/v1/ec/invoices/${invoiceId}/approve`,
       { notes: 'ok' },
-      { 'X-Actor-Member-Id': approverId },
+      { ...(await asMember(db, approverId)) },
     );
     expect(response.status).toBe(200);
     const op = await contractTest('mobile', '/ec/invoices/{invoiceId}/approve', 'post');
@@ -164,7 +165,7 @@ describe('STR-085 T-C2 -- mobile /ec routes conform to the Mobile OpenAPI', () =
       'POST',
       `/v1/ec/invoices/${invoiceId}/reject`,
       { reason: 'Wrong amount' },
-      { 'X-Actor-Member-Id': rejecterId },
+      { ...(await asMember(db, rejecterId)) },
     );
     expect(response.status).toBe(200);
     const op = await contractTest('mobile', '/ec/invoices/{invoiceId}/reject', 'post');
@@ -176,7 +177,7 @@ describe('STR-085 T-C2 -- mobile /ec routes conform to the Mobile OpenAPI', () =
     const outsider = await createMember(db, { name: 'EC Outsider' });
     await admitMember(db, outsider.member_id);
 
-    const response = await dispatchRequest('GET', `/v1/ec/invoices/${invoiceId}`, {}, { 'X-Actor-Member-Id': outsider.member_id });
+    const response = await dispatchRequest('GET', `/v1/ec/invoices/${invoiceId}`, {}, { ...(await asMember(db, outsider.member_id)) });
     expect(response.status).toBe(403);
     const op = await contractTest('mobile', '/ec/invoices/{invoiceId}', 'get');
     expect(() => op.expectValidResponse(403, response.body)).not.toThrow();
@@ -212,7 +213,7 @@ describe('STR-085 code review fix -- an override-approved invoice keeps reportin
         'POST',
         `/v1/ec/invoices/${invoiceId}/approve`,
         { notes: 'Override vote' },
-        { 'X-Actor-Member-Id': voterId },
+        { ...(await asMember(db, voterId)) },
       );
     }
 
@@ -224,7 +225,7 @@ describe('STR-085 code review fix -- an override-approved invoice keeps reportin
     expect(body.approval_progress.approved_count).toBe(required);
     expect(body.approval_progress.required_count).toBe(required);
 
-    const getResponse = await dispatchRequest('GET', `/v1/ec/invoices/${invoiceId}`, {}, { 'X-Actor-Member-Id': rejecterId });
+    const getResponse = await dispatchRequest('GET', `/v1/ec/invoices/${invoiceId}`, {}, { ...(await asMember(db, rejecterId)) });
     expect(getResponse.status).toBe(200);
     const getBody = getResponse.body as { status: string; approval_progress: { approved_count: number; required_count: number } };
     expect(getBody.status).toBe('approved');
@@ -242,7 +243,7 @@ describe('STR-085 T-U1 -- mobile capability gating mirrors the admin path exactl
       'POST',
       `/v1/ec/invoices/${invoiceId}/approve`,
       { notes: 'Trying anyway' },
-      { 'X-Actor-Member-Id': outsider.member_id },
+      { ...(await asMember(db, outsider.member_id)) },
     );
     expect(response.status).toBe(403);
     const body = response.body as { error: { code: string } };
@@ -259,7 +260,7 @@ describe('STR-085 T-U1 -- mobile capability gating mirrors the admin path exactl
       'POST',
       `/v1/ec/invoices/${invoiceId}/approve`,
       { notes: 'Override vote' },
-      { 'X-Actor-Member-Id': ecMemberId },
+      { ...(await asMember(db, ecMemberId)) },
     );
     expect(response.status).toBe(200);
     const body = response.body as { status: string; approval_progress: { approved_count: number } };

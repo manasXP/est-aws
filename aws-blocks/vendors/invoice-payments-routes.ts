@@ -11,8 +11,7 @@ import { recordInvoicePayment } from './invoice-payments';
 import { InvoiceConflictError, InvoiceValidationError } from './invoices';
 import { toInvoiceResponse } from './invoice-approvals-routes';
 import { JournalError } from '../finance/journal';
-import { requireCapability, resolveActor } from '../http/capability-gate';
-import type { Actor } from '../members/capabilities';
+import { requireCapability } from '../http/capability-gate';
 import { sendConflictError, sendValidationError, ValidationError, problemResponse } from '../http/problem-response';
 
 export function registerInvoicePaymentRoutes(scope: Scope, db: Database, bucket: FileBucket): void {
@@ -23,8 +22,9 @@ export function registerInvoicePaymentRoutes(scope: Scope, db: Database, bucket:
       // 1. Capability gate (403) -- finance-recorder defaults to the
       // current Treasurer (a member actor) but is delegable to an employee,
       // so unlike verify-invoice/approve-invoice this route can't assume
-      // which branch of Actor resolveActor returns.
-      if (!(await requireCapability(ctx, db, 'finance-recorder'))) {
+      // which branch of Actor the gate returns.
+      const actor = await requireCapability(ctx, db, 'finance-recorder');
+      if (!actor) {
         return;
       }
 
@@ -38,12 +38,6 @@ export function registerInvoicePaymentRoutes(scope: Scope, db: Database, bucket:
 
       const { invoiceId } = ctx.request.params;
       const { method, amount, paid_on, reference } = await ctx.request.json();
-      // resolveActor is guaranteed non-null once requireCapability passes
-      // above -- an unresolvable actor has no claims, so the gate would
-      // already have returned. Unlike verify-invoice/approve-invoice this
-      // route can't narrow to one specific branch of Actor (finance-recorder
-      // is granted via either), so it's typed as the full union.
-      const actor = resolveActor(ctx) as Actor;
 
       try {
         const invoice = await recordInvoicePayment(db, bucket, invoiceId, actor, {

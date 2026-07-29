@@ -11,6 +11,7 @@ import { createEmployee, setEmployeeCapabilities } from '../../aws-blocks/employ
 import { createMember, admitMember } from '../../aws-blocks/members/members-api';
 import { assignRole } from '../../aws-blocks/members/role-assignments';
 import { designateApprover } from '../../aws-blocks/members/capabilities';
+import { asEmployee, asMember } from '../support/cognito-token';
 
 // STR-086 T-U4/T-C1 -- HTTP-level Idempotency-Key gate and OpenAPI contract
 // cases for `POST /v1/invoices/{invoiceId}/payment`. Uses the real
@@ -45,7 +46,7 @@ async function approvedInvoiceId(): Promise<string> {
 
   const verifier = await createEmployee(db, { name: 'Payment Contract Verifier' });
   await setEmployeeCapabilities(db, verifier.employee_id, ['designated-verifier']);
-  await dispatchRequest('POST', `/v1/invoices/${invoice.id}/verify`, {}, { 'X-Actor-Employee-Id': verifier.employee_id });
+  await dispatchRequest('POST', `/v1/invoices/${invoice.id}/verify`, {}, { ...(await asEmployee(db, verifier.employee_id)) });
 
   // The designated-approver majority is against this shared db singleton's
   // *entire* live subset, which grows across every call to this helper
@@ -63,7 +64,7 @@ async function approvedInvoiceId(): Promise<string> {
     await assignRole(db, approver.member_id, 'management', '2026-01-01', 'ec-admin');
     await assignRole(db, approver.member_id, 'executive_member', '2026-01-01', 'ec-admin');
     await designateApprover(db, approver.member_id);
-    const response = await dispatchRequest('POST', `/v1/invoices/${invoice.id}/approve`, {}, { 'X-Actor-Member-Id': approver.member_id });
+    const response = await dispatchRequest('POST', `/v1/invoices/${invoice.id}/approve`, {}, { ...(await asMember(db, approver.member_id)) });
     status = (response.body as { status: string }).status;
   }
 
@@ -85,7 +86,7 @@ describe('STR-086 T-U4 -- Idempotency-Key presence gate on the payment endpoint'
       'POST',
       `/v1/invoices/${invoiceId}/payment`,
       { method: 'bank', amount: '2000.00', paid_on: '2026-07-20' },
-      { 'X-Actor-Employee-Id': employeeId },
+      { ...(await asEmployee(db, employeeId)) },
     );
 
     expect(response.status).toBe(422);
@@ -103,7 +104,7 @@ describe('STR-086 T-C1 -- POST /v1/invoices/{invoiceId}/payment conforms to the 
       'POST',
       `/v1/invoices/${invoiceId}/payment`,
       { method: 'bank', amount: '2000.00', paid_on: '2026-07-20' },
-      { 'Idempotency-Key': randomUUID(), 'X-Actor-Employee-Id': employeeId },
+      { 'Idempotency-Key': randomUUID(), ...(await asEmployee(db, employeeId)) },
     );
 
     expect(response.status).toBe(201);
@@ -135,7 +136,7 @@ describe('STR-086 T-C1 -- POST /v1/invoices/{invoiceId}/payment conforms to the 
       'POST',
       `/v1/invoices/${invoice.id}/payment`,
       { method: 'bank', amount: '2000.00', paid_on: '2026-07-20' },
-      { 'Idempotency-Key': randomUUID(), 'X-Actor-Employee-Id': employeeId },
+      { 'Idempotency-Key': randomUUID(), ...(await asEmployee(db, employeeId)) },
     );
 
     expect(response.status).toBe(409);

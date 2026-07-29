@@ -6,6 +6,7 @@ import { runLocalMigrations, MIGRATIONS_DIR } from '../../aws-blocks/migrations-
 import { setProjectCommittee } from '../../aws-blocks/projects/committees-api';
 import { contractTest } from './harness';
 import { dispatchRequest } from '../support/dispatch';
+import { asAnyStaff, asMember, asNewEmployee } from '../support/cognito-token';
 
 // STR-116 T-C1 (BE-C, covers TC-DOC-043) — mobile
 // GET /pc/projects/{projectId}/documents against the PcDocument schema,
@@ -19,14 +20,14 @@ beforeAll(async () => {
 });
 
 async function createProject(): Promise<string> {
-  const response = await dispatchRequest('POST', '/v1/projects', { name: `STR-116 Contract Project ${randomUUID()}` });
+  const response = await dispatchRequest('POST', '/v1/projects', { name: `STR-116 Contract Project ${randomUUID()}` }, await asAnyStaff(db));
   return (response.body as { project_id: string }).project_id;
 }
 
 async function createActiveMember(): Promise<string> {
-  const response = await dispatchRequest('POST', '/v1/members', { name: `STR-116 Contract Member ${randomUUID()}` });
+  const response = await dispatchRequest('POST', '/v1/members', { name: `STR-116 Contract Member ${randomUUID()}` }, await asAnyStaff(db));
   const memberId = (response.body as { member_id: string }).member_id;
-  await dispatchRequest('POST', `/v1/members/${memberId}/admit`);
+  await dispatchRequest('POST', `/v1/members/${memberId}/admit`, {}, await asAnyStaff(db));
   return memberId;
 }
 
@@ -48,7 +49,7 @@ async function registerProjectDoc(projectId: string, title: string, extras: Reco
     filename: 'fixture.pdf',
     content_type: 'application/pdf',
     ...extras,
-  }, { 'X-Actor-Employee-Id': 'emp-1' });
+  }, { ...(await asNewEmployee(db)) });
   return (response.body as { document_id: string }).document_id;
 }
 
@@ -60,7 +61,7 @@ describe('STR-116 T-C1 — PC project documents listing contract (covers TC-DOC-
     const hidden = await registerProjectDoc(projectId, 'Hidden from members at large', { member_visible: false });
     const visible = await registerProjectDoc(projectId, 'Visible to members', { member_visible: true });
 
-    const response = await dispatchRequest('GET', `/v1/pc/projects/${projectId}/documents`, {}, { 'X-Actor-Member-Id': pcMember });
+    const response = await dispatchRequest('GET', `/v1/pc/projects/${projectId}/documents`, {}, { ...(await asMember(db, pcMember)) });
 
     const op = await contractTest('mobile', '/pc/projects/{projectId}/documents', 'get');
     expect(response.status).toBe(200);
@@ -76,8 +77,8 @@ describe('STR-116 T-C1 — PC project documents listing contract (covers TC-DOC-
     const lift = await registerProjectDoc(projectId, 'Lift refurbishment quotation');
     const garden = await registerProjectDoc(projectId, 'Garden layout approval');
 
-    const byQ = await dispatchRequest('GET', `/v1/pc/projects/${projectId}/documents?q=refurbishment`, {}, { 'X-Actor-Member-Id': pcMember });
-    const byCategory = await dispatchRequest('GET', `/v1/pc/projects/${projectId}/documents?category=Correspondence`, {}, { 'X-Actor-Member-Id': pcMember });
+    const byQ = await dispatchRequest('GET', `/v1/pc/projects/${projectId}/documents?q=refurbishment`, {}, { ...(await asMember(db, pcMember)) });
+    const byCategory = await dispatchRequest('GET', `/v1/pc/projects/${projectId}/documents?category=Correspondence`, {}, { ...(await asMember(db, pcMember)) });
 
     const op = await contractTest('mobile', '/pc/projects/{projectId}/documents', 'get');
     expect((byQ.body as { items: { document_id: string }[] }).items.map(d => d.document_id)).toEqual([lift]);
@@ -94,7 +95,7 @@ describe('STR-116 T-C1 — PC project documents listing contract (covers TC-DOC-
     await seatPc(projectId, [pcMember]);
     await registerProjectDoc(projectId, 'PC-only paper');
 
-    const response = await dispatchRequest('GET', `/v1/pc/projects/${projectId}/documents`, {}, { 'X-Actor-Member-Id': outsider });
+    const response = await dispatchRequest('GET', `/v1/pc/projects/${projectId}/documents`, {}, { ...(await asMember(db, outsider)) });
 
     const op = await contractTest('mobile', '/pc/projects/{projectId}/documents', 'get');
     expect(response.status).toBe(403);
@@ -105,7 +106,7 @@ describe('STR-116 T-C1 — PC project documents listing contract (covers TC-DOC-
   it('404s an unknown project per the NotFound schema', async () => {
     const pcMember = await createActiveMember();
 
-    const response = await dispatchRequest('GET', `/v1/pc/projects/${randomUUID()}/documents`, {}, { 'X-Actor-Member-Id': pcMember });
+    const response = await dispatchRequest('GET', `/v1/pc/projects/${randomUUID()}/documents`, {}, { ...(await asMember(db, pcMember)) });
 
     const op = await contractTest('mobile', '/pc/projects/{projectId}/documents', 'get');
     expect(response.status).toBe(404);
@@ -121,12 +122,12 @@ describe('STR-116 T-C1 — PC project documents listing contract (covers TC-DOC-
 
     const op = await contractTest('mobile', '/pc/documents/{documentId}/download', 'get');
 
-    const forbidden = await dispatchRequest('GET', `/v1/pc/documents/${documentId}/download`, {}, { 'X-Actor-Member-Id': outsider });
+    const forbidden = await dispatchRequest('GET', `/v1/pc/documents/${documentId}/download`, {}, { ...(await asMember(db, outsider)) });
     expect(forbidden.status).toBe(403);
     expect(() => op.expectValidResponse(forbidden.status, forbidden.body)).not.toThrow();
 
-    await dispatchRequest('POST', `/v1/documents/${documentId}/archive`);
-    const archived404 = await dispatchRequest('GET', `/v1/pc/documents/${documentId}/download`, {}, { 'X-Actor-Member-Id': pcMember });
+    await dispatchRequest('POST', `/v1/documents/${documentId}/archive`, {}, await asAnyStaff(db));
+    const archived404 = await dispatchRequest('GET', `/v1/pc/documents/${documentId}/download`, {}, { ...(await asMember(db, pcMember)) });
     expect(archived404.status).toBe(404);
     expect(() => op.expectValidResponse(archived404.status, archived404.body)).not.toThrow();
   });
@@ -141,7 +142,7 @@ describe('STR-116 T-C1 — PC project documents listing contract (covers TC-DOC-
     const row = await db.queryOne<{ file_key: string }>(sql`SELECT file_key FROM documents WHERE id = ${documentId}`);
     await documents.put(row!.file_key, 'evidence bytes', { contentType: 'application/pdf' });
 
-    const response = await dispatchRequest('GET', `/v1/pc/documents/${documentId}/download`, {}, { 'X-Actor-Member-Id': pcMember });
+    const response = await dispatchRequest('GET', `/v1/pc/documents/${documentId}/download`, {}, { ...(await asMember(db, pcMember)) });
 
     const op = await contractTest('mobile', '/pc/documents/{documentId}/download', 'get');
     expect(response.status).toBe(200);

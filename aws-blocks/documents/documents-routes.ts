@@ -7,8 +7,8 @@ import { RawRoute } from '@aws-blocks/blocks';
 import type { Database, FileBucket, Scope } from '@aws-blocks/blocks';
 import { registerDocument, getDocument, getDownloadUrl, updateDocument, listDocuments, listCategories, replaceCategories, archiveDocument, restoreDocument, DocumentValidationError, DocumentCategoryConflictError, DocumentLifecycleConflictError, DOWNLOAD_URL_EXPIRES_IN_SECONDS } from './documents-api';
 import type { DocumentRecord, DocumentLevel, DocumentStatus } from './documents-api';
-import { sendNotFound, sendValidationError, sendUnauthorized, sendConflictError, problemResponse } from '../http/problem-response';
-import { resolveActor } from '../http/capability-gate';
+import { sendNotFound, sendValidationError, sendConflictError, problemResponse } from '../http/problem-response';
+import { resolveActor, sendActorRefusal, requireAuthenticated } from '../http/capability-gate';
 
 // The Admin OpenAPI's Document schema types `size_bytes` as a plain
 // non-nullable integer, absent from `required` -- so when it's still `null`
@@ -48,6 +48,8 @@ export function registerDocumentRoutes(scope: Scope, db: Database, bucket: FileB
     method: 'GET',
     path: '/v1/documents',
     handler: async ctx => {
+      if (!(await requireAuthenticated(ctx, db))) return;
+
       const params = ctx.request.url.searchParams;
       const status = params.get('status') ?? 'active';
       const level = params.get('level');
@@ -86,11 +88,12 @@ export function registerDocumentRoutes(scope: Scope, db: Database, bucket: FileB
     method: 'POST',
     path: '/v1/documents',
     handler: async ctx => {
-      const actor = resolveActor(ctx);
-      if (!actor) {
-        sendUnauthorized(ctx, 'X-Actor-Employee-Id or X-Actor-Member-Id header is required.');
+      const resolution = await resolveActor(ctx, db);
+      if ('failure' in resolution) {
+        sendActorRefusal(ctx, resolution.failure);
         return;
       }
+      const actor = resolution.actor;
       const uploadedBy = 'employeeId' in actor ? actor.employeeId : actor.memberId;
 
       const body = await ctx.request.json();
@@ -133,6 +136,8 @@ export function registerDocumentRoutes(scope: Scope, db: Database, bucket: FileB
     method: 'GET',
     path: '/v1/documents/{documentId}',
     handler: async ctx => {
+      if (!(await requireAuthenticated(ctx, db))) return;
+
       const { documentId } = ctx.request.params;
       const doc = await getDocument(db, bucket, documentId);
       if (!doc) {
@@ -147,11 +152,12 @@ export function registerDocumentRoutes(scope: Scope, db: Database, bucket: FileB
     method: 'PATCH',
     path: '/v1/documents/{documentId}',
     handler: async ctx => {
-      const actor = resolveActor(ctx);
-      if (!actor) {
-        sendUnauthorized(ctx, 'X-Actor-Employee-Id or X-Actor-Member-Id header is required.');
+      const resolution = await resolveActor(ctx, db);
+      if ('failure' in resolution) {
+        sendActorRefusal(ctx, resolution.failure);
         return;
       }
+      const actor = resolution.actor;
 
       const body = await ctx.request.json();
       try {
@@ -190,6 +196,8 @@ export function registerDocumentRoutes(scope: Scope, db: Database, bucket: FileB
     method: 'POST',
     path: '/v1/documents/{documentId}/archive',
     handler: async ctx => {
+      if (!(await requireAuthenticated(ctx, db))) return;
+
       const { documentId } = ctx.request.params;
       try {
         const doc = await archiveDocument(db, documentId);
@@ -212,6 +220,8 @@ export function registerDocumentRoutes(scope: Scope, db: Database, bucket: FileB
     method: 'POST',
     path: '/v1/documents/{documentId}/restore',
     handler: async ctx => {
+      if (!(await requireAuthenticated(ctx, db))) return;
+
       const { documentId } = ctx.request.params;
       try {
         const doc = await restoreDocument(db, documentId);
@@ -236,6 +246,8 @@ export function registerDocumentRoutes(scope: Scope, db: Database, bucket: FileB
     method: 'GET',
     path: '/v1/document-categories',
     handler: async ctx => {
+      if (!(await requireAuthenticated(ctx, db))) return;
+
       ctx.response.send({ categories: await listCategories(db) });
     },
   });
@@ -244,6 +256,8 @@ export function registerDocumentRoutes(scope: Scope, db: Database, bucket: FileB
     method: 'PUT',
     path: '/v1/document-categories',
     handler: async ctx => {
+      if (!(await requireAuthenticated(ctx, db))) return;
+
       const body = await ctx.request.json();
       try {
         const categories = await replaceCategories(db, body?.categories);
@@ -266,6 +280,8 @@ export function registerDocumentRoutes(scope: Scope, db: Database, bucket: FileB
     method: 'GET',
     path: '/v1/documents/{documentId}/download',
     handler: async ctx => {
+      if (!(await requireAuthenticated(ctx, db))) return;
+
       const { documentId } = ctx.request.params;
       const downloadUrl = await getDownloadUrl(db, bucket, documentId);
       if (!downloadUrl) {

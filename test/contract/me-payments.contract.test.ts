@@ -6,6 +6,7 @@ import { db } from '../../aws-blocks/index';
 import { runLocalMigrations, MIGRATIONS_DIR } from '../../aws-blocks/migrations-runner';
 import { contractTest } from './harness';
 import { dispatchRequest } from '../support/dispatch';
+import { asAnyStaff, asMember } from '../support/cognito-token';
 
 // STR-092 T-U1 (covers TC-PAY-020) -- mobile POST /me/payments contract case.
 // Same approach as test/contract/me-ownerships.contract.test.ts: dispatch the
@@ -17,17 +18,17 @@ beforeAll(async () => {
 });
 
 async function createTestProject(): Promise<string> {
-  const response = await dispatchRequest('POST', '/v1/projects', { name: `Contract Test Project ${randomUUID()}` });
+  const response = await dispatchRequest('POST', '/v1/projects', { name: `Contract Test Project ${randomUUID()}` }, await asAnyStaff(db));
   return (response.body as { project_id: string }).project_id;
 }
 
 async function createTestMember(): Promise<string> {
-  const response = await dispatchRequest('POST', '/v1/members', { name: `Contract Test Member ${randomUUID()}` });
+  const response = await dispatchRequest('POST', '/v1/members', { name: `Contract Test Member ${randomUUID()}` }, await asAnyStaff(db));
   return (response.body as { member_id: string }).member_id;
 }
 
 async function createTestAsset(projectId: string): Promise<string> {
-  const response = await dispatchRequest('POST', '/v1/assets', { project_id: projectId, type: 'flat', label: 'A-1' });
+  const response = await dispatchRequest('POST', '/v1/assets', { project_id: projectId, type: 'flat', label: 'A-1' }, await asAnyStaff(db));
   return (response.body as { asset_id: string }).asset_id;
 }
 
@@ -51,7 +52,7 @@ describe('STR-092 T-U1 -- POST /v1/me/payments (covers TC-PAY-020)', () => {
     const projectId = await createTestProject();
     const memberId = await createTestMember();
     const assetId = await createTestAsset(projectId);
-    const ownershipResponse = await dispatchRequest('POST', `/v1/members/${memberId}/ownerships`, { asset_id: assetId });
+    const ownershipResponse = await dispatchRequest('POST', `/v1/members/${memberId}/ownerships`, { asset_id: assetId }, await asAnyStaff(db));
     const ownershipId = (ownershipResponse.body as { ownership_id: string }).ownership_id;
     const chargeId = await seedDueCharge(memberId, ownershipId);
 
@@ -59,7 +60,7 @@ describe('STR-092 T-U1 -- POST /v1/me/payments (covers TC-PAY-020)', () => {
       'POST',
       '/v1/me/payments',
       { charge_ids: [chargeId], payment_method: 'upi' },
-      { 'X-Actor-Member-Id': memberId, 'Idempotency-Key': randomUUID() },
+      { ...(await asMember(db, memberId)), 'Idempotency-Key': randomUUID() },
     );
 
     expect(response.status).toBe(201);
@@ -85,7 +86,7 @@ describe('STR-092 review fix -- POST /v1/me/payments against an already-paid cha
     const projectId = await createTestProject();
     const memberId = await createTestMember();
     const assetId = await createTestAsset(projectId);
-    const ownershipResponse = await dispatchRequest('POST', `/v1/members/${memberId}/ownerships`, { asset_id: assetId });
+    const ownershipResponse = await dispatchRequest('POST', `/v1/members/${memberId}/ownerships`, { asset_id: assetId }, await asAnyStaff(db));
     const ownershipId = (ownershipResponse.body as { ownership_id: string }).ownership_id;
     const chargeId = await seedCharge(memberId, ownershipId, 'paid');
 
@@ -93,7 +94,7 @@ describe('STR-092 review fix -- POST /v1/me/payments against an already-paid cha
       'POST',
       '/v1/me/payments',
       { charge_ids: [chargeId], payment_method: 'upi' },
-      { 'X-Actor-Member-Id': memberId, 'Idempotency-Key': randomUUID() },
+      { ...(await asMember(db, memberId)), 'Idempotency-Key': randomUUID() },
     );
 
     expect(response.status).toBe(409);
@@ -116,7 +117,7 @@ describe('STR-092 review fix -- POST /v1/me/payments with an empty charge_ids ar
       'POST',
       '/v1/me/payments',
       { charge_ids: [] },
-      { 'X-Actor-Member-Id': memberId, 'Idempotency-Key': idempotencyKey },
+      { ...(await asMember(db, memberId)), 'Idempotency-Key': idempotencyKey },
     );
 
     expect(response.status).toBe(422);
@@ -144,7 +145,7 @@ describe('STR-093 review fix -- POST /v1/me/payments requires a valid payment_me
     const projectId = await createTestProject();
     const memberId = await createTestMember();
     const assetId = await createTestAsset(projectId);
-    const ownershipResponse = await dispatchRequest('POST', `/v1/members/${memberId}/ownerships`, { asset_id: assetId });
+    const ownershipResponse = await dispatchRequest('POST', `/v1/members/${memberId}/ownerships`, { asset_id: assetId }, await asAnyStaff(db));
     const ownershipId = (ownershipResponse.body as { ownership_id: string }).ownership_id;
     const chargeId = await seedDueCharge(memberId, ownershipId);
     const idempotencyKey = randomUUID();
@@ -153,7 +154,7 @@ describe('STR-093 review fix -- POST /v1/me/payments requires a valid payment_me
       'POST',
       '/v1/me/payments',
       { charge_ids: [chargeId] },
-      { 'X-Actor-Member-Id': memberId, 'Idempotency-Key': idempotencyKey },
+      { ...(await asMember(db, memberId)), 'Idempotency-Key': idempotencyKey },
     );
 
     expect(response.status).toBe(422);
@@ -170,7 +171,7 @@ describe('STR-093 review fix -- POST /v1/me/payments requires a valid payment_me
     const projectId = await createTestProject();
     const memberId = await createTestMember();
     const assetId = await createTestAsset(projectId);
-    const ownershipResponse = await dispatchRequest('POST', `/v1/members/${memberId}/ownerships`, { asset_id: assetId });
+    const ownershipResponse = await dispatchRequest('POST', `/v1/members/${memberId}/ownerships`, { asset_id: assetId }, await asAnyStaff(db));
     const ownershipId = (ownershipResponse.body as { ownership_id: string }).ownership_id;
     const chargeId = await seedDueCharge(memberId, ownershipId);
     const idempotencyKey = randomUUID();
@@ -179,7 +180,7 @@ describe('STR-093 review fix -- POST /v1/me/payments requires a valid payment_me
       'POST',
       '/v1/me/payments',
       { charge_ids: [chargeId], payment_method: 'cash' },
-      { 'X-Actor-Member-Id': memberId, 'Idempotency-Key': idempotencyKey },
+      { ...(await asMember(db, memberId)), 'Idempotency-Key': idempotencyKey },
     );
 
     expect(response.status).toBe(422);
@@ -204,7 +205,7 @@ describe('STR-093 T-U3 -- GET /v1/me/payments/{paymentId} polls pending with no 
     const projectId = await createTestProject();
     const memberId = await createTestMember();
     const assetId = await createTestAsset(projectId);
-    const ownershipResponse = await dispatchRequest('POST', `/v1/members/${memberId}/ownerships`, { asset_id: assetId });
+    const ownershipResponse = await dispatchRequest('POST', `/v1/members/${memberId}/ownerships`, { asset_id: assetId }, await asAnyStaff(db));
     const ownershipId = (ownershipResponse.body as { ownership_id: string }).ownership_id;
     const chargeId = await seedDueCharge(memberId, ownershipId);
 
@@ -212,7 +213,7 @@ describe('STR-093 T-U3 -- GET /v1/me/payments/{paymentId} polls pending with no 
       'POST',
       '/v1/me/payments',
       { charge_ids: [chargeId], payment_method: 'upi' },
-      { 'X-Actor-Member-Id': memberId, 'Idempotency-Key': randomUUID() },
+      { ...(await asMember(db, memberId)), 'Idempotency-Key': randomUUID() },
     );
     expect(initiateResponse.status).toBe(201);
     const paymentId = (initiateResponse.body as { payment_id: string }).payment_id;
@@ -224,7 +225,7 @@ describe('STR-093 T-U3 -- GET /v1/me/payments/{paymentId} polls pending with no 
         'GET',
         `/v1/me/payments/${paymentId}`,
         undefined,
-        { 'X-Actor-Member-Id': memberId },
+        { ...(await asMember(db, memberId)) },
       );
       expect(pollResponse.status).toBe(200);
       expect((pollResponse.body as { status: string }).status).toBe('pending');
@@ -244,7 +245,7 @@ describe('STR-093 review fix -- GET /v1/me/payments/{paymentId} ownership scopin
     const memberA = await createTestMember();
     const memberB = await createTestMember();
     const assetId = await createTestAsset(projectId);
-    const ownershipResponse = await dispatchRequest('POST', `/v1/members/${memberA}/ownerships`, { asset_id: assetId });
+    const ownershipResponse = await dispatchRequest('POST', `/v1/members/${memberA}/ownerships`, { asset_id: assetId }, await asAnyStaff(db));
     const ownershipId = (ownershipResponse.body as { ownership_id: string }).ownership_id;
     const chargeId = await seedDueCharge(memberA, ownershipId);
 
@@ -252,15 +253,15 @@ describe('STR-093 review fix -- GET /v1/me/payments/{paymentId} ownership scopin
       'POST',
       '/v1/me/payments',
       { charge_ids: [chargeId], payment_method: 'upi' },
-      { 'X-Actor-Member-Id': memberA, 'Idempotency-Key': randomUUID() },
+      { ...(await asMember(db, memberA)), 'Idempotency-Key': randomUUID() },
     );
     expect(initiateResponse.status).toBe(201);
     const paymentId = (initiateResponse.body as { payment_id: string }).payment_id;
 
     const op = await contractTest('mobile', '/me/payments/{paymentId}', 'get');
 
-    const foreignResponse = await dispatchRequest('GET', `/v1/me/payments/${paymentId}`, undefined, { 'X-Actor-Member-Id': memberB });
-    const missingResponse = await dispatchRequest('GET', `/v1/me/payments/${randomUUID()}`, undefined, { 'X-Actor-Member-Id': memberB });
+    const foreignResponse = await dispatchRequest('GET', `/v1/me/payments/${paymentId}`, undefined, { ...(await asMember(db, memberB)) });
+    const missingResponse = await dispatchRequest('GET', `/v1/me/payments/${randomUUID()}`, undefined, { ...(await asMember(db, memberB)) });
 
     expect(foreignResponse.status).toBe(404);
     expect(missingResponse.status).toBe(404);

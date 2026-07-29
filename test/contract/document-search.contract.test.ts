@@ -5,6 +5,7 @@ import { db } from '../../aws-blocks/index';
 import { runLocalMigrations, MIGRATIONS_DIR } from '../../aws-blocks/migrations-runner';
 import { contractTest } from './harness';
 import { dispatchRequest } from '../support/dispatch';
+import { asAnyStaff, asNewEmployee } from '../support/cognito-token';
 
 // STR-115 T-C1 (BE-C) — GET /v1/documents against the Admin OpenAPI's
 // Page-wrapped Document[] response, plus the PATCH member_visible flip the
@@ -25,7 +26,7 @@ async function registerWithTitle(title: string): Promise<string> {
     category: 'Correspondence',
     filename: 'fixture.pdf',
     content_type: 'application/pdf',
-  }, { 'X-Actor-Employee-Id': 'emp-1' });
+  }, { ...(await asNewEmployee(db)) });
   expect(response.status).toBe(201);
   return (response.body as { document_id: string }).document_id;
 }
@@ -36,7 +37,7 @@ describe('STR-115 T-C1 — document search endpoint contract', () => {
     const token = uniqueToken();
     const documentId = await registerWithTitle(`Fixture ${token}`);
 
-    const response = await dispatchRequest('GET', `/v1/documents?q=${token}`);
+    const response = await dispatchRequest('GET', `/v1/documents?q=${token}`, {}, await asAnyStaff(db));
 
     const op = await contractTest('admin', '/documents', 'get');
     expect(response.status).toBe(200);
@@ -50,10 +51,10 @@ describe('STR-115 T-C1 — document search endpoint contract', () => {
     const token = uniqueToken();
     const activeId = await registerWithTitle(`Live ${token}`);
     const archivedId = await registerWithTitle(`Gone ${token}`);
-    await dispatchRequest('POST', `/v1/documents/${archivedId}/archive`);
+    await dispatchRequest('POST', `/v1/documents/${archivedId}/archive`, {}, await asAnyStaff(db));
 
-    const defaulted = await dispatchRequest('GET', `/v1/documents?q=${token}`);
-    const all = await dispatchRequest('GET', `/v1/documents?q=${token}&status=all`);
+    const defaulted = await dispatchRequest('GET', `/v1/documents?q=${token}`, {}, await asAnyStaff(db));
+    const all = await dispatchRequest('GET', `/v1/documents?q=${token}&status=all`, {}, await asAnyStaff(db));
 
     const op = await contractTest('admin', '/documents', 'get');
     expect(defaulted.status).toBe(200);
@@ -69,7 +70,7 @@ describe('STR-115 T-C1 — document search endpoint contract', () => {
     await runLocalMigrations(db, MIGRATIONS_DIR);
     const documentId = await registerWithTitle(`Empty-q fixture ${uniqueToken()}`);
 
-    const response = await dispatchRequest('GET', '/v1/documents?q=');
+    const response = await dispatchRequest('GET', '/v1/documents?q=', {}, await asAnyStaff(db));
 
     const op = await contractTest('admin', '/documents', 'get');
     expect(response.status).toBe(200);
@@ -84,7 +85,7 @@ describe('STR-115 T-C1 — document search endpoint contract', () => {
 
     const response = await dispatchRequest('PATCH', `/v1/documents/${documentId}`, {
       member_visible: true,
-    }, { 'X-Actor-Employee-Id': 'emp-1' });
+    }, { ...(await asNewEmployee(db)) });
 
     const op = await contractTest('admin', '/documents/{documentId}', 'patch');
     expect(response.status).toBe(200);

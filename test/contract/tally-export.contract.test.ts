@@ -13,6 +13,7 @@ import {
 import { processTallyExport } from '../../aws-blocks/finance/tally-export-jobs';
 import { contractTest } from './harness';
 import { dispatchRequest } from '../support/dispatch';
+import { asAnyStaff } from '../support/cognito-token';
 
 // STR-103 T-C1..T-C4 (BE-C) — the Admin API Tally-export surface
 // (startTallyExport 202/422, getExport 200/404, downloadExport 200/404/409)
@@ -44,7 +45,7 @@ describe('STR-103 T-C1 — POST /v1/exports/tally accepts a valid period', () =>
     const response = await dispatchRequest('POST', '/v1/exports/tally', {
       from: '2031-05-01',
       to: '2031-05-31',
-    });
+    }, await asAnyStaff(db));
 
     const op = await contractTest('admin', '/exports/tally', 'post');
     expect(response.status).toBe(202);
@@ -69,7 +70,7 @@ describe('STR-103 T-C2 — POST /v1/exports/tally rejects from after to', () => 
     const response = await dispatchRequest('POST', '/v1/exports/tally', {
       from: '2031-02-02',
       to: '2031-01-01',
-    });
+    }, await asAnyStaff(db));
 
     const op = await contractTest('admin', '/exports/tally', 'post');
     expect(response.status).toBe(422);
@@ -87,18 +88,18 @@ describe('STR-103 T-C3 — GET /v1/exports/{exportId}', () => {
     await runLocalMigrations(db, MIGRATIONS_DIR);
     const op = await contractTest('admin', '/exports/{exportId}', 'get');
 
-    const unknown = await dispatchRequest('GET', `/v1/exports/${randomUUID()}`);
+    const unknown = await dispatchRequest('GET', `/v1/exports/${randomUUID()}`, {}, await asAnyStaff(db));
     expect(unknown.status).toBe(404);
     expect(() => op.expectValidResponse(unknown.status, unknown.body)).not.toThrow();
 
     const exportId = await seedQueuedExport('2031-05-01', '2031-05-31');
-    const queued = await dispatchRequest('GET', `/v1/exports/${exportId}`);
+    const queued = await dispatchRequest('GET', `/v1/exports/${exportId}`, {}, await asAnyStaff(db));
     expect(queued.status).toBe(200);
     expect(queued.body).toMatchObject({ export_id: exportId, status: 'queued' });
     expect(() => op.expectValidResponse(queued.status, queued.body)).not.toThrow();
 
     await processTallyExport(db, documents, exportId);
-    const completed = await dispatchRequest('GET', `/v1/exports/${exportId}`);
+    const completed = await dispatchRequest('GET', `/v1/exports/${exportId}`, {}, await asAnyStaff(db));
     expect(completed.status).toBe(200);
     expect(completed.body).toMatchObject({ export_id: exportId, status: 'completed' });
     expect(() => op.expectValidResponse(completed.status, completed.body)).not.toThrow();
@@ -117,7 +118,7 @@ describe('STR-103 T-C3 — GET /v1/exports/{exportId}', () => {
           VALUES (${exportId}, 'failed', ${'2031-05-01'}::date, ${'2031-05-31'}::date, ${'simulated generation failure'})`,
     );
 
-    const response = await dispatchRequest('GET', `/v1/exports/${exportId}`);
+    const response = await dispatchRequest('GET', `/v1/exports/${exportId}`, {}, await asAnyStaff(db));
     expect(response.status).toBe(200);
     expect(response.body).toMatchObject({
       export_id: exportId,
@@ -134,12 +135,12 @@ describe('STR-103 T-C4 — GET /v1/exports/{exportId}/download', () => {
     await runLocalMigrations(db, MIGRATIONS_DIR);
     const op = await contractTest('admin', '/exports/{exportId}/download', 'get');
 
-    const unknown = await dispatchRequest('GET', `/v1/exports/${randomUUID()}/download`);
+    const unknown = await dispatchRequest('GET', `/v1/exports/${randomUUID()}/download`, {}, await asAnyStaff(db));
     expect(unknown.status).toBe(404);
     expect(() => op.expectValidResponse(unknown.status, unknown.body)).not.toThrow();
 
     const exportId = await seedQueuedExport('2031-05-01', '2031-05-31');
-    const notCompleted = await dispatchRequest('GET', `/v1/exports/${exportId}/download`);
+    const notCompleted = await dispatchRequest('GET', `/v1/exports/${exportId}/download`, {}, await asAnyStaff(db));
     expect(notCompleted.status).toBe(409);
     expect(() => op.expectValidResponse(notCompleted.status, notCompleted.body)).not.toThrow();
 
@@ -150,7 +151,7 @@ describe('STR-103 T-C4 — GET /v1/exports/{exportId}/download', () => {
     ], { postedAt: '2031-05-15T10:00:00Z' });
     await processTallyExport(db, documents, exportId);
 
-    const ready = await dispatchRequest('GET', `/v1/exports/${exportId}/download`);
+    const ready = await dispatchRequest('GET', `/v1/exports/${exportId}/download`, {}, await asAnyStaff(db));
     expect(ready.status).toBe(200);
     expect(() => op.expectValidResponse(ready.status, ready.body)).not.toThrow();
 

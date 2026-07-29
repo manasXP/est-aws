@@ -6,6 +6,7 @@ import { runLocalMigrations, MIGRATIONS_DIR } from '../../aws-blocks/migrations-
 import { setProjectCommittee } from '../../aws-blocks/projects/committees-api';
 import { contractTest } from './harness';
 import { dispatchRequest } from '../support/dispatch';
+import { asAnyStaff, asMember } from '../support/cognito-token';
 
 // STR-057 T-C2 (covers TC-AST-041) — mobile GET /pc/projects/{projectId}/assets
 // contract cases. Same dispatch-the-real-handler approach as the other
@@ -24,19 +25,19 @@ beforeAll(async () => {
 });
 
 async function createTestProject(): Promise<string> {
-  const response = await dispatchRequest('POST', '/v1/projects', { name: `Contract Test Project ${randomUUID()}` });
+  const response = await dispatchRequest('POST', '/v1/projects', { name: `Contract Test Project ${randomUUID()}` }, await asAnyStaff(db));
   return (response.body as { project_id: string }).project_id;
 }
 
 async function createActiveMember(): Promise<string> {
-  const response = await dispatchRequest('POST', '/v1/members', { name: `Contract Test Member ${randomUUID()}` });
+  const response = await dispatchRequest('POST', '/v1/members', { name: `Contract Test Member ${randomUUID()}` }, await asAnyStaff(db));
   const memberId = (response.body as { member_id: string }).member_id;
-  await dispatchRequest('POST', `/v1/members/${memberId}/admit`);
+  await dispatchRequest('POST', `/v1/members/${memberId}/admit`, {}, await asAnyStaff(db));
   return memberId;
 }
 
 async function createTestAsset(projectId: string, type = 'flat'): Promise<string> {
-  const response = await dispatchRequest('POST', '/v1/assets', { project_id: projectId, type, label: 'A-1' });
+  const response = await dispatchRequest('POST', '/v1/assets', { project_id: projectId, type, label: 'A-1' }, await asAnyStaff(db));
   return (response.body as { asset_id: string }).asset_id;
 }
 
@@ -58,9 +59,9 @@ describe('STR-057 T-C2 — GET /v1/pc/projects/{projectId}/assets (covers TC-AST
 
     const ownedAsset = await createTestAsset(projectId, 'flat');
     const unownedAsset = await createTestAsset(projectId, 'plot');
-    await dispatchRequest('POST', `/v1/members/${owner}/ownerships`, { asset_id: ownedAsset });
+    await dispatchRequest('POST', `/v1/members/${owner}/ownerships`, { asset_id: ownedAsset }, await asAnyStaff(db));
 
-    const response = await dispatchRequest('GET', `/v1/pc/projects/${projectId}/assets`, {}, { 'X-Actor-Member-Id': pcMember });
+    const response = await dispatchRequest('GET', `/v1/pc/projects/${projectId}/assets`, {}, { ...(await asMember(db, pcMember)) });
 
     expect(response.status).toBe(200);
     const op = await contractTest('mobile', '/pc/projects/{projectId}/assets', 'get');
@@ -78,7 +79,7 @@ describe('STR-057 T-C2 — GET /v1/pc/projects/{projectId}/assets (covers TC-AST
     const outsider = await createActiveMember();
     await seatPc(projectId, [pcMember]);
 
-    const response = await dispatchRequest('GET', `/v1/pc/projects/${projectId}/assets`, {}, { 'X-Actor-Member-Id': outsider });
+    const response = await dispatchRequest('GET', `/v1/pc/projects/${projectId}/assets`, {}, { ...(await asMember(db, outsider)) });
     expect(response.status).toBe(403);
 
     const body = response.body as { error: { code: string } };
@@ -88,7 +89,12 @@ describe('STR-057 T-C2 — GET /v1/pc/projects/{projectId}/assets (covers TC-AST
   // Genuine Red gap: the OpenAPI declares 404 for an unknown project, not
   // itself named by the story's T-C2 text.
   it('returns 404 for a project that does not exist', async () => {
-    const response = await dispatchRequest('GET', `/v1/pc/projects/${randomUUID()}/assets`, {}, { 'X-Actor-Member-Id': randomUUID() });
+    // A real member: the caller is resolved from the token's subject before
+    // the project is looked up, so a made-up id would be refused as "not an
+    // admin user" and never reach the 404 this case is about.
+    const caller = await createActiveMember();
+
+    const response = await dispatchRequest('GET', `/v1/pc/projects/${randomUUID()}/assets`, {}, { ...(await asMember(db, caller)) });
     expect(response.status).toBe(404);
 
     const op = await contractTest('mobile', '/pc/projects/{projectId}/assets', 'get');

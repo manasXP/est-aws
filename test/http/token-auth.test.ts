@@ -9,7 +9,7 @@ import { db } from '../../aws-blocks/index';
 import { runLocalMigrations, MIGRATIONS_DIR } from '../../aws-blocks/migrations-runner';
 import { handleManagementAction } from '../../aws-blocks/management-actions';
 import { dispatchRequest } from '../support/dispatch';
-import { bearerFor, installJwksStub } from '../support/cognito-token';
+import { bearerFor } from '../support/cognito-token';
 import { resolveActor } from '../../aws-blocks/http/capability-gate';
 import { buildClaims } from '../../aws-blocks/members/capabilities';
 import { createEmployee, setEmployeeCapabilities } from '../../aws-blocks/employees/employees-api';
@@ -41,7 +41,6 @@ const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 beforeAll(async () => {
   await runLocalMigrations(db, MIGRATIONS_DIR);
   await db.execute(sql`UPDATE society_settings SET receipt_prefix = 'SOC' WHERE id = 'default'`);
-  installJwksStub();
 });
 
 /** A `due` charge to point money actions at -- there is no charge-creation endpoint. */
@@ -245,7 +244,12 @@ describe('STR-045 T-U6 -- the header stand-in is gone, not kept as a fallback (A
         if (!file.isFile() || !file.name.endsWith('.ts')) continue;
         const path = join(file.parentPath, file.name);
         if (path === fileURLToPath(import.meta.url)) continue; // this file names the header to assert its absence
-        if (/X-Actor-/.test(await readFile(path, 'utf-8'))) offenders.push(relative(REPO_ROOT, path));
+        // The quoted literal is how every read (`headers.get('X-Actor-...')`)
+        // and every test that set one was written, so this catches any code
+        // path that touches the header. Prose naming what was removed --
+        // capability-gate.ts's and token-verifier.ts's module comments -- is
+        // the point of the Refactor step, not a leftover.
+        if (/'X-Actor-/.test(await readFile(path, 'utf-8'))) offenders.push(relative(REPO_ROOT, path));
       }
     }
 

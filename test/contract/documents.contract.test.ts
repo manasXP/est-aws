@@ -7,6 +7,9 @@ import { runLocalMigrations, MIGRATIONS_DIR } from '../../aws-blocks/migrations-
 import { postJournalEntry } from '../../aws-blocks/finance/journal';
 import { contractTest } from './harness';
 import { dispatchRequest } from '../support/dispatch';
+import { asAnyStaff, asEmployee, asMember, asNewEmployee } from '../support/cognito-token';
+import { createEmployee } from '../../aws-blocks/employees/employees-api';
+import { createMember } from '../../aws-blocks/members/members-api';
 
 // STR-025 T-C1 — POST /v1/books/{book}/entries/{entryId}/documents against
 // the Admin OpenAPI, following STR-005's real-handler contract-test
@@ -43,7 +46,7 @@ describe('STR-025 T-C1 — link-document-to-entry endpoint contract', () => {
 
     const response = await dispatchRequest('POST', `/v1/books/cash/entries/${entryId}/documents`, {
       document_id: documentPath,
-    });
+    }, await asAnyStaff(db));
 
     await contractTest('admin', '/books/{book}/entries/{entryId}/documents', 'post');
     expect(response.status).toBe(201);
@@ -61,7 +64,7 @@ describe('STR-025 T-C1 — link-document-to-entry endpoint contract', () => {
 
     const response = await dispatchRequest('POST', '/v1/books/cash/entries/no-such-entry/documents', {
       document_id: documentPath,
-    });
+    }, await asAnyStaff(db));
 
     const op = await contractTest('admin', '/books/{book}/entries/{entryId}/documents', 'post');
     expect(response.status).toBe(404);
@@ -74,7 +77,7 @@ describe('STR-025 T-C1 — link-document-to-entry endpoint contract', () => {
 
     const response = await dispatchRequest('POST', `/v1/books/cash/entries/${entryId}/documents`, {
       document_id: 'vouchers/does-not-exist.pdf',
-    });
+    }, await asAnyStaff(db));
 
     const op = await contractTest('admin', '/books/{book}/entries/{entryId}/documents', 'post');
     expect(response.status).toBe(404);
@@ -96,7 +99,7 @@ describe('STR-111 T-C1 — document registration and read endpoints contract', (
       category: 'Bye-laws',
       filename: 'byelaws.pdf',
       content_type: 'application/pdf',
-    }, { 'X-Actor-Employee-Id': 'emp-1' });
+    }, { ...(await asNewEmployee(db)) });
 
     const op = await contractTest('admin', '/documents', 'post');
     expect(response.status).toBe(201);
@@ -112,7 +115,7 @@ describe('STR-111 T-C1 — document registration and read endpoints contract', (
       category: 'Not A Real Category',
       filename: 'f.pdf',
       content_type: 'application/pdf',
-    }, { 'X-Actor-Employee-Id': 'emp-1' });
+    }, { ...(await asNewEmployee(db)) });
 
     const op = await contractTest('admin', '/documents', 'post');
     expect(response.status).toBe(422);
@@ -128,10 +131,10 @@ describe('STR-111 T-C1 — document registration and read endpoints contract', (
       category: 'Bye-laws',
       filename: 'byelaws.pdf',
       content_type: 'application/pdf',
-    }, { 'X-Actor-Employee-Id': 'emp-1' });
+    }, { ...(await asNewEmployee(db)) });
     const documentId = (registerResponse.body as { document_id: string }).document_id;
 
-    const response = await dispatchRequest('GET', `/v1/documents/${documentId}`);
+    const response = await dispatchRequest('GET', `/v1/documents/${documentId}`, {}, await asAnyStaff(db));
 
     const op = await contractTest('admin', '/documents/{documentId}', 'get');
     expect(response.status).toBe(200);
@@ -149,12 +152,12 @@ describe('STR-111 T-C1 — document registration and read endpoints contract', (
       category: 'Bye-laws',
       filename: 'byelaws.pdf',
       content_type: 'application/pdf',
-    }, { 'X-Actor-Employee-Id': 'emp-1' });
+    }, { ...(await asNewEmployee(db)) });
     const documentId = (registerResponse.body as { document_id: string }).document_id;
 
     const op = await contractTest('admin', '/documents/{documentId}/download', 'get');
 
-    const before404 = await dispatchRequest('GET', `/v1/documents/${documentId}/download`);
+    const before404 = await dispatchRequest('GET', `/v1/documents/${documentId}/download`, {}, await asAnyStaff(db));
     expect(before404.status).toBe(404);
     expect(() => op.expectValidResponse(before404.status, before404.body)).not.toThrow();
 
@@ -163,7 +166,7 @@ describe('STR-111 T-C1 — document registration and read endpoints contract', (
     );
     await documents.put(fileKeyRow!.file_key, 'byelaws contents', { contentType: 'application/pdf' });
 
-    const after200 = await dispatchRequest('GET', `/v1/documents/${documentId}/download`);
+    const after200 = await dispatchRequest('GET', `/v1/documents/${documentId}/download`, {}, await asAnyStaff(db));
     expect(after200.status).toBe(200);
     expect(() => op.expectValidResponse(after200.status, after200.body)).not.toThrow();
   });
@@ -183,7 +186,7 @@ describe('STR-112 T-C1 — document metadata edit endpoint contract', () => {
       category: 'Bye-laws',
       filename: 'byelaws.pdf',
       content_type: 'application/pdf',
-    }, { 'X-Actor-Employee-Id': 'emp-1' });
+    }, { ...(await asNewEmployee(db)) });
     return (registerResponse.body as { document_id: string }).document_id;
   }
 
@@ -196,7 +199,7 @@ describe('STR-112 T-C1 — document metadata edit endpoint contract', () => {
       category: 'Circulars',
       tags: ['statutory', 'revised'],
       notes: 'corrected after AGM',
-    }, { 'X-Actor-Employee-Id': 'emp-1' });
+    }, { ...(await asNewEmployee(db)) });
 
     const op = await contractTest('admin', '/documents/{documentId}', 'patch');
     expect(response.status).toBe(200);
@@ -214,7 +217,7 @@ describe('STR-112 T-C1 — document metadata edit endpoint contract', () => {
 
     const response = await dispatchRequest('PATCH', '/v1/documents/no-such-document', {
       title: 'Anything',
-    }, { 'X-Actor-Employee-Id': 'emp-1' });
+    }, { ...(await asNewEmployee(db)) });
 
     const op = await contractTest('admin', '/documents/{documentId}', 'patch');
     expect(response.status).toBe(404);
@@ -227,7 +230,7 @@ describe('STR-112 T-C1 — document metadata edit endpoint contract', () => {
 
     const response = await dispatchRequest('PATCH', `/v1/documents/${documentId}`, {
       category: 'Not A Real Category',
-    }, { 'X-Actor-Employee-Id': 'emp-1' });
+    }, { ...(await asNewEmployee(db)) });
 
     const op = await contractTest('admin', '/documents/{documentId}', 'patch');
     expect(response.status).toBe(422);
@@ -241,7 +244,7 @@ describe('STR-112 T-C1 — document metadata edit endpoint contract', () => {
 
     const response = await dispatchRequest('PATCH', `/v1/documents/${documentId}`, {
       title: '',
-    }, { 'X-Actor-Employee-Id': 'emp-1' });
+    }, { ...(await asNewEmployee(db)) });
 
     const op = await contractTest('admin', '/documents/{documentId}', 'patch');
     expect(response.status).toBe(422);
@@ -258,7 +261,7 @@ describe('STR-112 T-C1 — document metadata edit endpoint contract', () => {
     const response = await dispatchRequest('PATCH', `/v1/documents/${documentId}`, {
       title: 'Still just a metadata edit',
       member_visible: true,
-    }, { 'X-Actor-Employee-Id': 'emp-1' });
+    }, { ...(await asNewEmployee(db)) });
 
     expect(response.status).toBe(200);
     expect(response.body).toMatchObject({ member_visible: true });
@@ -269,7 +272,7 @@ describe('STR-112 T-C1 — document metadata edit endpoint contract', () => {
     expect(row!.member_visible).toBe(true);
   });
 
-  it('rejects with 401 when no X-Actor-* header is present', async () => {
+  it('rejects with 401 when the request carries no bearer token', async () => {
     await runLocalMigrations(db, MIGRATIONS_DIR);
     const documentId = await registeredDocumentId();
 
@@ -280,10 +283,10 @@ describe('STR-112 T-C1 — document metadata edit endpoint contract', () => {
 });
 
 // STR-111 review fix (Bug 1) — uploaded_by must come from the resolved
-// caller actor (X-Actor-Employee-Id/X-Actor-Member-Id), never the literal
+// caller actor resolved from the bearer token, never the literal
 // 'unknown' the OpenAPI DocumentInput schema has no field for.
 describe('STR-111 review fix (Bug 1) — POST /v1/documents resolves uploaded_by from the caller actor', () => {
-  it('rejects with 401 when no X-Actor-* header is present', async () => {
+  it('rejects with 401 when the request carries no bearer token', async () => {
     await runLocalMigrations(db, MIGRATIONS_DIR);
 
     const response = await dispatchRequest('POST', '/v1/documents', {
@@ -299,6 +302,9 @@ describe('STR-111 review fix (Bug 1) — POST /v1/documents resolves uploaded_by
 
   it('persists the resolved employee actor as uploaded_by, not "unknown"', async () => {
     await runLocalMigrations(db, MIGRATIONS_DIR);
+    // A real record, not a made-up id: a token subject only resolves to an
+    // actor that exists, so the assertion names the employee it actually is.
+    const { employee_id: uploaderId } = await createEmployee(db, { name: `Uploader ${randomUUID()}` });
 
     const response = await dispatchRequest('POST', '/v1/documents', {
       level: 'society',
@@ -306,16 +312,17 @@ describe('STR-111 review fix (Bug 1) — POST /v1/documents resolves uploaded_by
       category: 'Bye-laws',
       filename: 'byelaws.pdf',
       content_type: 'application/pdf',
-    }, { 'X-Actor-Employee-Id': 'emp-42' });
+    }, { ...(await asEmployee(db, uploaderId)) });
     expect(response.status).toBe(201);
     const documentId = (response.body as { document_id: string }).document_id;
 
     const row = await db.queryOne<{ uploaded_by: string }>(sql`SELECT uploaded_by FROM documents WHERE id = ${documentId}`);
-    expect(row!.uploaded_by).toBe('emp-42');
+    expect(row!.uploaded_by).toBe(uploaderId);
   });
 
-  it('persists the resolved member actor as uploaded_by when only X-Actor-Member-Id is present', async () => {
+  it('persists the resolved member actor as uploaded_by for a member-subject token', async () => {
     await runLocalMigrations(db, MIGRATIONS_DIR);
+    const { member_id: uploaderId } = await createMember(db, { name: `Uploader ${randomUUID()}` });
 
     const response = await dispatchRequest('POST', '/v1/documents', {
       level: 'society',
@@ -323,11 +330,11 @@ describe('STR-111 review fix (Bug 1) — POST /v1/documents resolves uploaded_by
       category: 'Bye-laws',
       filename: 'byelaws.pdf',
       content_type: 'application/pdf',
-    }, { 'X-Actor-Member-Id': 'mem-7' });
+    }, { ...(await asMember(db, uploaderId)) });
     expect(response.status).toBe(201);
     const documentId = (response.body as { document_id: string }).document_id;
 
     const row = await db.queryOne<{ uploaded_by: string }>(sql`SELECT uploaded_by FROM documents WHERE id = ${documentId}`);
-    expect(row!.uploaded_by).toBe('mem-7');
+    expect(row!.uploaded_by).toBe(uploaderId);
   });
 });

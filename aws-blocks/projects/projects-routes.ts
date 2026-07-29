@@ -4,6 +4,7 @@
 // index.ts). Thin HTTP adapter: parses path/body, then delegates to
 // projects-api.ts for everything else.
 import { RawRoute } from '@aws-blocks/blocks';
+import { requireAuthenticated } from '../http/capability-gate';
 import type { Database, Scope } from '@aws-blocks/blocks';
 import { createProject, getProject, listProjects, updateProject, ProjectValidationError } from './projects-api';
 import { sendNotFound, sendValidationError } from '../http/problem-response';
@@ -13,6 +14,8 @@ export function registerProjectRoutes(scope: Scope, db: Database): void {
     method: 'GET',
     path: '/v1/projects',
     handler: async ctx => {
+      if (!(await requireAuthenticated(ctx, db))) return;
+
       const items = await listProjects(db);
       ctx.response.send({ items, next_cursor: null });
     },
@@ -22,6 +25,8 @@ export function registerProjectRoutes(scope: Scope, db: Database): void {
     method: 'POST',
     path: '/v1/projects',
     handler: async ctx => {
+      if (!(await requireAuthenticated(ctx, db))) return;
+
       const input = await ctx.request.json();
       try {
         const project = await createProject(db, input);
@@ -41,6 +46,8 @@ export function registerProjectRoutes(scope: Scope, db: Database): void {
     method: 'GET',
     path: '/v1/projects/{projectId}',
     handler: async ctx => {
+      if (!(await requireAuthenticated(ctx, db))) return;
+
       const project = await getProject(db, ctx.request.params.projectId);
       if (!project) {
         sendNotFound(ctx, `No project ${ctx.request.params.projectId}`);
@@ -54,6 +61,8 @@ export function registerProjectRoutes(scope: Scope, db: Database): void {
     method: 'PATCH',
     path: '/v1/projects/{projectId}',
     handler: async ctx => {
+      if (!(await requireAuthenticated(ctx, db))) return;
+
       const input = await ctx.request.json();
       const project = await updateProject(db, ctx.request.params.projectId, input);
       if (!project) {

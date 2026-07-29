@@ -6,6 +6,7 @@ import { runLocalMigrations, MIGRATIONS_DIR } from '../../aws-blocks/migrations-
 import { postJournalEntry, type CounterpartyType, type PostingLine } from '../../aws-blocks/finance/journal';
 import { contractTest } from './harness';
 import { dispatchRequest } from '../support/dispatch';
+import { asAnyStaff } from '../support/cognito-token';
 
 // STR-024 — Admin API book-read surface, contract cases. Uses the real `db`
 // singleton the registered RawRoutes read from (aws-blocks/index.ts), the
@@ -41,7 +42,7 @@ async function postEntryForBook(book: (typeof BOOKS)[number], amount: string): P
 describe('STR-024 T-C1 — admin book-read API contract', () => {
   it.each(BOOKS)('GET /v1/books/%s/entries conforms to the Admin OpenAPI', async book => {
     await postEntryForBook(book, '10.00');
-    const response = await dispatchRequest('GET', `/v1/books/${book}/entries`);
+    const response = await dispatchRequest('GET', `/v1/books/${book}/entries`, {}, await asAnyStaff(db));
 
     const op = await contractTest('admin', '/books/{book}/entries', 'get');
     expect(() => op.expectValidResponse(response.status, response.body)).not.toThrow();
@@ -49,14 +50,14 @@ describe('STR-024 T-C1 — admin book-read API contract', () => {
 
   it.each(BOOKS)('GET /v1/books/%s/entries/{entryId} for a real posted entry conforms to the Admin OpenAPI', async book => {
     const entryId = await postEntryForBook(book, '10.00');
-    const response = await dispatchRequest('GET', `/v1/books/${book}/entries/${entryId}`);
+    const response = await dispatchRequest('GET', `/v1/books/${book}/entries/${entryId}`, {}, await asAnyStaff(db));
 
     const op = await contractTest('admin', '/books/{book}/entries/{entryId}', 'get');
     expect(() => op.expectValidResponse(response.status, response.body)).not.toThrow();
   });
 
   it('rejects an unknown book value before hitting the DB', async () => {
-    const response = await dispatchRequest('GET', '/v1/books/foo/entries');
+    const response = await dispatchRequest('GET', '/v1/books/foo/entries', {}, await asAnyStaff(db));
     expect(response.status).toBe(400);
   });
 });
@@ -65,13 +66,13 @@ describe('STR-024 T-C2 — money fields are decimal strings exactly as posted (T
   it('returns the posted amount as a byte-exact decimal string, both in the list and the detail read', async () => {
     const entryId = await postEntryForBook('bank', '1250.00');
 
-    const listResponse = await dispatchRequest('GET', '/v1/books/bank/entries');
+    const listResponse = await dispatchRequest('GET', '/v1/books/bank/entries', {}, await asAnyStaff(db));
     const listed = (listResponse.body as { items: { entry_id: string; amount: string }[] }).items.find(
       e => e.entry_id === entryId,
     );
     expect(listed?.amount).toBe('1250.00');
 
-    const detailResponse = await dispatchRequest('GET', `/v1/books/bank/entries/${entryId}`);
+    const detailResponse = await dispatchRequest('GET', `/v1/books/bank/entries/${entryId}`, {}, await asAnyStaff(db));
     expect((detailResponse.body as { amount: string }).amount).toBe('1250.00');
   });
 });

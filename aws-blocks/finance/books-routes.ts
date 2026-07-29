@@ -8,6 +8,7 @@
 // one write the Admin contract documents against a book entry. Same shape —
 // the correction rules stay in STR-022's reversal.ts, this only reaches them.
 import { RawRoute } from '@aws-blocks/blocks';
+import { requireAuthenticated } from '../http/capability-gate';
 import type { Database, Scope } from '@aws-blocks/blocks';
 import { getBookEntry, isBookName, listBookEntries, type LedgerEntry } from './books-api';
 import { reverseJournalEntry } from './reversal';
@@ -30,6 +31,8 @@ export function registerBookRoutes(scope: Scope, db: Database): void {
     method: 'GET',
     path: '/v1/books/{book}/entries',
     handler: async ctx => {
+      if (!(await requireAuthenticated(ctx, db))) return;
+
       const book = ctx.request.params.book;
       if (!isBookName(book)) {
         ctx.response.status = 400;
@@ -48,6 +51,8 @@ export function registerBookRoutes(scope: Scope, db: Database): void {
     method: 'GET',
     path: '/v1/books/{book}/entries/{entryId}',
     handler: async ctx => {
+      if (!(await requireAuthenticated(ctx, db))) return;
+
       const book = ctx.request.params.book;
       if (!isBookName(book)) {
         ctx.response.status = 400;

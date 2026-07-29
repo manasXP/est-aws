@@ -8,8 +8,10 @@
 // -- so a test token is only ever valid against the pool the running app is
 // actually configured for. `region` is derived from the pool id's own
 // `<region>_<suffix>` shape, which is how a real Cognito pool id is built.
-import { createSign, generateKeyPairSync, type JsonWebKey } from 'node:crypto';
-import { getSdkIdentifiers } from '@aws-blocks/blocks';
+import { createSign, generateKeyPairSync, randomUUID, type JsonWebKey } from 'node:crypto';
+import { getSdkIdentifiers, type Database } from '@aws-blocks/blocks';
+import { handleManagementAction, ManagementActionError } from '../../aws-blocks/management-actions';
+import { createEmployee } from '../../aws-blocks/employees/employees-api';
 
 export const TEST_KID = 'estatly-test-signing-key';
 
@@ -84,6 +86,74 @@ export function signAccessToken(sub: string, overrides: AccessTokenOverrides = {
 /** `Authorization: Bearer <token>` for a subject, ready to pass to dispatchRequest. */
 export function bearerFor(sub: string, overrides?: AccessTokenOverrides): Record<string, string> {
   return { Authorization: `Bearer ${signAccessToken(sub, overrides)}` };
+}
+
+/**
+ * Gives an existing employee/member record an admin account and returns the
+ * `Authorization` header for it -- the provisioning step every real admin
+ * account goes through (`link-admin-account`, aws-blocks/management-actions
+ * .ts), so a test never writes `cognito_sub` by a route no operator has.
+ *
+ * The subject is derived from the record id, so calling this twice for the
+ * same person is idempotent and mints an equivalent token both times.
+ */
+export async function asEmployee(db: Database, employeeId: string): Promise<Record<string, string>> {
+  return linkAndSign(db, { employee_id: employeeId }, employeeId);
+}
+
+export async function asMember(db: Database, memberId: string): Promise<Record<string, string>> {
+  return linkAndSign(db, { member_id: memberId }, memberId);
+}
+
+/**
+ * A brand-new employee with an admin account, for the many fixtures that need
+ * *an* authenticated caller and nothing more -- the document/asset/ticket
+ * routes that gate on identity alone (`resolveActor`) rather than on a
+ * capability. Under the STR-044 header stand-in these call sites passed a
+ * made-up id like `emp-1`, which never had to exist; a token subject must map
+ * to a real record, so the record is created here.
+ *
+ * Call sites that assert *which* actor was recorded should create the record
+ * themselves and pass its id to asEmployee/asMember instead, so the assertion
+ * names the actor it means.
+ */
+export async function asNewEmployee(db: Database): Promise<Record<string, string>> {
+  const employee = await createEmployee(db, { name: `Test Staff ${randomUUID()}` });
+  return asEmployee(db, employee.employee_id);
+}
+
+let sharedStaff: Promise<Record<string, string>> | null = null;
+
+/**
+ * The same authenticated staff caller for every case in a test file -- for
+ * fixtures and read-back helpers that just need to get past the gate. Vitest
+ * gives each test file its own module instance, so the memo is per file: one
+ * employee record per file rather than one per dispatch, which matters for
+ * helpers called several times within a single case.
+ *
+ * Use asNewEmployee when a case needs a *distinct* caller, and
+ * asEmployee/asMember when it asserts which actor was recorded.
+ */
+export async function asAnyStaff(db: Database): Promise<Record<string, string>> {
+  sharedStaff ??= asNewEmployee(db);
+  return sharedStaff;
+}
+
+async function linkAndSign(
+  db: Database,
+  who: { employee_id?: string; member_id?: string },
+  id: string,
+): Promise<Record<string, string>> {
+  const sub = `sub-${id}`;
+  try {
+    await handleManagementAction({ action: 'link-admin-account', ...who, cognito_sub: sub }, db);
+  } catch (e) {
+    if (e instanceof ManagementActionError) {
+      throw new Error(`${e.message} An admin account can only be linked to a record that exists.`);
+    }
+    throw e;
+  }
+  return bearerFor(sub);
 }
 
 /**

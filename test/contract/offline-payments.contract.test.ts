@@ -12,6 +12,7 @@ import { createMember } from '../../aws-blocks/members/members-api';
 import { createProject } from '../../aws-blocks/projects/projects-api';
 import { createAsset } from '../../aws-blocks/assets/assets-api';
 import { createOwnership } from '../../aws-blocks/assets/ownerships-api';
+import { asEmployee } from '../support/cognito-token';
 
 // STR-095 T-U1/T-U4 -- the route-level cases for `POST
 // /v1/charges/{chargeId}/offline-payment`. Uses the real `db`/`documents`
@@ -59,7 +60,7 @@ describe('STR-095 T-U1 -- POST /v1/charges/{chargeId}/offline-payment conforms t
       'POST',
       `/v1/charges/${chargeId}/offline-payment`,
       { method: 'cash', amount: '1250.00', received_on: '2026-08-05' },
-      { 'Idempotency-Key': randomUUID(), 'X-Actor-Employee-Id': employeeId },
+      { 'Idempotency-Key': randomUUID(), ...(await asEmployee(db, employeeId)) },
     );
 
     expect(response.status).toBe(201);
@@ -97,7 +98,7 @@ describe('STR-095 T-U1 -- POST /v1/charges/{chargeId}/offline-payment conforms t
   it('rejects an offline payment against an already-paid charge: 409', async () => {
     const chargeId = await seedDueCharge('900.00');
     const employeeId = await financeRecorderEmployeeId();
-    const headers = { 'Idempotency-Key': randomUUID(), 'X-Actor-Employee-Id': employeeId };
+    const headers = { 'Idempotency-Key': randomUUID(), ...(await asEmployee(db, employeeId)) };
 
     await dispatchRequest('POST', `/v1/charges/${chargeId}/offline-payment`, { method: 'cash', amount: '900.00', received_on: '2026-08-05' }, headers);
 
@@ -105,7 +106,7 @@ describe('STR-095 T-U1 -- POST /v1/charges/{chargeId}/offline-payment conforms t
       'POST',
       `/v1/charges/${chargeId}/offline-payment`,
       { method: 'cash', amount: '900.00', received_on: '2026-08-06' },
-      { 'Idempotency-Key': randomUUID(), 'X-Actor-Employee-Id': employeeId },
+      { 'Idempotency-Key': randomUUID(), ...(await asEmployee(db, employeeId)) },
     );
 
     expect(response.status).toBe(409);
@@ -123,7 +124,7 @@ describe('STR-095 T-U1 -- POST /v1/charges/{chargeId}/offline-payment conforms t
       'POST',
       `/v1/charges/${chargeId}/offline-payment`,
       { method: 'cash', amount: '700.00', received_on: '2026-08-05' },
-      { 'X-Actor-Employee-Id': employeeId },
+      { ...(await asEmployee(db, employeeId)) },
     );
 
     expect(response.status).toBe(422);
@@ -143,7 +144,7 @@ describe('STR-095 T-U4 -- the finance-recorder capability gates the endpoint', (
       'POST',
       `/v1/charges/${chargeId}/offline-payment`,
       { method: 'cash', amount: '1500.00', received_on: '2026-08-05' },
-      { 'Idempotency-Key': randomUUID(), 'X-Actor-Employee-Id': employee.employee_id },
+      { 'Idempotency-Key': randomUUID(), ...(await asEmployee(db, employee.employee_id)) },
     );
 
     expect(response.status).toBe(403);

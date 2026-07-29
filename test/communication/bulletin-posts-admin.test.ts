@@ -10,6 +10,7 @@ import { assignRole } from '../../aws-blocks/members/role-assignments';
 import { createProject } from '../../aws-blocks/projects/projects-api';
 import { setProjectCommittee, type ProjectOwnershipLookupPort } from '../../aws-blocks/projects/committees-api';
 import { createBulletinPost, getBulletinPost, listBulletinPosts } from '../../aws-blocks/communication/bulletin-posts';
+import { asMember } from '../support/cognito-token';
 
 // STR-132 -- the Admin API bulletin-posts surface, dispatched against the
 // real routes over the singleton `db` (the ec-invoices.contract.test.ts
@@ -72,7 +73,7 @@ describe('STR-132 T-U1 -- EC compose on the society board, capability-gated', ()
       'POST',
       '/v1/bulletin-posts',
       { title: 'AGM on 12 August', body: 'The AGM will be held in the community hall.' },
-      { 'X-Actor-Member-Id': ecId },
+      { ...(await asMember(db, ecId)) },
     );
 
     expect(response.status).toBe(201);
@@ -96,7 +97,7 @@ describe('STR-132 T-U1 -- EC compose on the society board, capability-gated', ()
       'POST',
       '/v1/bulletin-posts',
       { title: 'Unauthorised notice', body: 'Should never be posted.' },
-      { 'X-Actor-Member-Id': atLargeId },
+      { ...(await asMember(db, atLargeId)) },
     );
 
     expect(response.status).toBe(403);
@@ -121,7 +122,7 @@ describe('STR-132 T-U2 -- admin edits reach society posts only (covers TC-COM-00
       'PATCH',
       `/v1/bulletin-posts/${created.postId}`,
       { title: 'Water tank cleaning postponed', body: 'Now scheduled for Sunday.' },
-      { 'X-Actor-Member-Id': editorId },
+      { ...(await asMember(db, editorId)) },
     );
 
     expect(response.status).toBe(200);
@@ -143,7 +144,7 @@ describe('STR-132 T-U2 -- admin edits reach society posts only (covers TC-COM-00
       'PATCH',
       `/v1/bulletin-posts/${postId}`,
       { title: 'Admin rewrite', body: 'Not the admin panel to make.' },
-      { 'X-Actor-Member-Id': ecId },
+      { ...(await asMember(db, ecId)) },
     );
 
     expect(response.status).toBe(409);
@@ -156,13 +157,13 @@ describe('STR-132 T-U2 -- admin edits reach society posts only (covers TC-COM-00
     const ecId = await ecMember('EC Archived-Post Editor');
     const created = await createBulletinPost(db, ecId, { scope: 'society', title: 'Old notice', body: 'Body' });
     const moderatorId = await managementMember('Management Moderator For Edit');
-    await dispatchRequest('POST', `/v1/bulletin-posts/${created.postId}/archive`, {}, { 'X-Actor-Member-Id': moderatorId });
+    await dispatchRequest('POST', `/v1/bulletin-posts/${created.postId}/archive`, {}, { ...(await asMember(db, moderatorId)) });
 
     const response = await dispatchRequest(
       'PATCH',
       `/v1/bulletin-posts/${created.postId}`,
       { body: 'Trying to edit after take-down.' },
-      { 'X-Actor-Member-Id': ecId },
+      { ...(await asMember(db, ecId)) },
     );
 
     expect(response.status).toBe(409);
@@ -180,7 +181,7 @@ describe('STR-132 T-U3 -- archive moderation spans both boards and never deletes
       'POST',
       `/v1/bulletin-posts/${created.postId}/archive`,
       {},
-      { 'X-Actor-Member-Id': moderatorId },
+      { ...(await asMember(db, moderatorId)) },
     );
 
     expect(response.status).toBe(200);
@@ -202,7 +203,7 @@ describe('STR-132 T-U3 -- archive moderation spans both boards and never deletes
       'POST',
       `/v1/bulletin-posts/${postId}/archive`,
       {},
-      { 'X-Actor-Member-Id': moderatorId },
+      { ...(await asMember(db, moderatorId)) },
     );
 
     expect(response.status).toBe(200);
@@ -222,7 +223,7 @@ describe('STR-132 T-U3 -- archive moderation spans both boards and never deletes
       'POST',
       `/v1/bulletin-posts/${created.postId}/archive`,
       {},
-      { 'X-Actor-Member-Id': atLargeId },
+      { ...(await asMember(db, atLargeId)) },
     );
 
     expect(response.status).toBe(403);

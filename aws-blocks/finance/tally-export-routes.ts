@@ -5,6 +5,7 @@
 // delegates to tally-export-jobs.ts for everything else. No auth gate,
 // matching books-routes -- the export starts no money movement.
 import { RawRoute } from '@aws-blocks/blocks';
+import { requireAuthenticated } from '../http/capability-gate';
 import type { Database, FileBucket, Scope } from '@aws-blocks/blocks';
 import {
   sendConflictError,
@@ -42,6 +43,8 @@ export function registerTallyExportRoutes(
     method: 'POST',
     path: '/v1/exports/tally',
     handler: async ctx => {
+      if (!(await requireAuthenticated(ctx, db))) return;
+
       const body = await ctx.request.json();
       try {
         const job = await startTallyExport(db, exportJob, body?.from ?? '', body?.to ?? '');
@@ -61,6 +64,8 @@ export function registerTallyExportRoutes(
     method: 'GET',
     path: '/v1/exports/{exportId}',
     handler: async ctx => {
+      if (!(await requireAuthenticated(ctx, db))) return;
+
       const job = await getExportJob(db, ctx.request.params.exportId);
       if (!job) {
         sendNotFound(ctx, `No export ${ctx.request.params.exportId}`);
@@ -74,6 +79,8 @@ export function registerTallyExportRoutes(
     method: 'GET',
     path: '/v1/exports/{exportId}/download',
     handler: async ctx => {
+      if (!(await requireAuthenticated(ctx, db))) return;
+
       const result = await getExportDownloadUrl(db, bucket, ctx.request.params.exportId);
       if (result.outcome === 'not_found') {
         sendNotFound(ctx, `No export ${ctx.request.params.exportId}`);

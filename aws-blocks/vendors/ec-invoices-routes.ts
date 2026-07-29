@@ -181,11 +181,12 @@ export function registerEcInvoiceRoutes(scope: Scope, db: Database, bucket: File
       // designated-approver majority branch.
       const invoice = await getInvoice(db, invoiceId);
       if (invoice?.status === 'rejected') {
-        const actor = resolveActor(ctx);
-        if (!actor || !('memberId' in actor)) {
+        const resolution = await resolveActor(ctx, db);
+        if ('failure' in resolution || !('memberId' in resolution.actor)) {
           sendCapabilityRequired(ctx, 'ec-member');
           return;
         }
+        const actor = resolution.actor;
 
         try {
           const { invoice: updated, approvalProgress } = await recordOverrideApproval(db, invoiceId, actor.memberId, notes ?? null);
@@ -209,11 +210,10 @@ export function registerEcInvoiceRoutes(scope: Scope, db: Database, bucket: File
         return;
       }
 
-      if (!(await requireCapability(ctx, db, 'designated-approver'))) {
+      const actor = (await requireCapability(ctx, db, 'designated-approver')) as { memberId: string } | null;
+      if (!actor) {
         return;
       }
-
-      const actor = resolveActor(ctx) as { memberId: string };
 
       try {
         const { invoice: updated, approvalProgress } = await recordApproval(db, invoiceId, actor.memberId, notes ?? null);
@@ -237,13 +237,13 @@ export function registerEcInvoiceRoutes(scope: Scope, db: Database, bucket: File
     method: 'POST',
     path: '/v1/ec/invoices/{invoiceId}/reject',
     handler: async ctx => {
-      if (!(await requireCapability(ctx, db, 'designated-approver'))) {
+      const actor = (await requireCapability(ctx, db, 'designated-approver')) as { memberId: string } | null;
+      if (!actor) {
         return;
       }
 
       const { invoiceId } = ctx.request.params;
       const { reason } = await ctx.request.json();
-      const actor = resolveActor(ctx) as { memberId: string };
 
       try {
         const updated = await rejectInvoice(db, invoiceId, actor.memberId, reason);

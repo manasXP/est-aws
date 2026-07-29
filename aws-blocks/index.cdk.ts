@@ -3,9 +3,7 @@ import { RemovalPolicies, Mixins } from 'aws-cdk-lib';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 
 import { BlocksStack, SandboxDisableDeletionProtection } from '@aws-blocks/blocks/cdk';
-import { getSdkIdentifiers } from '@aws-blocks/blocks';
-import { SCOPE_ID, AUTH_BLOCK_ID } from './block-ids';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
 import { getStackName } from '@aws-blocks/blocks/scripts';
 import { overrideDeprecatedAuroraEngineVersion } from './known-issues/aurora-engine-version-workaround';
@@ -44,9 +42,26 @@ new cdk.CfnOutput(blocksStack, 'GatewayUrl', { value: blocksStack.gateway.url })
 // STR-045: the triple the Provisioning Runbook §4/§5 tells an operator to
 // capture and register with the Society Directory, and that the admin panel
 // reads as public config to sign in against this deployment's pool.
-const { userPoolId, clientId } = getSdkIdentifiers({ fullId: `${SCOPE_ID}-${AUTH_BLOCK_ID}` });
-new cdk.CfnOutput(blocksStack, 'CognitoUserPoolId', { value: userPoolId });
-new cdk.CfnOutput(blocksStack, 'CognitoClientId', { value: clientId });
+//
+// The ids have to come from the CDK constructs, as unresolved tokens —
+// getSdkIdentifiers() reads the runtime identifier registry, which nothing
+// has populated at synth time, so it yields undefined here and CfnOutput
+// rejects it. Reaching the AuthCognito instance means re-importing the
+// backend module under the *same* URL BlocksStack.create used (it tags the
+// import with `?stack=<id>`); a plain './index' specifier is a different
+// module key and would evaluate the file a second time, declaring every
+// Block twice.
+const backendUrl = pathToFileURL(join(__dirname, 'index.ts'));
+backendUrl.searchParams.set('stack', stackName);
+// The shape is named here rather than taken from `typeof import('./index')`
+// because `tsc` runs with no `cdk` export condition, so AuthCognito types as
+// the *runtime* block, which has no `userPool`. This file only ever executes
+// under `tsx -C cdk`, where it is the CDK construct.
+const { auth } = (await import(backendUrl.href)) as {
+  auth: { userPool: { userPoolId: string }; userPoolClient: { userPoolClientId: string } };
+};
+new cdk.CfnOutput(blocksStack, 'CognitoUserPoolId', { value: auth.userPool.userPoolId });
+new cdk.CfnOutput(blocksStack, 'CognitoClientId', { value: auth.userPoolClient.userPoolClientId });
 new cdk.CfnOutput(blocksStack, 'CognitoRegion', { value: blocksStack.region });
 
 if (sandboxMode) {

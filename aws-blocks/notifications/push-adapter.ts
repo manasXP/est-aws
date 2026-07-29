@@ -7,6 +7,11 @@
 export interface PushNotification {
   title: string;
   body: string;
+  /** STR-133: the in-app target the notification opens -- a path on the
+   * Mobile Public API (`/me/bulletin/{postId}`), never a provider-specific
+   * payload shape. Optional: STR-067's reminder and STR-122's ticket pushes
+   * carry none. */
+  deepLink?: string;
 }
 
 export interface PushAdapter {
